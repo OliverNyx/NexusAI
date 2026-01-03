@@ -7,7 +7,7 @@
  * Based on V1 implementation with dynamic import to handle Vite bundling.
  */
 
-import { KnowledgeGraph, GraphNode } from '../graph/types';
+import { KnowledgeGraph } from '../graph/types';
 import { NODE_SCHEMA, EDGE_SCHEMA, NODE_TABLE_NAME, EDGE_TABLE_NAME } from './schema';
 import { generateNodeCSV, generateEdgeCSV } from './csv-generator';
 
@@ -23,13 +23,12 @@ export const initKuzu = async () => {
   if (conn) return { db, conn, kuzu };
 
   try {
-    console.log('🚀 Initializing KuzuDB (Dynamic Import)...');
+    if (import.meta.env.DEV) console.log('🚀 Initializing KuzuDB...');
 
     // 1. Dynamic Import (Fixes the "not a function" bundler issue)
     const kuzuModule = await import('kuzu-wasm');
     
     // 2. Handle Vite/Webpack "default" wrapping
-    // Sometimes the library is at kuzuModule, sometimes at kuzuModule.default
     kuzu = kuzuModule.default || kuzuModule;
 
     // 3. Initialize WASM
@@ -39,21 +38,20 @@ export const initKuzu = async () => {
     db = new kuzu.Database(':memory:');
     conn = new kuzu.Connection(db);
     
-    console.log('✅ KuzuDB WASM Initialized');
+    if (import.meta.env.DEV) console.log('✅ KuzuDB WASM Initialized');
 
-    // 5. Initialize Schema
-    // We wrap these in try-catch in case they already exist (re-run scenario)
+    // 5. Initialize Schema (wrap in try-catch for re-run scenario)
     try {
       await conn.query(NODE_SCHEMA);
       await conn.query(EDGE_SCHEMA);
-      console.log('✅ KuzuDB Schema Created');
-    } catch (e) {
-      console.log('Schema might already exist, skipping creation.');
+      if (import.meta.env.DEV) console.log('✅ KuzuDB Schema Created');
+    } catch {
+      // Schema might already exist, skip
     }
 
     return { db, conn, kuzu };
   } catch (error) {
-    console.error('❌ KuzuDB Initialization Failed:', error);
+    if (import.meta.env.DEV) console.error('❌ KuzuDB Initialization Failed:', error);
     throw error;
   }
 };
@@ -68,7 +66,8 @@ export const loadGraphToKuzu = async (
   const { conn, kuzu } = await initKuzu();
   
   try {
-    console.log(`KuzuDB: Serializing ${graph.nodeCount} nodes...`);
+    if (import.meta.env.DEV) console.log(`KuzuDB: Serializing ${graph.nodeCount} nodes...`);
+    
     const nodesCSV = generateNodeCSV(graph, fileContents);
     const edgesCSV = generateEdgeCSV(graph);
     
@@ -84,13 +83,6 @@ export const loadGraphToKuzu = async (
     await fs.writeFile(nodesPath, nodesCSV);
     await fs.writeFile(edgesPath, edgesCSV);
     
-    if (import.meta.env.DEV) {
-      const nodeLines = nodesCSV.split('\n');
-      console.log('Node CSV preview:', nodeLines.slice(0, 3));
-      console.log('Node CSV total lines:', nodeLines.length);
-    }
-    
-    console.log('KuzuDB: Executing COPY FROM...');
     
     // Use HEADER=true because our CSV generator adds headers
     // Use PARALLEL=false because content field has quoted newlines
@@ -102,7 +94,7 @@ export const loadGraphToKuzu = async (
     const countRow = await countRes.getNext();
     const nodeCount = countRow ? countRow.cnt || countRow[0] || 0 : 0;
     
-    console.log(`✅ KuzuDB Bulk Load Complete. Nodes in DB: ${nodeCount}`);
+    if (import.meta.env.DEV) console.log(`✅ KuzuDB Bulk Load Complete. Nodes in DB: ${nodeCount}`);
 
     // Cleanup
     try { await fs.unlink(nodesPath); } catch {}
@@ -111,7 +103,7 @@ export const loadGraphToKuzu = async (
     return { success: true, count: Number(nodeCount) };
 
   } catch (error) {
-    console.error('❌ KuzuDB Bulk Load Failed:', error);
+    if (import.meta.env.DEV) console.error('❌ KuzuDB Bulk Load Failed:', error);
     // Don't throw - let the app continue without KuzuDB
     return { success: false, count: 0 };
   }
@@ -122,7 +114,6 @@ export const loadGraphToKuzu = async (
  */
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   if (!conn) {
-    console.warn("DB not initialized, initializing now...");
     await initKuzu();
   }
   
@@ -138,7 +129,7 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
     
     return rows;
   } catch (error) {
-    console.error('Query execution failed:', error);
+    if (import.meta.env.DEV) console.error('Query execution failed:', error);
     throw error;
   }
 };

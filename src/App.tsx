@@ -7,6 +7,7 @@ import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
 import { RightPanel } from './components/RightPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
+import { FileEntry } from './services/zip';
 
 const AppContent = () => {
   const {
@@ -19,6 +20,7 @@ const AppContent = () => {
     progress,
     isRightPanelOpen,
     runPipeline,
+    runPipelineFromFiles,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -51,13 +53,44 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline]);
 
+  const handleGitClone = useCallback(async (files: FileEntry[]) => {
+    // Extract project name from first file path (e.g., "owner-repo-123/src/..." -> "owner-repo")
+    const firstPath = files[0]?.path || 'repository';
+    const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+    
+    setProjectName(projectName);
+    setViewMode('loading');
+    
+    try {
+      const result = await runPipelineFromFiles(files, (progress) => {
+        setProgress(progress);
+      });
+      
+      setGraph(result.graph);
+      setFileContents(result.fileContents);
+      setViewMode('exploring');
+    } catch (error) {
+      console.error('Pipeline error:', error);
+      setProgress({
+        phase: 'error',
+        percent: 0,
+        message: 'Error processing repository',
+        detail: error instanceof Error ? error.message : 'Unknown error',
+      });
+      setTimeout(() => {
+        setViewMode('onboarding');
+        setProgress(null);
+      }, 3000);
+    }
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles]);
+
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
 
   // Render based on view mode
   if (viewMode === 'onboarding') {
-    return <DropZone onFileSelect={handleFileSelect} />;
+    return <DropZone onFileSelect={handleFileSelect} onGitClone={handleGitClone} />;
   }
 
   if (viewMode === 'loading' && progress) {

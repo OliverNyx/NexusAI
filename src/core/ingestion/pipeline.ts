@@ -1,5 +1,5 @@
 import { createKnowledgeGraph } from '../graph/graph';
-import { extractZip } from '../../services/zip';
+import { extractZip, FileEntry } from '../../services/zip';
 import { processStructure } from './structure-processor';
 import { processParsing } from './parsing-processor';
 import { processImports, createImportMap } from './import-processor';
@@ -8,21 +8,10 @@ import { createSymbolTable } from './symbol-table';
 import { createASTCache } from './ast-cache';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline';
 
+/**
+ * Run the ingestion pipeline from a ZIP file
+ */
 export const runIngestionPipeline = async ( file: File, onProgress: (progress: PipelineProgress) => void): Promise<PipelineResult> => {
-  
-  const graph = createKnowledgeGraph();
-  const fileContents = new Map<string, string>();
-  const symbolTable = createSymbolTable();
-  const astCache = createASTCache(50); // Keep last 50 files hot
-  const importMap = createImportMap();
-
-  // Cleanup function for error handling
-  const cleanup = () => {
-    astCache.clear();
-    symbolTable.clear();
-  };
-  
-  try {
   // Phase 1: Extracting (0-15%)
   onProgress({
     phase: 'extracting',
@@ -42,6 +31,30 @@ export const runIngestionPipeline = async ( file: File, onProgress: (progress: P
   const files = await extractZip(file);
   clearInterval(fakeExtractionProgress);
   
+  // Continue with common pipeline
+  return runPipelineFromFiles(files, onProgress);
+};
+
+/**
+ * Run the ingestion pipeline from pre-extracted files (e.g., from git clone)
+ */
+export const runPipelineFromFiles = async (
+  files: FileEntry[],
+  onProgress: (progress: PipelineProgress) => void
+): Promise<PipelineResult> => {
+  const graph = createKnowledgeGraph();
+  const fileContents = new Map<string, string>();
+  const symbolTable = createSymbolTable();
+  const astCache = createASTCache(50); // Keep last 50 files hot
+  const importMap = createImportMap();
+
+  // Cleanup function for error handling
+  const cleanup = () => {
+    astCache.clear();
+    symbolTable.clear();
+  };
+  
+  try {
   // Store file contents for code panel
   files.forEach(f => fileContents.set(f.path, f.content));
   
@@ -89,10 +102,6 @@ export const runIngestionPipeline = async ( file: File, onProgress: (progress: P
     });
   });
 
-  // Debug: Check if symbol table was populated (dev only)
-  if (import.meta.env.DEV) {
-    console.log('Symbol Table Stats:', symbolTable.getStats());
-  }
 
   // Phase 4: Imports (70-82%)
   onProgress({
@@ -112,10 +121,6 @@ export const runIngestionPipeline = async ( file: File, onProgress: (progress: P
     });
   });
 
-  // Debug: Check import map (dev only)
-  if (import.meta.env.DEV) {
-    console.log('Import Map Size:', importMap.size);
-  }
 
   // Phase 5: Calls (82-98%)
   onProgress({
@@ -135,10 +140,6 @@ export const runIngestionPipeline = async ( file: File, onProgress: (progress: P
     });
   });
 
-  // Debug: Check relationship count (dev only)
-  if (import.meta.env.DEV) {
-    console.log('Total Relationships:', graph.relationshipCount);
-  }
   
   // Phase 6: Complete (100%)
   onProgress({

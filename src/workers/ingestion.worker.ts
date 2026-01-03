@@ -1,6 +1,7 @@
 import * as Comlink from 'comlink';
-import { runIngestionPipeline } from '../core/ingestion/pipeline';
+import { runIngestionPipeline, runPipelineFromFiles } from '../core/ingestion/pipeline';
 import { PipelineProgress, SerializablePipelineResult, serializePipelineResult } from '../types/pipeline';
+import { FileEntry } from '../services/zip';
 
 // Lazy import for Kuzu to avoid breaking worker if SharedArrayBuffer unavailable
 let kuzuAdapter: typeof import('../core/kuzu/kuzu-adapter') | null = null;
@@ -47,11 +48,12 @@ const workerApi = {
       const kuzu = await getKuzuAdapter();
       await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
       
-      const stats = await kuzu.getKuzuStats();
-      console.log('KuzuDB loaded:', stats);
+      if (import.meta.env.DEV) {
+        const stats = await kuzu.getKuzuStats();
+        console.log('KuzuDB loaded:', stats);
+      }
     } catch {
       // KuzuDB is optional - silently continue without it
-      // The graph visualization still works without the database
     }
     
     // Convert to serializable format for transfer back to main thread
@@ -93,6 +95,55 @@ const workerApi = {
     } catch {
       return { nodes: 0, edges: 0 };
     }
+  },
+
+  /**
+   * Run the ingestion pipeline from pre-extracted files (e.g., from git clone)
+   * @param files - Array of file entries with path and content
+   * @param onProgress - Proxied callback for progress updates
+   * @returns Serializable result
+   */
+  async runPipelineFromFiles(
+    files: FileEntry[],
+    onProgress: (progress: PipelineProgress) => void
+  ): Promise<SerializablePipelineResult> {
+    // Skip extraction phase, start from 15%
+    onProgress({
+      phase: 'extracting',
+      percent: 15,
+      message: 'Files ready',
+      stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: 0 },
+    });
+
+    // Run the pipeline
+    const result = await runPipelineFromFiles(files, onProgress);
+    
+    // Load graph into KuzuDB for querying (optional - gracefully degrades)
+    try {
+      onProgress({
+        phase: 'complete',
+        percent: 98,
+        message: 'Loading into KuzuDB...',
+        stats: {
+          filesProcessed: result.graph.nodeCount,
+          totalFiles: result.graph.nodeCount,
+          nodesCreated: result.graph.nodeCount,
+        },
+      });
+      
+      const kuzu = await getKuzuAdapter();
+      await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
+      
+      if (import.meta.env.DEV) {
+        const stats = await kuzu.getKuzuStats();
+        console.log('KuzuDB loaded:', stats);
+      }
+    } catch {
+      // KuzuDB is optional - silently continue without it
+    }
+    
+    // Convert to serializable format for transfer back to main thread
+    return serializePipelineResult(result);
   },
 };
 

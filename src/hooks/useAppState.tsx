@@ -5,6 +5,7 @@ import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../
 import { createKnowledgeGraph } from '../core/graph/graph';
 import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
+import type { FileEntry } from '../services/zip';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -63,6 +64,7 @@ interface AppState {
   
   // Worker API (shared across app)
   runPipeline: (file: File, onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
+  runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
 }
@@ -147,6 +149,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return deserializePipelineResult(serializedResult, createKnowledgeGraph);
   }, []);
 
+  const runPipelineFromFiles = useCallback(async (
+    files: FileEntry[],
+    onProgress: (progress: PipelineProgress) => void
+  ): Promise<PipelineResult> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    
+    const proxiedOnProgress = Comlink.proxy(onProgress);
+    const serializedResult = await api.runPipelineFromFiles(files, proxiedOnProgress);
+    return deserializePipelineResult(serializedResult, createKnowledgeGraph);
+  }, []);
+
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
@@ -202,6 +216,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     projectName,
     setProjectName,
     runPipeline,
+    runPipelineFromFiles,
     runQuery,
     isDatabaseReady,
   };
