@@ -4,9 +4,13 @@
 
 Transform codebases into interactive knowledge graphs using AST parsing, Web Workers, and an embedded KuzuDB WASM database. All processing happens locally - your code never leaves your machine. Next step -> settng up AI Layer : An embedings pipeline using a very small embedings model that can run in browser and a Graph RAG tool using LLMs to generate and execute cyfer queries. Aiming to give rich and complete retrieved context enabling Agent to detect unused code, perform security audits, do a BLAST RADIUS analyses of code changes and for overall codebase understanding and explaination.
 
-<!-- TODO: Add new demo video -->
 
-https://github.com/user-attachments/assets/6f13bd45-d6e9-4f4e-a360-ceb66f41c741
+
+
+https://github.com/user-attachments/assets/f375b00a-78cd-4f93-a96c-9ba924455f49
+
+
+
 
 ---
 
