@@ -3,6 +3,7 @@ import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause } from 'lucid
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
+import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 
 export interface GraphCanvasHandle {
@@ -10,7 +11,7 @@ export interface GraphCanvasHandle {
 }
 
 export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
-  const { graph, setSelectedNode, selectedNode: appSelectedNode, visibleLabels, openCodePanel, depthFilter } = useAppState();
+  const { graph, setSelectedNode, selectedNode: appSelectedNode, visibleLabels, openCodePanel, depthFilter, highlightedNodeIds } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
   
   const handleNodeClick = useCallback((nodeId: string) => {
@@ -54,6 +55,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onNodeClick: handleNodeClick,
     onNodeHover: handleNodeHover,
     onStageClick: handleStageClick,
+    highlightedNodeIds,
   });
 
   // Expose focusNode to parent via ref
@@ -239,6 +241,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <span className="text-xs text-emerald-400 font-medium">Layout optimizing...</span>
         </div>
       )}
+
+      {/* Query FAB */}
+      <QueryFAB />
     </div>
   );
 });

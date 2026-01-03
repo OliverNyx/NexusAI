@@ -1,10 +1,19 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
+import * as Comlink from 'comlink';
 import { KnowledgeGraph, GraphNode, NodeLabel } from '../core/graph/types';
-import { PipelineProgress } from '../types/pipeline';
+import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../types/pipeline';
+import { createKnowledgeGraph } from '../core/graph/graph';
 import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
+import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
+
+export interface QueryResult {
+  rows: Record<string, any>[];
+  nodeIds: string[];
+  executionTime: number;
+}
 
 interface AppState {
   // View state
@@ -26,16 +35,23 @@ interface AppState {
   setRightPanelOpen: (open: boolean) => void;
   rightPanelTab: RightPanelTab;
   setRightPanelTab: (tab: RightPanelTab) => void;
-  openCodePanel: () => void;  // Opens panel and switches to code tab
-  openChatPanel: () => void;  // Opens panel and switches to chat tab
+  openCodePanel: () => void;
+  openChatPanel: () => void;
   
   // Filters
   visibleLabels: NodeLabel[];
   toggleLabelVisibility: (label: NodeLabel) => void;
   
   // Depth filter (N hops from selection)
-  depthFilter: number | null;  // null = show all, 1 = neighbors only, 2 = 2 hops, etc.
+  depthFilter: number | null;
   setDepthFilter: (depth: number | null) => void;
+  
+  // Query state
+  highlightedNodeIds: Set<string>;
+  setHighlightedNodeIds: (ids: Set<string>) => void;
+  queryResult: QueryResult | null;
+  setQueryResult: (result: QueryResult | null) => void;
+  clearQueryHighlights: () => void;
   
   // Progress
   progress: PipelineProgress | null;
@@ -44,6 +60,11 @@ interface AppState {
   // Project info
   projectName: string;
   setProjectName: (name: string) => void;
+  
+  // Worker API (shared across app)
+  runPipeline: (file: File, onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
+  runQuery: (cypher: string) => Promise<any[]>;
+  isDatabaseReady: () => Promise<boolean>;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -79,11 +100,68 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Depth filter
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   
+  // Query state
+  const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
+  
+  const clearQueryHighlights = useCallback(() => {
+    setHighlightedNodeIds(new Set());
+    setQueryResult(null);
+  }, []);
+  
   // Progress
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   
   // Project info
   const [projectName, setProjectName] = useState<string>('');
+
+  // Worker (single instance shared across app)
+  const workerRef = useRef<Worker | null>(null);
+  const apiRef = useRef<Comlink.Remote<IngestionWorkerApi> | null>(null);
+
+  useEffect(() => {
+    const worker = new Worker(
+      new URL('../workers/ingestion.worker.ts', import.meta.url),
+      { type: 'module' }
+    );
+    const api = Comlink.wrap<IngestionWorkerApi>(worker);
+    workerRef.current = worker;
+    apiRef.current = api;
+
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+      apiRef.current = null;
+    };
+  }, []);
+
+  const runPipeline = useCallback(async (
+    file: File,
+    onProgress: (progress: PipelineProgress) => void
+  ): Promise<PipelineResult> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    
+    const proxiedOnProgress = Comlink.proxy(onProgress);
+    const serializedResult = await api.runPipeline(file, proxiedOnProgress);
+    return deserializePipelineResult(serializedResult, createKnowledgeGraph);
+  }, []);
+
+  const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    return api.runQuery(cypher);
+  }, []);
+
+  const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    const api = apiRef.current;
+    if (!api) return false;
+    try {
+      return await api.isReady();
+    } catch {
+      return false;
+    }
+  }, []);
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels(prev => {
@@ -114,10 +192,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     toggleLabelVisibility,
     depthFilter,
     setDepthFilter,
+    highlightedNodeIds,
+    setHighlightedNodeIds,
+    queryResult,
+    setQueryResult,
+    clearQueryHighlights,
     progress,
     setProgress,
     projectName,
     setProjectName,
+    runPipeline,
+    runQuery,
+    isDatabaseReady,
   };
 
   return (

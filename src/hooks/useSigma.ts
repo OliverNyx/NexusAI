@@ -52,6 +52,7 @@ interface UseSigmaOptions {
   onNodeClick?: (nodeId: string) => void;
   onNodeHover?: (nodeId: string | null) => void;
   onStageClick?: () => void;
+  highlightedNodeIds?: Set<string>;
 }
 
 interface UseSigmaReturn {
@@ -67,6 +68,7 @@ interface UseSigmaReturn {
   stopLayout: () => void;
   selectedNode: string | null;
   setSelectedNode: (nodeId: string | null) => void;
+  refreshHighlights: () => void;
 }
 
 // Noverlap for final cleanup - minimal since we start with good positions
@@ -123,9 +125,15 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const graphRef = useRef<Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null>(null);
   const layoutRef = useRef<FA2Layout | null>(null);
   const selectedNodeRef = useRef<string | null>(null);
+  const highlightedRef = useRef<Set<string>>(new Set());
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
+
+  useEffect(() => {
+    highlightedRef.current = options.highlightedNodeIds || new Set();
+    sigmaRef.current?.refresh();
+  }, [options.highlightedNodeIds]);
 
   const setSelectedNode = useCallback((nodeId: string | null) => {
     selectedNodeRef.current = nodeId;
@@ -233,6 +241,24 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
         
         const currentSelected = selectedNodeRef.current;
+        const highlighted = highlightedRef.current;
+        const hasHighlights = highlighted.size > 0;
+        const isQueryHighlighted = highlighted.has(node);
+        
+        if (hasHighlights && !currentSelected) {
+          if (isQueryHighlighted) {
+            res.color = '#06b6d4';
+            res.size = (data.size || 8) * 1.6;
+            res.zIndex = 2;
+            res.highlighted = true;
+          } else {
+            res.color = dimColor(data.color, 0.2);
+            res.size = (data.size || 8) * 0.5;
+            res.zIndex = 0;
+          }
+          return res;
+        }
+        
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
@@ -240,20 +266,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const isNeighbor = graph.hasEdge(node, currentSelected) || graph.hasEdge(currentSelected, node);
             
             if (isSelected) {
-              // Selected node: full color, bigger, glowing effect via size
               res.color = data.color;
               res.size = (data.size || 8) * 1.8;
               res.zIndex = 2;
               res.highlighted = true;
             } else if (isNeighbor) {
-              // Connected nodes: keep their color, slightly bigger
               res.color = data.color;
               res.size = (data.size || 8) * 1.3;
               res.zIndex = 1;
             } else {
-              // Non-connected: DIM but keep color hint (not fully gray)
-              // Mix original color with dark background for "faded" look
-              res.color = dimColor(data.color, 0.25); // 25% of original color
+              res.color = dimColor(data.color, 0.25);
               res.size = (data.size || 8) * 0.6;
               res.zIndex = 0;
             }
@@ -267,6 +289,33 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const res = { ...data };
         
         const currentSelected = selectedNodeRef.current;
+        const highlighted = highlightedRef.current;
+        const hasHighlights = highlighted.size > 0;
+        
+        if (hasHighlights && !currentSelected) {
+          const graph = graphRef.current;
+          if (graph) {
+            const [source, target] = graph.extremities(edge);
+            const bothHighlighted = highlighted.has(source) && highlighted.has(target);
+            const oneHighlighted = highlighted.has(source) || highlighted.has(target);
+            
+            if (bothHighlighted) {
+              res.color = '#06b6d4';
+              res.size = Math.max(2, (data.size || 1) * 3);
+              res.zIndex = 2;
+            } else if (oneHighlighted) {
+              res.color = dimColor('#06b6d4', 0.4);
+              res.size = 1;
+              res.zIndex = 1;
+            } else {
+              res.color = dimColor(data.color, 0.08);
+              res.size = 0.2;
+              res.zIndex = 0;
+            }
+          }
+          return res;
+        }
+        
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
@@ -274,12 +323,10 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const isConnected = source === currentSelected || target === currentSelected;
             
             if (isConnected) {
-              // Connected edges: BRIGHTEN original color, make THICK for visibility
               res.color = brightenColor(data.color, 1.5);
-              res.size = Math.max(3, (data.size || 1) * 4); // Minimum 3px, visible at any zoom
+              res.size = Math.max(3, (data.size || 1) * 4);
               res.zIndex = 2;
             } else {
-              // Non-connected: very faint
               res.color = dimColor(data.color, 0.1);
               res.size = 0.3;
               res.zIndex = 0;
@@ -453,6 +500,10 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     }
   }, []);
 
+  const refreshHighlights = useCallback(() => {
+    sigmaRef.current?.refresh();
+  }, []);
+
   return {
     containerRef,
     sigmaRef,
@@ -466,5 +517,6 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     stopLayout,
     selectedNode,
     setSelectedNode,
+    refreshHighlights,
   };
 };

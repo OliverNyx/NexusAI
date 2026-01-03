@@ -1,6 +1,5 @@
 import { useCallback, useRef } from 'react';
 import { AppStateProvider, useAppState } from './hooks/useAppState';
-import { useIngestionWorker } from './hooks/useIngestionWorker';
 import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
@@ -19,32 +18,23 @@ const AppContent = () => {
     setProjectName,
     progress,
     isRightPanelOpen,
+    runPipeline,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
-  
-  // Use Web Worker for ingestion (prevents UI freezing)
-  const { runPipelineInWorker } = useIngestionWorker();
 
   const handleFileSelect = useCallback(async (file: File) => {
-    // Extract project name from filename
     const projectName = file.name.replace('.zip', '');
     setProjectName(projectName);
-    
-    // Switch to loading view
     setViewMode('loading');
     
     try {
-      // Run pipeline in Web Worker (non-blocking!)
-      const result = await runPipelineInWorker(file, (progress) => {
+      const result = await runPipeline(file, (progress) => {
         setProgress(progress);
       });
       
-      // Store results
       setGraph(result.graph);
       setFileContents(result.fileContents);
-      
-      // Switch to exploring view
       setViewMode('exploring');
     } catch (error) {
       console.error('Pipeline error:', error);
@@ -54,13 +44,12 @@ const AppContent = () => {
         message: 'Error processing file',
         detail: error instanceof Error ? error.message : 'Unknown error',
       });
-      // Go back to onboarding after a delay
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineInWorker]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
