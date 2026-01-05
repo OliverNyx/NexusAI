@@ -59,47 +59,32 @@ const queryEmbeddableNodes = async (
 };
 
 /**
- * Update a single node's embedding in KuzuDB
+ * Batch INSERT embeddings into separate CodeEmbedding table
+ * Using a separate lightweight table avoids copy-on-write overhead
+ * that occurs when UPDATEing nodes with large content fields
  */
-const updateNodeEmbedding = async (
-  executeQuery: (cypher: string) => Promise<any[]>,
-  nodeId: string,
-  embedding: number[]
-): Promise<void> => {
-  // KuzuDB requires the array to be cast to the correct type
-  const embeddingStr = `[${embedding.join(',')}]`;
-  
-  const cypher = `
-    MATCH (n:CodeNode {id: '${nodeId}'})
-    SET n.embedding = CAST(${embeddingStr} AS FLOAT[384])
-  `;
-
-  await executeQuery(cypher);
-};
-
-/**
- * Batch update multiple node embeddings
- * More efficient than individual updates
- */
-const batchUpdateEmbeddings = async (
-  executeQuery: (cypher: string) => Promise<any[]>,
+const batchInsertEmbeddings = async (
+  executeWithReusedStatement: (
+    cypher: string,
+    paramsList: Array<Record<string, any>>
+  ) => Promise<void>,
   updates: Array<{ id: string; embedding: number[] }>
 ): Promise<void> => {
-  // Process updates one by one for now
-  // KuzuDB doesn't have great batch update syntax
-  for (const update of updates) {
-    await updateNodeEmbedding(executeQuery, update.id, update.embedding);
-  }
+  // INSERT into separate embedding table - much more memory efficient!
+  const cypher = `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`;
+  const paramsList = updates.map(u => ({ nodeId: u.id, embedding: u.embedding }));
+  await executeWithReusedStatement(cypher, paramsList);
 };
 
 /**
  * Create the vector index for semantic search
+ * Now indexes the separate CodeEmbedding table
  */
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>
 ): Promise<void> => {
   const cypher = `
-    CALL CREATE_VECTOR_INDEX('CodeNode', 'code_embedding_idx', 'embedding', metric := 'cosine')
+    CALL CREATE_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 'embedding', metric := 'cosine')
   `;
 
   try {
@@ -116,11 +101,13 @@ const createVectorIndex = async (
  * Run the embedding pipeline
  * 
  * @param executeQuery - Function to execute Cypher queries against KuzuDB
+ * @param executeWithReusedStatement - Function to execute with reused prepared statement
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
+  executeWithReusedStatement: (cypher: string, paramsList: Array<Record<string, any>>) => Promise<void>,
   onProgress: EmbeddingProgressCallback,
   config: Partial<EmbeddingConfig> = {}
 ): Promise<void> => {
@@ -203,7 +190,7 @@ export const runEmbeddingPipeline = async (
         embedding: embeddingToArray(embeddings[i]),
       }));
 
-      await batchUpdateEmbeddings(executeQuery, updates);
+      await batchInsertEmbeddings(executeWithReusedStatement, updates);
 
       processedNodes += batch.length;
 
@@ -264,6 +251,8 @@ export const runEmbeddingPipeline = async (
 /**
  * Perform semantic search using the vector index
  * 
+ * Uses separate CodeEmbedding table and JOINs with CodeNode for metadata
+ * 
  * @param executeQuery - Function to execute Cypher queries
  * @param query - Search query text
  * @param k - Number of results to return (default: 10)
@@ -285,15 +274,16 @@ export const semanticSearch = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
-  // Query the vector index
+  // Query the vector index on CodeEmbedding, then JOIN with CodeNode for metadata
   const cypher = `
-    CALL QUERY_VECTOR_INDEX('CodeNode', 'code_embedding_idx', 
+    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
       CAST(${queryVecStr} AS FLOAT[384]), ${k})
-    YIELD node, distance
+    YIELD node AS emb, distance
     WHERE distance < ${maxDistance}
-    RETURN node.id AS nodeId, node.name AS name, node.label AS label,
-           node.filePath AS filePath, distance,
-           node.startLine AS startLine, node.endLine AS endLine
+    MATCH (n:CodeNode {id: emb.nodeId})
+    RETURN n.id AS nodeId, n.name AS name, n.label AS label,
+           n.filePath AS filePath, distance,
+           n.startLine AS startLine, n.endLine AS endLine
     ORDER BY distance
   `;
 
@@ -313,6 +303,8 @@ export const semanticSearch = async (
 /**
  * Semantic search with graph expansion
  * Finds similar nodes AND their connections
+ * 
+ * Uses separate CodeEmbedding table and JOINs with CodeNode
  * 
  * @param executeQuery - Function to execute Cypher queries
  * @param query - Search query text
@@ -335,12 +327,13 @@ export const semanticSearchWithContext = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
-  // Query with graph expansion
+  // Query embedding table, JOIN with CodeNode, then expand graph
   const cypher = `
-    CALL QUERY_VECTOR_INDEX('CodeNode', 'code_embedding_idx',
+    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx',
       CAST(${queryVecStr} AS FLOAT[384]), ${k})
-    YIELD node AS match, distance
+    YIELD node AS emb, distance
     WHERE distance < 0.5
+    MATCH (match:CodeNode {id: emb.nodeId})
     MATCH (match)-[r:CodeRelation*1..${hops}]-(connected:CodeNode)
     RETURN match.id AS matchId, match.name AS matchName, match.label AS matchLabel,
            match.filePath AS matchPath, distance,

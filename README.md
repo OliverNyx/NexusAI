@@ -575,6 +575,97 @@ Give the LLM the schema, a few examples, and let it compose queries. The schema 
 
 ---
 
+## 🔬 Deep Dive: Copy-on-Write Woes with In-Memory WASM Databases
+
+While building the embedding pipeline, we hit an interesting memory problem. Documenting it here because it's a non-obvious gotcha for anyone doing vector storage in browser-side databases.
+
+### The Setup
+
+We wanted to store 384-dimensional embeddings alongside our code nodes. Natural instinct: add an `embedding FLOAT[384]` column to the existing `CodeNode` table, bulk load the graph, then `UPDATE` each node with its embedding.
+
+```cypher
+-- Seemed reasonable, right?
+MATCH (n:CodeNode {id: $id}) SET n.embedding = $vec
+```
+
+### The Problem
+
+Worked fine for ~20 nodes. Exploded at ~1000 nodes with:
+
+```
+Buffer manager exception: Unable to allocate memory! The buffer pool is full!
+```
+
+We had a 512MB buffer pool. 1000 embeddings × 384 floats × 4 bytes = ~1.5MB. Where did 512MB go?
+
+**Answer: Copy-on-Write (COW).**
+
+Most databases don't modify records in place. When you `UPDATE`, they create a new version of the record (for transaction rollback, MVCC, etc.). The old version sticks around until commit.
+
+Our `CodeNode` table had a `content` field averaging ~2KB per node (code snippets). So each `UPDATE`:
+
+1. Reads the entire node (~2KB)
+2. Creates a new copy with the embedding (~3.5KB)
+3. Keeps the old version around
+
+For 1000 nodes: `1000 × 2KB (old) + 1000 × 3.5KB (new) = ~5.5MB`... but that's just user data. KuzuDB's internal structures (indexes, hash tables, page management) multiply this significantly. And since it's an in-memory database, the buffer pool IS the storage - there's no disk to spill to.
+
+```mermaid
+flowchart LR
+    subgraph Before["Before UPDATE"]
+        N1[CodeNode<br/>id + name + content<br/>~2KB]
+    end
+    
+    subgraph During["During UPDATE (COW)"]
+        N1_OLD[Old Version<br/>~2KB]
+        N1_NEW[New Version<br/>+ embedding<br/>~3.5KB]
+    end
+    
+    subgraph Problem["× 1000 nodes"]
+        BOOM[💥 Buffer Pool Exhausted]
+    end
+    
+    Before --> During --> Problem
+```
+
+### The Fix: Separate Table Architecture
+
+Don't `UPDATE` wide tables. `INSERT` into a narrow one.
+
+```mermaid
+flowchart TD
+    subgraph Old["❌ Original Design"]
+        CN1[CodeNode<br/>id, name, content, embedding<br/>~3.5KB per UPDATE copy]
+    end
+    
+    subgraph New["✅ New Design"]
+        CN2[CodeNode<br/>id, name, content]
+        CE[CodeEmbedding<br/>nodeId, embedding<br/>~1.5KB INSERT only]
+    end
+    
+    Old -->|"COW copies entire 2KB+ node"| FAIL[Memory Explosion]
+    New -->|"INSERT into lightweight table"| WIN[Works at scale]
+```
+
+Now we:
+1. Bulk load `CodeNode` (no embedding column)
+2. `CREATE` rows in `CodeEmbedding` table (just `nodeId` + `embedding`)
+3. Vector index lives on `CodeEmbedding`
+4. Semantic search JOINs back to `CodeNode` for metadata
+
+**Trade-off:** Every semantic search needs a JOIN. But it's a primary key lookup (O(1)), so we're talking ~1-5ms extra per query. Totally worth it to not explode at 1000 nodes.
+
+### Lessons Learned
+
+1. **In-memory WASM DBs have hard limits** - No disk spillover, buffer pool is everything
+2. **COW amplifies record size** - That innocent `UPDATE` copies your whole row
+3. **Normalize for bulk writes** - Especially for append-only data like embeddings
+4. **Profile the pathological case** - 20 nodes worked, 1000 didn't. Always test at scale
+
+This is one of those "obvious in hindsight" things. Most vector DB tutorials show single-table schemas because they're using databases with disk backing. In-browser WASM land plays by different rules.
+
+---
+
 ## Security & Privacy
 
 - All processing happens in your browser

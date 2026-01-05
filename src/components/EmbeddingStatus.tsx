@@ -1,5 +1,6 @@
-import { Brain, Loader2, Check, AlertCircle, Zap } from 'lucide-react';
+import { Brain, Loader2, Check, AlertCircle, Zap, FlaskConical } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
+import { useState } from 'react';
 
 /**
  * Embedding status indicator and trigger button
@@ -11,8 +12,11 @@ export const EmbeddingStatus = () => {
     embeddingProgress, 
     startEmbeddings, 
     graph,
-    viewMode 
+    viewMode,
+    testArrayParams,
   } = useAppState();
+  
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   // Only show when exploring a loaded graph
   if (viewMode !== 'exploring' || !graph) return null;
@@ -24,19 +28,45 @@ export const EmbeddingStatus = () => {
       console.error('Embedding failed:', error);
     }
   };
+  
+  const handleTestArrayParams = async () => {
+    setTestResult('Testing...');
+    const result = await testArrayParams();
+    if (result.success) {
+      setTestResult('✅ Array params WORK!');
+      console.log('✅ Array params test passed!');
+    } else {
+      setTestResult(`❌ ${result.error}`);
+      console.error('❌ Array params test failed:', result.error);
+    }
+  };
 
   // Idle state - show button to start
   if (embeddingStatus === 'idle') {
     return (
-      <button
-        onClick={handleStartEmbeddings}
-        className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary hover:bg-hover hover:text-text-primary hover:border-accent/50 transition-all group"
-        title="Generate embeddings for semantic search"
-      >
-        <Brain className="w-4 h-4 text-node-interface group-hover:text-accent transition-colors" />
-        <span className="hidden sm:inline">Enable Semantic Search</span>
-        <Zap className="w-3 h-3 text-text-muted" />
-      </button>
+      <div className="flex items-center gap-2">
+        {/* Test button (dev only) */}
+        {import.meta.env.DEV && (
+          <button
+            onClick={handleTestArrayParams}
+            className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border-subtle rounded-lg text-xs text-text-muted hover:bg-hover hover:text-text-secondary transition-all"
+            title="Test if KuzuDB supports array params"
+          >
+            <FlaskConical className="w-3 h-3" />
+            {testResult || 'Test'}
+          </button>
+        )}
+        
+        <button
+          onClick={handleStartEmbeddings}
+          className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary hover:bg-hover hover:text-text-primary hover:border-accent/50 transition-all group"
+          title="Generate embeddings for semantic search"
+        >
+          <Brain className="w-4 h-4 text-node-interface group-hover:text-accent transition-colors" />
+          <span className="hidden sm:inline">Enable Semantic Search</span>
+          <Zap className="w-3 h-3 text-text-muted" />
+        </button>
+      </div>
     );
   }
 

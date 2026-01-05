@@ -79,6 +79,9 @@ interface AppState {
   semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
   isEmbeddingReady: boolean;
+  
+  // Debug/test methods
+  testArrayParams: () => Promise<{ success: boolean; error?: string }>;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -251,6 +254,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return api.semanticSearchWithContext(query, k, hops);
   }, []);
 
+  const testArrayParams = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    const api = apiRef.current;
+    if (!api) return { success: false, error: 'Worker not initialized' };
+    return api.testArrayParams();
+  }, []);
+
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels(prev => {
       if (prev.includes(label)) {
@@ -300,6 +309,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     semanticSearch,
     semanticSearchWithContext,
     isEmbeddingReady: embeddingStatus === 'ready',
+    // Debug
+    testArrayParams,
   };
 
   return (

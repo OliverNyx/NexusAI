@@ -187,7 +187,7 @@ const workerApi = {
       onProgress(progress);
     };
 
-    await runEmbeddingPipeline(kuzu.executeQuery, progressCallback);
+    await runEmbeddingPipeline(kuzu.executeQuery, kuzu.executeWithReusedStatement, progressCallback);
   },
 
   /**
@@ -265,6 +265,18 @@ const workerApi = {
     await disposeEmbedder();
     isEmbeddingComplete = false;
     embeddingProgress = null;
+  },
+
+  /**
+   * Test if KuzuDB supports array parameters in prepared statements
+   * This is a diagnostic function
+   */
+  async testArrayParams(): Promise<{ success: boolean; error?: string }> {
+    const kuzu = await getKuzuAdapter();
+    if (!kuzu.isKuzuReady()) {
+      return { success: false, error: 'Database not ready' };
+    }
+    return kuzu.testArrayParams();
   },
 };
 

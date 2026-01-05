@@ -8,7 +8,7 @@
  */
 
 import { KnowledgeGraph } from '../graph/types';
-import { NODE_SCHEMA, EDGE_SCHEMA, NODE_TABLE_NAME, EDGE_TABLE_NAME } from './schema';
+import { NODE_SCHEMA, EDGE_SCHEMA, EMBEDDING_SCHEMA, NODE_TABLE_NAME, EDGE_TABLE_NAME } from './schema';
 import { generateNodeCSV, generateEdgeCSV } from './csv-generator';
 
 // Holds the reference to the dynamically loaded module
@@ -34,8 +34,11 @@ export const initKuzu = async () => {
     // 3. Initialize WASM
     await kuzu.init();
     
-    // 4. Create Database
-    db = new kuzu.Database(':memory:');
+    // 4. Create Database with 512MB buffer pool
+    // Larger buffer needed for embedding storage (6K+ nodes × 384 floats)
+    // Constructor: Database(path, bufferPoolSize, maxNumThreads, enableCompression, readOnly)
+    const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
+    db = new kuzu.Database(':memory:', BUFFER_POOL_SIZE);
     conn = new kuzu.Connection(db);
     
     if (import.meta.env.DEV) console.log('✅ KuzuDB WASM Initialized');
@@ -44,6 +47,7 @@ export const initKuzu = async () => {
     try {
       await conn.query(NODE_SCHEMA);
       await conn.query(EDGE_SCHEMA);
+      await conn.query(EMBEDDING_SCHEMA);
       if (import.meta.env.DEV) console.log('✅ KuzuDB Schema Created');
     } catch {
       // Schema might already exist, skip
@@ -189,4 +193,161 @@ export const closeKuzu = async (): Promise<void> => {
     db = null;
   }
   kuzu = null;
+};
+
+/**
+ * Execute a prepared statement with parameters
+ * @param cypher - Cypher query with $param placeholders
+ * @param params - Object mapping param names to values
+ * @returns Query results
+ */
+export const executePrepared = async (
+  cypher: string,
+  params: Record<string, any>
+): Promise<any[]> => {
+  if (!conn) {
+    await initKuzu();
+  }
+  
+  try {
+    // Note: conn.prepare is async in kuzu-wasm
+    const stmt = await conn.prepare(cypher);
+    if (!stmt.isSuccess()) {
+      const errMsg = await stmt.getErrorMessage();
+      throw new Error(`Prepare failed: ${errMsg}`);
+    }
+    
+    const result = await conn.execute(stmt, params);
+    
+    // Collect all rows
+    const rows: any[] = [];
+    while (await result.hasNext()) {
+      const row = await result.getNext();
+      rows.push(row);
+    }
+    
+    await stmt.close();
+    return rows;
+  } catch (error) {
+    if (import.meta.env.DEV) console.error('Prepared query failed:', error);
+    throw error;
+  }
+};
+
+/**
+ * Execute a prepared statement with multiple parameter sets in small sub-batches
+ * Recreates statement every SUB_BATCH_SIZE executions to allow memory cleanup
+ * @param cypher - Cypher query with $param placeholders
+ * @param paramsList - Array of parameter objects to execute
+ */
+export const executeWithReusedStatement = async (
+  cypher: string,
+  paramsList: Array<Record<string, any>>
+): Promise<void> => {
+  if (!conn) {
+    await initKuzu();
+  }
+  
+  if (paramsList.length === 0) return;
+  
+  // Small sub-batch to allow memory cleanup between statement recreations
+  const SUB_BATCH_SIZE = 4;
+  
+  for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
+    const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
+    
+    // Create fresh statement for each sub-batch
+    const stmt = await conn.prepare(cypher);
+    if (!stmt.isSuccess()) {
+      const errMsg = await stmt.getErrorMessage();
+      throw new Error(`Prepare failed: ${errMsg}`);
+    }
+    
+    try {
+      for (const params of subBatch) {
+        await conn.execute(stmt, params);
+      }
+    } finally {
+      await stmt.close();
+    }
+    
+    // Small delay to allow garbage collection between sub-batches
+    if (i + SUB_BATCH_SIZE < paramsList.length) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+};
+
+/**
+ * Test if array parameters work with prepared statements
+ * This is a diagnostic function to check KuzuDB WASM capabilities
+ */
+export const testArrayParams = async (): Promise<{ success: boolean; error?: string }> => {
+  if (!conn) {
+    await initKuzu();
+  }
+  
+  try {
+    // Test with a simple array parameter
+    const testEmbedding = new Array(384).fill(0).map((_, i) => i / 384);
+    
+    // First, get any node ID to test with
+    const nodeResult = await conn.query(`MATCH (n:${NODE_TABLE_NAME}) RETURN n.id AS id LIMIT 1`);
+    const nodeRow = await nodeResult.getNext();
+    
+    if (!nodeRow) {
+      return { success: false, error: 'No nodes found to test with' };
+    }
+    
+    const testNodeId = nodeRow.id ?? nodeRow[0];
+    
+    if (import.meta.env.DEV) {
+      console.log('🧪 Testing array params with node:', testNodeId);
+      console.log('🧪 Embedding sample (first 5):', testEmbedding.slice(0, 5));
+    }
+    
+    // Try using prepared statement with array param
+    // Note: conn.prepare is async in kuzu-wasm
+    const cypher = `MATCH (n:${NODE_TABLE_NAME} {id: $nodeId}) SET n.embedding = $embedding`;
+    const stmt = await conn.prepare(cypher);
+    
+    // In async API, isSuccess() returns boolean directly
+    if (!stmt.isSuccess()) {
+      const errMsg = await stmt.getErrorMessage();
+      return { success: false, error: `Prepare failed: ${errMsg}` };
+    }
+    
+    // Execute with array parameter
+    await conn.execute(stmt, {
+      nodeId: testNodeId,
+      embedding: testEmbedding,
+    });
+    
+    await stmt.close();
+    
+    // Verify it was stored
+    const verifyResult = await conn.query(
+      `MATCH (n:${NODE_TABLE_NAME} {id: '${testNodeId}'}) RETURN n.embedding AS emb`
+    );
+    const verifyRow = await verifyResult.getNext();
+    const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
+    
+    if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
+      if (import.meta.env.DEV) {
+        console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
+      }
+      return { success: true };
+    } else {
+      return { 
+        success: false, 
+        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}` 
+      };
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (import.meta.env.DEV) {
+      console.error('❌ Array params test failed:', errorMsg);
+    }
+    return { success: false, error: errorMsg };
+  }
 };
