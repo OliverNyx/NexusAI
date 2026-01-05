@@ -69,26 +69,56 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
-    T extends 'azure-openai' ? Omit<AzureOpenAIConfig, 'provider'> :
-    T extends 'gemini' ? Omit<GeminiConfig, 'provider'> :
-    T extends 'ollama' ? Omit<OllamaConfig, 'provider'> :
+    T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
+    T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
+    T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
     never
   >
 ): LLMSettings => {
   const current = loadSettings();
-  
-  const providerKey = provider === 'azure-openai' ? 'azureOpenAI' : provider;
-  
-  const updated: LLMSettings = {
-    ...current,
-    [providerKey]: {
-      ...current[providerKey as keyof LLMSettings],
-      ...updates,
-    },
-  };
-  
-  saveSettings(updated);
-  return updated;
+
+  // Avoid spreading unions like LLMSettings[keyof LLMSettings] (can be string/undefined)
+  switch (provider) {
+    case 'azure-openai': {
+      const updated: LLMSettings = {
+        ...current,
+        azureOpenAI: {
+          ...(current.azureOpenAI ?? {}),
+          ...(updates as Partial<Omit<AzureOpenAIConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'gemini': {
+      const updated: LLMSettings = {
+        ...current,
+        gemini: {
+          ...(current.gemini ?? {}),
+          ...(updates as Partial<Omit<GeminiConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'ollama': {
+      const updated: LLMSettings = {
+        ...current,
+        ollama: {
+          ...(current.ollama ?? {}),
+          ...(updates as Partial<Omit<OllamaConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    default: {
+      // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
+      const updated: LLMSettings = { ...current };
+      saveSettings(updated);
+      return updated;
+    }
+  }
 };
 
 /**

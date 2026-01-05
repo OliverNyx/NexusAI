@@ -59,9 +59,13 @@ export type ProviderConfig = AzureOpenAIConfig | GeminiConfig | OllamaConfig;
  */
 export interface LLMSettings {
   activeProvider: LLMProvider;
-  azureOpenAI?: Omit<AzureOpenAIConfig, 'provider'>;
-  gemini?: Omit<GeminiConfig, 'provider'>;
-  ollama?: Omit<OllamaConfig, 'provider'>;
+  /**
+   * Provider settings are persisted to localStorage and may be partially configured.
+   * We validate required fields at runtime before creating a ProviderConfig.
+   */
+  azureOpenAI?: Partial<Omit<AzureOpenAIConfig, 'provider'>>;
+  gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
+  ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
 }
 
 /**
@@ -158,6 +162,7 @@ IMPORTANT QUERY PATTERNS:
 3. SEMANTIC SEARCH (embeddings in separate table - MUST JOIN):
    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 10)
    YIELD node AS emb, distance
+   WITH emb, distance  -- KuzuDB requires WITH after YIELD before WHERE
    WHERE distance < 0.4
    MATCH (n:CodeNode {id: emb.nodeId})  -- JOIN required!
    RETURN n.name, n.label, n.filePath, distance
@@ -166,6 +171,7 @@ IMPORTANT QUERY PATTERNS:
 4. Semantic search + graph expansion:
    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 5)
    YIELD node AS emb, distance
+   WITH emb, distance
    WHERE distance < 0.5
    MATCH (match:CodeNode {id: emb.nodeId})
    MATCH (match)-[r:CodeRelation*1..2]-(connected:CodeNode)
@@ -178,6 +184,21 @@ IMPORTANT QUERY PATTERNS:
 6. Import chain analysis:
    MATCH (f:CodeNode {name: $fileName})-[r:CodeRelation {type: 'IMPORTS'}]->(imported:CodeNode)
    RETURN imported.name AS imports
+
+7. Unified vector + graph traversal in ONE query (recommended pattern):
+   CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 10)
+   YIELD node AS emb, distance
+   WITH emb, distance
+   WHERE distance < 0.5
+   MATCH (match:CodeNode {id: emb.nodeId})
+   MATCH (match)-[r:CodeRelation*1..2]-(ctx:CodeNode)
+   RETURN match.name AS found, match.label AS label, match.filePath AS path,
+          distance, collect(DISTINCT ctx.name) AS context
+   ORDER BY distance
+
+TOOLING NOTE (for execute_vector_cypher):
+- When using the execute_vector_cypher tool, write Cypher containing {{QUERY_VECTOR}} where the vector should go.
+- The tool will replace {{QUERY_VECTOR}} with a CAST([..] AS FLOAT[384]) literal.
 
 NOTES:
 - Always use WHERE clauses to filter by label when possible for performance

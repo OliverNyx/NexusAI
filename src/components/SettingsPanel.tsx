@@ -105,8 +105,9 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
   // Fetch models when API key is entered (debounced)
   useEffect(() => {
     if (settings.activeProvider === 'gemini' && settings.gemini?.apiKey) {
+      const apiKey = settings.gemini.apiKey ?? '';
       const timer = setTimeout(() => {
-        fetchModels(settings.gemini!.apiKey);
+        fetchModels(apiKey);
       }, 500);
       return () => clearTimeout(timer);
     }
@@ -260,7 +261,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     {settings.gemini?.apiKey && !isLoadingModels && (
                       <button
                         type="button"
-                        onClick={() => fetchModels(settings.gemini!.apiKey)}
+                        onClick={() => fetchModels(settings.gemini?.apiKey ?? '')}
                         className="p-1 text-text-muted hover:text-text-primary transition-colors"
                         title="Refresh models"
                       >

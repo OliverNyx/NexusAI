@@ -21,11 +21,12 @@ import type {
 /**
  * System prompt for the Graph RAG agent
  */
-const SYSTEM_PROMPT = `You are Nexus AI, an intelligent code analysis assistant. You help developers understand codebases by querying a knowledge graph that contains code structure, relationships, and semantic embeddings.
+const SYSTEM_PROMPT = `You are Nexus AI, an intelligent code analysis assistant. You help developers understand codebases by querying a knowledge graph (KuzuDB) that contains code structure, relationships, and semantic embeddings.
 
 CAPABILITIES:
 - Execute Cypher queries to explore code structure (functions, classes, files, imports, call graphs)
 - Perform semantic search to find code by meaning (when embeddings are available)
+- Combine semantic search + graph traversal in a SINGLE Cypher query via the vector index (when embeddings are available)
 - Trace dependencies and relationships between code elements
 - Explain code architecture and patterns
 
@@ -33,11 +34,36 @@ APPROACH:
 1. Start by understanding what the user wants to know
 2. Choose the right tool(s) for the task:
    - Use 'get_codebase_stats' first if you need an overview
-   - Use 'semantic_search' for concept-based queries ("find authentication logic")
-   - Use 'execute_cypher' for structural queries ("what functions does X call?")
+   - Use 'semantic_search' for simple concept-based lookup (find relevant nodes)
+   - Use 'semantic_search_with_context' for simple semantic + neighborhood expansion (prebuilt 1-3 hop expansion)
+   - Use 'execute_vector_cypher' when you need semantic search + CUSTOM traversal/filters/returns in ONE query
+     - Your Cypher MUST include the placeholder {{QUERY_VECTOR}} where a FLOAT[384] vector belongs
+     - The vector index is on CodeEmbedding (code_embedding_idx). You must JOIN back to CodeNode via emb.nodeId
+   - Use 'execute_cypher' for pure structural queries (no vector search)
    - Use 'get_code_content' to show actual source code
 3. Interpret results and explain them clearly
 4. Suggest follow-up explorations when relevant
+
+IMPORTANT NOTES ABOUT THE DATABASE:
+- Nodes are stored in CodeNode(id, label, name, filePath, startLine, endLine, content)
+- Edges are stored in CodeRelation(FROM CodeNode TO CodeNode, type) where type ∈ {CALLS, IMPORTS, CONTAINS, DEFINES}
+- Embeddings are stored separately in CodeEmbedding(nodeId, embedding) for memory efficiency
+- Vector index: code_embedding_idx on CodeEmbedding.embedding (cosine distance; smaller distance = more similar)
+
+UNIFIED VECTOR + GRAPH QUERY PATTERN (ONE QUERY):
+1) Vector search to get closest embeddings
+2) JOIN to CodeNode
+3) Traverse relationships / collect context
+
+Example skeleton (note: WITH after YIELD is required in KuzuDB before WHERE):
+CALL QUERY_VECTOR_INDEX('CodeEmbedding','code_embedding_idx', {{QUERY_VECTOR}}, 10)
+YIELD node AS emb, distance
+WITH emb, distance
+WHERE distance < 0.5
+MATCH (match:CodeNode {id: emb.nodeId})
+MATCH (match)-[r:CodeRelation*1..2]-(ctx:CodeNode)
+RETURN match.name, match.label, match.filePath, distance, collect(DISTINCT ctx.name) AS context
+ORDER BY distance
 
 STYLE:
 - Be concise but thorough
@@ -163,15 +189,16 @@ export async function* streamAgentResponse(
     
     for await (const event of stream) {
       const { event: eventType, data } = event;
+      const dataAny = data as any;
 
       // Handle tool calls start
       if (eventType === 'on_tool_start') {
         yield {
           type: 'tool_call',
           toolCall: {
-            id: data.tool_call_id || Date.now().toString(), // fallback if ID missing
-            name: event.name,
-            args: data.input,
+            id: dataAny?.tool_call_id || dataAny?.toolCallId || Date.now().toString(), // fallback if ID missing
+            name: (event as any).name,
+            args: dataAny?.input ?? {},
             status: 'running',
           },
         };
@@ -182,10 +209,10 @@ export async function* streamAgentResponse(
         yield {
           type: 'tool_result',
           toolCall: {
-            id: data.tool_call_id || '', // we might need to match by name if ID missing
-            name: event.name,
+            id: dataAny?.tool_call_id || dataAny?.toolCallId || '', // we might need to match by name if ID missing
+            name: (event as any).name,
             args: {},
-            result: typeof data.output === 'string' ? data.output : JSON.stringify(data.output),
+            result: typeof dataAny?.output === 'string' ? dataAny.output : JSON.stringify(dataAny?.output),
             status: 'completed',
           },
         };
@@ -193,7 +220,7 @@ export async function* streamAgentResponse(
 
       // Handle streamed LLM content
       if (eventType === 'on_chat_model_stream') {
-        const content = data.chunk?.content;
+        const content = dataAny?.chunk?.content;
         if (content && typeof content === 'string') {
           yield {
             type: 'content',

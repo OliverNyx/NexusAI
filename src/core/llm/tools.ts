@@ -8,6 +8,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { GRAPH_SCHEMA_DESCRIPTION } from './types';
+import { WebGPUNotAvailableError, embedText, embeddingToArray, initEmbedder, isEmbedderReady } from '../embeddings/embedder';
 
 /**
  * Tool factory - creates tools bound to the KuzuDB query functions
@@ -60,6 +61,92 @@ export const createGraphRAGTools = (
   );
 
   /**
+   * Tool: Execute Vector Cypher Query (Unified Vector + Graph in ONE query)
+   *
+   * Lets the LLM write a Cypher query that includes a vector index call,
+   * while this tool handles embedding the natural-language query and injecting
+   * the vector into the Cypher safely.
+   *
+   * IMPORTANT:
+   * - The provided Cypher MUST include the placeholder {{QUERY_VECTOR}}
+   * - The placeholder will be replaced with: CAST([..384 floats..] AS FLOAT[384])
+   * - KuzuDB requires WITH after YIELD before using WHERE
+   *
+   * Example:
+   * CALL QUERY_VECTOR_INDEX('CodeEmbedding','code_embedding_idx', {{QUERY_VECTOR}}, 10)
+   * YIELD node AS emb, distance
+   * WITH emb, distance
+   * WHERE distance < 0.5
+   * MATCH (match:CodeNode {id: emb.nodeId}) ...
+   */
+  const executeVectorCypherTool = tool(
+    async ({ query, cypher }: { query: string; cypher: string }) => {
+      if (!isEmbeddingReady()) {
+        return 'Vector Cypher is not available. Embeddings have not been generated yet.';
+      }
+
+      if (!cypher.includes('{{QUERY_VECTOR}}')) {
+        return "Invalid input: your Cypher must include the placeholder '{{QUERY_VECTOR}}' where a FLOAT[384] vector should go.";
+      }
+
+      try {
+        // Ensure embedder is loaded. If WebGPU isn't available, fall back to WASM.
+        if (!isEmbedderReady()) {
+          try {
+            await initEmbedder();
+          } catch (err) {
+            if (err instanceof WebGPUNotAvailableError) {
+              await initEmbedder(undefined, {}, 'wasm');
+            } else {
+              throw err;
+            }
+          }
+        }
+
+        // Embed the natural language query and inject into Cypher
+        const queryEmbedding = await embedText(query);
+        const queryVec = embeddingToArray(queryEmbedding);
+        const queryVecStr = `CAST([${queryVec.join(',')}] AS FLOAT[384])`;
+
+        const finalCypher = cypher.replace(/\{\{\s*QUERY_VECTOR\s*\}\}/g, queryVecStr);
+        const results = await executeQuery(finalCypher);
+
+        if (results.length === 0) {
+          return 'Query returned no results.';
+        }
+
+        const formatted = results.slice(0, 50).map((row, i) => {
+          if (Array.isArray(row)) {
+            return `[${i + 1}] ${row.join(', ')}`;
+          }
+          return `[${i + 1}] ${JSON.stringify(row)}`;
+        });
+
+        const resultText = formatted.join('\n');
+        const truncated = results.length > 50 ? `\n... (${results.length - 50} more results truncated)` : '';
+
+        return `Query returned ${results.length} results:\n${resultText}${truncated}`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `Vector Cypher error: ${message}\n\nTip: Ensure you're querying the vector index on CodeEmbedding and JOINing back to CodeNode via emb.nodeId.`;
+      }
+    },
+    {
+      name: 'execute_vector_cypher',
+      description:
+        "Execute a single Cypher query that combines vector similarity search and graph traversal. Provide a natural-language 'query' to embed, and a 'cypher' string containing the placeholder {{QUERY_VECTOR}}. Use this to do semantic search + traversal in ONE Cypher query. Remember: KuzuDB requires 'WITH emb, distance' after 'YIELD node AS emb, distance' before you can use WHERE.",
+      schema: z.object({
+        query: z.string().describe('Natural language query to embed (used to produce a FLOAT[384] vector)'),
+        cypher: z
+          .string()
+          .describe(
+            "Cypher query to execute. MUST contain {{QUERY_VECTOR}}. Pattern: CALL QUERY_VECTOR_INDEX('CodeEmbedding','code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance WITH emb, distance WHERE distance < 0.5 MATCH (n:CodeNode {id: emb.nodeId}) ..."
+          ),
+      }),
+    }
+  );
+
+  /**
    * Tool: Semantic Code Search
    * Find code by meaning using vector embeddings
    */
@@ -99,36 +186,70 @@ export const createGraphRAGTools = (
 
   /**
    * Tool: Semantic Search with Graph Context
-   * Find similar code AND expand to connected nodes
+   * Find similar code AND expand to connected nodes (flattened format with relationship types)
    */
   const semanticSearchWithContextTool = tool(
-    async ({ query, limit, hops }: { query: string; limit?: number; hops?: number }) => {
+    async ({ query, limit }: { query: string; limit?: number }) => {
       if (!isEmbeddingReady()) {
         return 'Semantic search is not available. Embeddings have not been generated yet. Please use execute_cypher tool for structured queries instead.';
       }
       
       try {
-        const results = await semanticSearchWithContext(query, limit ?? 5, hops ?? 2);
+        const results = await semanticSearchWithContext(query, limit ?? 5);
         
         if (results.length === 0) {
           return `No code found matching "${query}". Try a different search term.`;
         }
         
-        const formatted = results.map((r, i) => {
+        // Results are flattened: one row per (match → connected) pair
+        // Group by match for cleaner output
+        const grouped = new Map<string, {
+          matchName: string;
+          matchLabel: string;
+          matchPath: string;
+          distance: number;
+          connections: Array<{ name: string; label: string; relType: string }>;
+        }>();
+        
+        for (const r of results) {
+          const matchId = r.matchId ?? r[0];
           const matchName = r.matchName ?? r[1];
           const matchLabel = r.matchLabel ?? r[2];
           const matchPath = r.matchPath ?? r[3];
           const distance = r.distance ?? r[4];
-          const connections = r.connections ?? r[5] ?? [];
+          const connectedName = r.connectedName ?? r[6];
+          const connectedLabel = r.connectedLabel ?? r[7];
+          const relationType = r.relationType ?? r[8];
           
-          const connectedNames = Array.isArray(connections) 
-            ? connections.slice(0, 10).map((c: any) => c.name || c).join(', ')
-            : 'none';
+          if (!grouped.has(matchId)) {
+            grouped.set(matchId, {
+              matchName,
+              matchLabel,
+              matchPath,
+              distance,
+              connections: [],
+            });
+          }
           
-          return `[${i + 1}] ${matchLabel}: ${matchName}\n    File: ${matchPath}\n    Relevance: ${(1 - distance).toFixed(2)}\n    Connected to: ${connectedNames}`;
+          grouped.get(matchId)!.connections.push({
+            name: connectedName,
+            label: connectedLabel,
+            relType: relationType,
+          });
+        }
+        
+        // Format grouped results
+        const formatted = Array.from(grouped.values()).map((g, i) => {
+          const connectionsList = g.connections
+            .slice(0, 15)
+            .map(c => `${c.name} (${c.label}) via ${c.relType}`)
+            .join('\n      ');
+          const more = g.connections.length > 15 ? `\n      ... and ${g.connections.length - 15} more` : '';
+          
+          return `[${i + 1}] ${g.matchLabel}: ${g.matchName}\n    File: ${g.matchPath}\n    Relevance: ${(1 - g.distance).toFixed(2)}\n    Connections:\n      ${connectionsList}${more}`;
         });
         
-        return `Found ${results.length} code elements with context:\n\n${formatted.join('\n\n')}`;
+        return `Found ${grouped.size} code elements with ${results.length} total connections:\n\n${formatted.join('\n\n')}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return `Search with context error: ${message}`;
@@ -136,11 +257,10 @@ export const createGraphRAGTools = (
     },
     {
       name: 'semantic_search_with_context',
-      description: 'Search for code semantically AND expand to show connected code elements (callers, callees, imports). Use this to understand how code fits into the broader architecture.',
+      description: 'Search for code semantically AND show directly connected code elements with relationship types (CALLS, IMPORTS, DEFINES, CONTAINS). Shows what each match is connected to and how.',
       schema: z.object({
         query: z.string().describe('Natural language description of what you are looking for'),
-        limit: z.number().optional().describe('Number of initial matches to find (default: 5)'),
-        hops: z.number().optional().describe('Number of graph hops to expand (default: 2, max: 3)'),
+        limit: z.number().optional().describe('Number of semantic matches to find (default: 5)'),
       }),
     }
   );
@@ -258,6 +378,7 @@ export const createGraphRAGTools = (
 
   return [
     executeCypherTool,
+    executeVectorCypherTool,
     semanticSearchTool,
     semanticSearchWithContextTool,
     getSchemaTool,
