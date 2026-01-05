@@ -1,0 +1,189 @@
+/**
+ * Settings Service
+ * 
+ * Handles localStorage persistence for LLM provider settings.
+ * All API keys are stored locally - never sent to any server except the LLM provider.
+ */
+
+import { 
+  LLMSettings, 
+  DEFAULT_LLM_SETTINGS, 
+  LLMProvider,
+  AzureOpenAIConfig,
+  GeminiConfig,
+  OllamaConfig,
+  ProviderConfig,
+} from './types';
+
+const STORAGE_KEY = 'gitnexus-llm-settings';
+
+/**
+ * Load settings from localStorage
+ */
+export const loadSettings = (): LLMSettings => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      return DEFAULT_LLM_SETTINGS;
+    }
+    
+    const parsed = JSON.parse(stored) as Partial<LLMSettings>;
+    
+    // Merge with defaults to handle new fields
+    return {
+      ...DEFAULT_LLM_SETTINGS,
+      ...parsed,
+      azureOpenAI: {
+        ...DEFAULT_LLM_SETTINGS.azureOpenAI,
+        ...parsed.azureOpenAI,
+      },
+      gemini: {
+        ...DEFAULT_LLM_SETTINGS.gemini,
+        ...parsed.gemini,
+      },
+      ollama: {
+        ...DEFAULT_LLM_SETTINGS.ollama,
+        ...parsed.ollama,
+      },
+    };
+  } catch (error) {
+    console.warn('Failed to load LLM settings:', error);
+    return DEFAULT_LLM_SETTINGS;
+  }
+};
+
+/**
+ * Save settings to localStorage
+ */
+export const saveSettings = (settings: LLMSettings): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.error('Failed to save LLM settings:', error);
+  }
+};
+
+/**
+ * Update a specific provider's settings
+ */
+export const updateProviderSettings = <T extends LLMProvider>(
+  provider: T,
+  updates: Partial<
+    T extends 'azure-openai' ? Omit<AzureOpenAIConfig, 'provider'> :
+    T extends 'gemini' ? Omit<GeminiConfig, 'provider'> :
+    T extends 'ollama' ? Omit<OllamaConfig, 'provider'> :
+    never
+  >
+): LLMSettings => {
+  const current = loadSettings();
+  
+  const providerKey = provider === 'azure-openai' ? 'azureOpenAI' : provider;
+  
+  const updated: LLMSettings = {
+    ...current,
+    [providerKey]: {
+      ...current[providerKey as keyof LLMSettings],
+      ...updates,
+    },
+  };
+  
+  saveSettings(updated);
+  return updated;
+};
+
+/**
+ * Set the active provider
+ */
+export const setActiveProvider = (provider: LLMProvider): LLMSettings => {
+  const current = loadSettings();
+  const updated: LLMSettings = {
+    ...current,
+    activeProvider: provider,
+  };
+  saveSettings(updated);
+  return updated;
+};
+
+/**
+ * Get the current provider configuration
+ */
+export const getActiveProviderConfig = (): ProviderConfig | null => {
+  const settings = loadSettings();
+  
+  switch (settings.activeProvider) {
+    case 'azure-openai':
+      if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
+        return null;
+      }
+      return {
+        provider: 'azure-openai',
+        ...settings.azureOpenAI,
+      } as AzureOpenAIConfig;
+      
+    case 'gemini':
+      if (!settings.gemini?.apiKey) {
+        return null;
+      }
+      return {
+        provider: 'gemini',
+        ...settings.gemini,
+      } as GeminiConfig;
+      
+    case 'ollama':
+      return {
+        provider: 'ollama',
+        ...settings.ollama,
+      } as OllamaConfig;
+      
+    default:
+      return null;
+  }
+};
+
+/**
+ * Check if the active provider is properly configured
+ */
+export const isProviderConfigured = (): boolean => {
+  return getActiveProviderConfig() !== null;
+};
+
+/**
+ * Clear all settings (reset to defaults)
+ */
+export const clearSettings = (): void => {
+  localStorage.removeItem(STORAGE_KEY);
+};
+
+/**
+ * Get display name for a provider
+ */
+export const getProviderDisplayName = (provider: LLMProvider): string => {
+  switch (provider) {
+    case 'azure-openai':
+      return 'Azure OpenAI';
+    case 'gemini':
+      return 'Google Gemini';
+    case 'ollama':
+      return 'Ollama (Local)';
+    default:
+      return provider;
+  }
+};
+
+/**
+ * Get available models for a provider
+ */
+export const getAvailableModels = (provider: LLMProvider): string[] => {
+  switch (provider) {
+    case 'azure-openai':
+      // Azure models depend on deployment, so we show common ones
+      return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
+    case 'gemini':
+      return ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
+    case 'ollama':
+      return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
+    default:
+      return [];
+  }
+};
+

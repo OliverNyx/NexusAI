@@ -209,9 +209,6 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
               <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
                 .zip
               </span>
-              <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
-                up to 50MB
-              </span>
             </div>
           </div>
         )}

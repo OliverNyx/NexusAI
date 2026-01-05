@@ -11,6 +11,10 @@
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
     "@isomorphic-git/lightning-fs": "^4.6.2",
+    "@langchain/core": "^0.3.0",
+    "@langchain/google-genai": "^0.1.0",
+    "@langchain/langgraph": "^0.2.74",
+    "@langchain/openai": "^0.3.0",
     "@sigma/edge-curve": "^3.1.0",
     "@tailwindcss/vite": "^4.1.18",
     "axios": "^1.13.2",
@@ -24,6 +28,7 @@
     "isomorphic-git": "^1.36.1",
     "jszip": "^3.10.1",
     "kuzu-wasm": "^0.11.1",
+    "langchain": "^0.3.37",
     "lru-cache": "^11.2.4",
     "lucide-react": "^0.562.0",
     "react": "^18.3.1",
@@ -36,7 +41,7 @@
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.5.0",
     "web-tree-sitter": "^0.20.8",
-    "zod": "^4.1.13"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@babel/types": "^7.28.5",

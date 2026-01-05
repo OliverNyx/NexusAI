@@ -5,6 +5,7 @@ import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
 import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
 import { RightPanel } from './components/RightPanel';
+import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { FileEntry } from './services/zip';
@@ -21,6 +22,10 @@ const AppContent = () => {
     isRightPanelOpen,
     runPipeline,
     runPipelineFromFiles,
+    isSettingsPanelOpen,
+    setSettingsPanelOpen,
+    refreshLLMSettings,
+    initializeAgent,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -88,6 +93,13 @@ const AppContent = () => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
 
+  // Handle settings saved - refresh and reinitialize agent
+  // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
+  const handleSettingsSaved = useCallback(() => {
+    refreshLLMSettings();
+    initializeAgent();
+  }, [refreshLLMSettings, initializeAgent]);
+
   // Render based on view mode
   if (viewMode === 'onboarding') {
     return <DropZone onFileSelect={handleFileSelect} onGitClone={handleGitClone} />;
@@ -116,6 +128,13 @@ const AppContent = () => {
       </main>
       
       <StatusBar />
+      
+      {/* Settings Panel (modal) */}
+      <SettingsPanel
+        isOpen={isSettingsPanelOpen}
+        onClose={() => setSettingsPanelOpen(false)}
+        onSettingsSaved={handleSettingsSaved}
+      />
     </div>
   );
 };
