@@ -14,6 +14,7 @@ export const EDGE_TABLE_NAME = 'CodeRelation';
 /**
  * Node table schema
  * Stores all code elements: Files, Functions, Classes, etc.
+ * embedding column stores 384-dimensional vectors for semantic search
  */
 export const NODE_SCHEMA = `
 CREATE NODE TABLE ${NODE_TABLE_NAME} (
@@ -24,8 +25,17 @@ CREATE NODE TABLE ${NODE_TABLE_NAME} (
   startLine INT64,
   endLine INT64,
   content STRING,
+  embedding FLOAT[384],
   PRIMARY KEY (id)
 )`;
+
+/**
+ * Create vector index for semantic search
+ * Uses HNSW (Hierarchical Navigable Small World) algorithm with cosine similarity
+ */
+export const CREATE_VECTOR_INDEX_QUERY = `
+CALL CREATE_VECTOR_INDEX('${NODE_TABLE_NAME}', 'code_embedding_idx', 'embedding', metric := 'cosine')
+`;
 
 /**
  * Edge table schema

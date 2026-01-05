@@ -6,9 +6,11 @@ import { createKnowledgeGraph } from '../core/graph/graph';
 import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
+import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
+export type EmbeddingStatus = 'idle' | 'loading' | 'embedding' | 'indexing' | 'ready' | 'error';
 
 export interface QueryResult {
   rows: Record<string, any>[];
@@ -67,6 +69,16 @@ interface AppState {
   runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
+  
+  // Embedding state
+  embeddingStatus: EmbeddingStatus;
+  embeddingProgress: EmbeddingProgress | null;
+  
+  // Embedding methods
+  startEmbeddings: () => Promise<void>;
+  semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
+  semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
+  isEmbeddingReady: boolean;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -116,6 +128,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   
   // Project info
   const [projectName, setProjectName] = useState<string>('');
+  
+  // Embedding state
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
+  const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgress | null>(null);
 
   // Worker (single instance shared across app)
   const workerRef = useRef<Worker | null>(null);
@@ -177,6 +193,64 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
+  // Embedding methods
+  const startEmbeddings = useCallback(async (): Promise<void> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    
+    setEmbeddingStatus('loading');
+    setEmbeddingProgress(null);
+    
+    try {
+      const proxiedOnProgress = Comlink.proxy((progress: EmbeddingProgress) => {
+        setEmbeddingProgress(progress);
+        
+        // Update status based on phase
+        switch (progress.phase) {
+          case 'loading-model':
+            setEmbeddingStatus('loading');
+            break;
+          case 'embedding':
+            setEmbeddingStatus('embedding');
+            break;
+          case 'indexing':
+            setEmbeddingStatus('indexing');
+            break;
+          case 'ready':
+            setEmbeddingStatus('ready');
+            break;
+          case 'error':
+            setEmbeddingStatus('error');
+            break;
+        }
+      });
+      
+      await api.startEmbeddingPipeline(proxiedOnProgress);
+    } catch (error) {
+      setEmbeddingStatus('error');
+      throw error;
+    }
+  }, []);
+
+  const semanticSearch = useCallback(async (
+    query: string,
+    k: number = 10
+  ): Promise<SemanticSearchResult[]> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    return api.semanticSearch(query, k);
+  }, []);
+
+  const semanticSearchWithContext = useCallback(async (
+    query: string,
+    k: number = 5,
+    hops: number = 2
+  ): Promise<any[]> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    return api.semanticSearchWithContext(query, k, hops);
+  }, []);
+
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels(prev => {
       if (prev.includes(label)) {
@@ -219,6 +293,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     runPipelineFromFiles,
     runQuery,
     isDatabaseReady,
+    // Embedding state and methods
+    embeddingStatus,
+    embeddingProgress,
+    startEmbeddings,
+    semanticSearch,
+    semanticSearchWithContext,
+    isEmbeddingReady: embeddingStatus === 'ready',
   };
 
   return (

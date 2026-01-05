@@ -149,6 +149,8 @@ const extractContent = (
  * Headers: id,label,name,filePath,startLine,endLine,content
  * 
  * All string fields are quoted for RFC 4180 compliance
+ * Note: embedding column is NOT included in CSV - it's populated later via UPDATE queries
+ * by the embedding pipeline after bulk load completes
  */
 export const generateNodeCSV = (
   graph: KnowledgeGraph,

@@ -2,7 +2,9 @@
 
 > Privacy-focused, zero-server knowledge graph generator that runs entirely in your browser.
 
-Transform codebases into interactive knowledge graphs using AST parsing, Web Workers, and an embedded KuzuDB WASM database. All processing happens locally - your code never leaves your machine. Next step -> settng up AI Layer : An embedings pipeline using a very small embedings model that can run in browser and a Graph RAG tool using LLMs to generate and execute cyfer queries. Aiming to give rich and complete retrieved context enabling Agent to detect unused code, perform security audits, do a BLAST RADIUS analyses of code changes and for overall codebase understanding and explaination.
+Transform codebases into interactive knowledge graphs using AST parsing, Web Workers, and an embedded KuzuDB WASM database. All processing happens locally - your code never leaves your machine.
+
+**Next up:** Browser-based embeddings + Graph RAG. The cool part? KuzuDB supports native vector indexing, so we can do semantic search AND graph traversal in a single Cypher query. No separate vector DB needed. See [Work in Progress](#-current-work-in-progress) for the full plan.
 
 
 
@@ -19,10 +21,115 @@ https://github.com/user-attachments/assets/f375b00a-78cd-4f93-a96c-9ba924455f49
 **Actively Building:**
 
 - [ ] **Graph RAG Agent** - AI chat with Cypher query generation for intelligent code exploration
-- [ ] **Browser Embeddings** - Small embedding model (e.g., gte-small) for semantic node search + LLM-driven RAG
+- [ ] **Browser Embeddings** - Small embedding model for semantic node search (see below!)
 - [ ] **Multi-Worker Pool** - Parallel parsing across multiple Web Workers (currently using single worker)
 - [ ] **Ollama Support** - Local LLM integration
 - [ ] **CSV Export** - Export node/relationship tables
+
+### 🧠 Graph RAG: The Plan
+
+Here's what we're building for the AI layer. The goal: ask questions in plain English, get answers backed by actual graph traversal + semantic understanding.
+
+**The Problem:** A regular LLM doesn't know your codebase. It can't tell you what calls `handleAuth` or what breaks if you change `UserService`. You need to give it tools to explore the graph.
+
+**The Solution:** Combine embeddings (for "find relevant code by meaning") with graph queries (for "trace connections").
+
+```mermaid
+flowchart TD
+    Q[Your Question] --> EMB[Embed with transformers.js]
+    EMB --> VS[Vector Search in KuzuDB]
+    VS --> ENTRY[Entry Point Nodes]
+    ENTRY --> EXPAND[Graph Traversal via Cypher]
+    EXPAND --> CTX[Rich Context]
+    CTX --> LLM[LLM Generates Answer]
+```
+
+**Embedding Model:** We're going with `snowflake-arctic-embed-xs` - a tiny 22M parameter model that runs entirely in the browser via [transformers.js](https://huggingface.co/docs/transformers.js). It outputs 384-dimensional vectors and scores 50.15 on MTEB (comparable to models 5x its size). The model downloads once (~90MB), gets cached, and runs locally forever. Privacy intact. ✅
+
+**The Pipeline:**
+
+```mermaid
+flowchart LR
+    subgraph Main["Main Pipeline (Blocking)"]
+        P1[Extract] --> P2[Structure] --> P3[Parse] --> P4[Imports] --> P5[Calls]
+    end
+    
+    P5 --> READY[Graph Ready!<br/>User can explore]
+    READY --> BG
+    
+    subgraph BG["Background (Non-blocking)"]
+        E1[Load Model] --> E2[Embed Nodes] --> E3[Create Vector Index]
+    end
+    
+    E3 --> AI[AI Search Ready!]
+```
+
+The idea: you can start exploring the graph immediately after Phase 5. Meanwhile, embeddings are generated in the background. Once done, semantic search unlocks.
+
+### 💡 A Fun Discovery: Unified Vector + Graph = Superpowers
+
+While designing this, I stumbled onto something cool. Most Graph RAG systems use **separate databases** - a vector DB (Pinecone, Qdrant) for semantic search and a graph DB (Neo4j) for traversal. This means the LLM has to:
+
+1. Call vector search → get IDs
+2. Take those IDs → call graph DB
+3. Coordinate between two systems
+
+But KuzuDB WASM supports **native vector indexing** (HNSW). Which means we can do vector search AND graph traversal **in a single Cypher query**:
+
+```cypher
+-- Find code similar to "authentication" AND trace what calls it
+-- ALL IN ONE QUERY! 🤯
+CALL QUERY_VECTOR_INDEX('CodeNode', 'embedding_idx', $queryVector, 10)
+WITH node AS match, distance
+WHERE distance < 0.4
+MATCH (caller:CodeNode)-[r:CodeRelation {type: 'CALLS'}]->(match)
+RETURN match.name AS found, 
+       caller.name AS called_by,
+       distance AS relevance
+ORDER BY distance
+```
+
+This is kind of a big deal. Here's why:
+
+**Traditional approach (2 queries, 2 systems):**
+```
+semantic_search("auth") → ["id1", "id2", "id3"]
+                              ↓
+graph_query("MATCH ... WHERE id IN [...]") → results
+```
+
+**Unified KuzuDB approach (1 query, 1 system):**
+```
+cypher("CALL QUERY_VECTOR_INDEX(...) WITH node MATCH (node)-[...]->() ...") → results
+```
+
+And because `distance` comes back with every result, we get **built-in reranking for free**:
+
+```cypher
+-- The LLM can dynamically control relevance thresholds!
+CALL QUERY_VECTOR_INDEX('CodeNode', 'idx', $vec, 20)
+WITH node, distance,
+     CASE 
+       WHEN distance < 0.15 THEN 'exact_match'
+       WHEN distance < 0.30 THEN 'highly_relevant'
+       ELSE 'related'
+     END AS tier
+WHERE distance < 0.5
+MATCH (node)-[*1..2]-(context)
+RETURN node.name, tier, collect(context.name) AS related
+ORDER BY distance
+```
+
+**What this enables:**
+- 🎯 **Single query execution** - No round trips between systems
+- 📊 **Hierarchical relevance** - LLM sees exact matches vs related vs weak
+- 🌳 **Weighted expansion** - Traverse further from better matches
+- ⚡ **Dynamic thresholds** - LLM adjusts `WHERE distance < X` per question type
+- 🔄 **No reranker needed** - Distance IS the relevance score
+
+Basically, the LLM gets to write one smart query that does semantic search, filters by relevance, expands via graph relationships, and returns ranked results. No separate reranker model, no vector DB API calls, no coordination logic. Just Cypher.
+
+Still wrapping my head around all the query patterns this unlocks, but I'm pretty excited about it.
 
 ---
 
@@ -363,6 +470,7 @@ RETURN f.name
 - ✅ Polymorphic schema (single node/edge tables)
 - ✅ CSV generation and bulk loading
 - ✅ Cypher query execution
+- 🚧 Vector embeddings + HNSW index (WIP)
 - 🚧 Graph RAG agent (WIP)
 
 ---
@@ -372,9 +480,10 @@ RETURN f.name
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4
 - **Visualization**: Sigma.js + Graphology + ForceAtlas2 (WebGL)
 - **Parsing**: Tree-sitter WASM (TypeScript, JavaScript, Python)
-- **Database**: KuzuDB WASM (in-browser graph database)
+- **Database**: KuzuDB WASM (in-browser graph database + vector index)
 - **Concurrency**: Web Worker + Comlink
 - **Caching**: lru-cache with WASM memory management
+- **AI (WIP)**: transformers.js for browser embeddings, LangChain for agent orchestration
 
 ---
 
@@ -428,27 +537,41 @@ Open http://localhost:5173
 
 ### Graph RAG Agent (WIP)
 
-The idea: ask questions in plain English, get answers backed by graph queries.
+The idea: ask questions in plain English, get answers backed by graph queries + semantic understanding.
 
 ```mermaid
-flowchart LR
+flowchart TD
     USER[Your Question] --> LLM[LLM]
-    LLM --> TOOLS[Pick a Tool]
-    TOOLS --> CYPHER[Run Cypher]
-    TOOLS --> SEARCH[Semantic Search]
-    CYPHER --> CONTEXT[Gather Context]
-    SEARCH --> CONTEXT
-    CONTEXT --> LLM
+    LLM --> |Generates| CYPHER[Unified Cypher Query]
+    
+    subgraph KUZU[KuzuDB WASM]
+        CYPHER --> VEC[Vector Search]
+        VEC --> GRAPH[Graph Traversal]
+        GRAPH --> RANK[Ranked Results]
+    end
+    
+    RANK --> CTX[Rich Context + Code Snippets]
+    CTX --> LLM
     LLM --> ANSWER[Your Answer]
 ```
 
 **Example interactions:**
 
-- "What functions call `handleAuth`?" → Generates Cypher, returns list
-- "Show me the blast radius if I change `UserService`" → Traverses dependencies
-- "Find all files that import from `utils/`" → Pattern matching query
+- "What functions call `handleAuth`?" → Vector search finds `handleAuth`, Cypher traces callers
+- "Show me the blast radius if I change `UserService`" → Finds service, traverses 3 hops of dependencies
+- "How does authentication work in this codebase?" → Semantic search for auth-related code, returns connected components
 
-**Why pre-built query templates?** LLMs are... creative with Cypher syntax. Instead of letting the LLM generate queries from scratch (and fail half the time), we're building a library of reliable query templates that the LLM can choose from and fill in.
+**Why dynamic Cypher generation?** Originally we planned to use pre-built query templates (because LLMs can be... creative with syntax). But with the unified vector + graph approach, the LLM just needs to learn one pattern:
+
+```cypher
+CALL QUERY_VECTOR_INDEX(...) WITH node, distance
+WHERE distance < [threshold]
+MATCH (node)-[relationship pattern]->(connected)
+RETURN [what you need]
+ORDER BY distance
+```
+
+Give the LLM the schema, a few examples, and let it compose queries. The schema is simple enough that modern LLMs (GPT-4, Claude) handle it well. And if a query fails? The error message is usually clear enough for the LLM to self-correct.
 
 ---
 

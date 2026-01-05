@@ -86,7 +86,8 @@ export const loadGraphToKuzu = async (
     
     // Use HEADER=true because our CSV generator adds headers
     // Use PARALLEL=false because content field has quoted newlines
-    await conn.query(`COPY ${NODE_TABLE_NAME} FROM "${nodesPath}" (HEADER=true, PARALLEL=false)`);
+    // Explicitly list columns since CSV doesn't include 'embedding' (populated later via UPDATE)
+    await conn.query(`COPY ${NODE_TABLE_NAME}(id, label, name, filePath, startLine, endLine, content) FROM "${nodesPath}" (HEADER=true, PARALLEL=false)`);
     await conn.query(`COPY ${EDGE_TABLE_NAME} FROM "${edgesPath}" (HEADER=true, PARALLEL=false)`);
     
     // Verify results

@@ -2,6 +2,7 @@ import { Search, Settings, HelpCircle, Sparkles } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { GraphNode } from '../core/graph/types';
+import { EmbeddingStatus } from './EmbeddingStatus';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -184,11 +185,14 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
       <div className="flex items-center gap-2">
         {/* Stats */}
         {graph && (
-          <div className="flex items-center gap-4 mr-4 text-xs text-text-muted">
+          <div className="flex items-center gap-4 mr-2 text-xs text-text-muted">
             <span>{nodeCount} nodes</span>
             <span>{edgeCount} edges</span>
           </div>
         )}
+
+        {/* Embedding Status */}
+        <EmbeddingStatus />
 
         {/* Icon buttons */}
         <button className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
