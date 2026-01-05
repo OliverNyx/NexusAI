@@ -59,8 +59,8 @@ export interface EmbeddingConfig {
   batchSize: number;
   /** Embedding vector dimensions */
   dimensions: number;
-  /** Device to use for inference */
-  device: 'webgpu' | 'wasm' | 'cpu';
+  /** Device to use for inference: 'webgpu' for GPU acceleration, 'wasm' for WASM-based CPU */
+  device: 'webgpu' | 'wasm';
   /** Maximum characters of code snippet to include */
   maxSnippetLength: number;
 }
@@ -68,13 +68,13 @@ export interface EmbeddingConfig {
 /**
  * Default embedding configuration
  * Uses snowflake-arctic-embed-xs for browser efficiency
- * Tries WebGPU first (fast), auto-fallback to WASM if unavailable
+ * Tries WebGPU first (fast), user can choose WASM fallback if unavailable
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
   batchSize: 16,
   dimensions: 384,
-  device: 'webgpu', // Try WebGPU first, auto-fallback to WASM
+  device: 'webgpu', // WebGPU preferred, WASM fallback available if user chooses
   maxSnippetLength: 500,
 };
 

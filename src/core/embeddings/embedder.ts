@@ -14,6 +14,7 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
+let currentDevice: 'webgpu' | 'wasm' | null = null;
 
 /**
  * Progress callback type for model loading
@@ -21,16 +22,58 @@ let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 export type ModelProgressCallback = (progress: ModelProgress) => void;
 
 /**
+ * Custom error thrown when WebGPU is not available
+ * Allows UI to prompt user for fallback choice
+ */
+export class WebGPUNotAvailableError extends Error {
+  constructor(originalError?: Error) {
+    super('WebGPU not available in this browser');
+    this.name = 'WebGPUNotAvailableError';
+    this.cause = originalError;
+  }
+}
+
+/**
+ * Check if WebGPU is available in this browser
+ * Quick check without loading the model
+ */
+export const checkWebGPUAvailability = async (): Promise<boolean> => {
+  try {
+    if (!navigator.gpu) {
+      return false;
+    }
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      return false;
+    }
+    // Try to get a device - this is where it usually fails
+    const device = await adapter.requestDevice();
+    device.destroy(); // Clean up
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Get the current device being used for inference
+ */
+export const getCurrentDevice = (): 'webgpu' | 'wasm' | null => currentDevice;
+
+/**
  * Initialize the embedding model
  * Uses singleton pattern - only loads once, subsequent calls return cached instance
  * 
  * @param onProgress - Optional callback for model download progress
  * @param config - Optional configuration override
+ * @param forceDevice - Force a specific device (bypasses WebGPU check)
  * @returns Promise resolving to the embedder pipeline
+ * @throws WebGPUNotAvailableError if WebGPU is requested but unavailable
  */
 export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
-  config: Partial<EmbeddingConfig> = {}
+  config: Partial<EmbeddingConfig> = {},
+  forceDevice?: 'webgpu' | 'wasm'
 ): Promise<FeatureExtractionPipeline> => {
   // Return existing instance if available
   if (embedderInstance) {
@@ -45,6 +88,7 @@ export const initEmbedder = async (
   isInitializing = true;
   
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
+  const requestedDevice = forceDevice || finalConfig.device;
 
   initPromise = (async () => {
     try {
@@ -55,8 +99,6 @@ export const initEmbedder = async (
         console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
       }
 
-      // Create the feature extraction pipeline
-      // Try WebGPU first for speed, fallback to WASM for compatibility
       const progressCallback = onProgress ? (data: any) => {
         const progress: ModelProgress = {
           status: data.status || 'progress',
@@ -68,52 +110,84 @@ export const initEmbedder = async (
         onProgress(progress);
       } : undefined;
 
-      // Try preferred device first, fallback to wasm if it fails
-      const devicesToTry: Array<'webgpu' | 'wasm'> = 
-        finalConfig.device === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm'];
-      
-      let lastError: Error | null = null;
-      
-      for (const device of devicesToTry) {
+      // If WebGPU is requested (default), check availability first
+      if (requestedDevice === 'webgpu') {
+        if (import.meta.env.DEV) {
+          console.log('🔧 Checking WebGPU availability...');
+        }
+        
+        const webgpuAvailable = await checkWebGPUAvailability();
+        
+        if (!webgpuAvailable) {
+          if (import.meta.env.DEV) {
+            console.warn('⚠️ WebGPU not available');
+          }
+          isInitializing = false;
+          initPromise = null;
+          throw new WebGPUNotAvailableError();
+        }
+        
+        // Try WebGPU
         try {
-          if (import.meta.env.DEV && devicesToTry.length > 1) {
-            console.log(`🔧 Trying ${device} backend...`);
+          if (import.meta.env.DEV) {
+            console.log('🔧 Initializing WebGPU backend...');
           }
           
           embedderInstance = await pipeline(
             'feature-extraction',
             finalConfig.modelId,
             {
-              device,
+              device: 'webgpu',
               dtype: 'fp32',
               progress_callback: progressCallback,
             }
           );
+          currentDevice = 'webgpu';
           
           if (import.meta.env.DEV) {
-            console.log(`✅ Using ${device} backend`);
+            console.log('✅ Using WebGPU backend');
           }
-          break; // Success!
-          
         } catch (err) {
-          lastError = err as Error;
           if (import.meta.env.DEV) {
-            console.warn(`⚠️ ${device} backend failed:`, err);
+            console.warn('⚠️ WebGPU initialization failed:', err);
           }
-          // Continue to next device
+          isInitializing = false;
+          initPromise = null;
+          embedderInstance = null;
+          throw new WebGPUNotAvailableError(err as Error);
         }
-      }
-      
-      if (!embedderInstance) {
-        throw lastError || new Error('No backend available');
+      } else {
+        // WASM mode requested (user chose fallback)
+        if (import.meta.env.DEV) {
+          console.log('🔧 Initializing WASM backend (this will be slower)...');
+        }
+        
+        embedderInstance = await pipeline(
+          'feature-extraction',
+          finalConfig.modelId,
+          {
+            device: 'wasm', // WASM-based CPU execution
+            dtype: 'fp32',
+            progress_callback: progressCallback,
+          }
+        );
+        currentDevice = 'wasm';
+        
+        if (import.meta.env.DEV) {
+          console.log('✅ Using WASM backend');
+        }
       }
 
       if (import.meta.env.DEV) {
         console.log('✅ Embedding model loaded successfully');
       }
 
-      return embedderInstance;
+      return embedderInstance!;
     } catch (error) {
+      // Re-throw WebGPUNotAvailableError as-is
+      if (error instanceof WebGPUNotAvailableError) {
+        throw error;
+      }
       isInitializing = false;
       initPromise = null;
       embedderInstance = null;

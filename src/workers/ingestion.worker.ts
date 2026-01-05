@@ -166,9 +166,11 @@ const workerApi = {
    * Start the embedding pipeline in the background
    * Generates embeddings for all embeddable nodes and creates vector index
    * @param onProgress - Proxied callback for embedding progress updates
+   * @param forceDevice - Force a specific device ('webgpu' or 'wasm')
    */
   async startEmbeddingPipeline(
-    onProgress: (progress: EmbeddingProgress) => void
+    onProgress: (progress: EmbeddingProgress) => void,
+    forceDevice?: 'webgpu' | 'wasm'
   ): Promise<void> {
     const kuzu = await getKuzuAdapter();
     if (!kuzu.isKuzuReady()) {
@@ -187,7 +189,12 @@ const workerApi = {
       onProgress(progress);
     };
 
-    await runEmbeddingPipeline(kuzu.executeQuery, kuzu.executeWithReusedStatement, progressCallback);
+    await runEmbeddingPipeline(
+      kuzu.executeQuery, 
+      kuzu.executeWithReusedStatement, 
+      progressCallback,
+      forceDevice ? { device: forceDevice } : {}
+    );
   },
 
   /**

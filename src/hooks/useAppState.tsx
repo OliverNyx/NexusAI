@@ -75,7 +75,7 @@ interface AppState {
   embeddingProgress: EmbeddingProgress | null;
   
   // Embedding methods
-  startEmbeddings: () => Promise<void>;
+  startEmbeddings: (forceDevice?: 'webgpu' | 'wasm') => Promise<void>;
   semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
   isEmbeddingReady: boolean;
@@ -197,7 +197,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   // Embedding methods
-  const startEmbeddings = useCallback(async (): Promise<void> => {
+  const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     
@@ -228,9 +228,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         }
       });
       
-      await api.startEmbeddingPipeline(proxiedOnProgress);
-    } catch (error) {
-      setEmbeddingStatus('error');
+      await api.startEmbeddingPipeline(proxiedOnProgress, forceDevice);
+    } catch (error: any) {
+      // Check if it's WebGPU not available - let caller handle the dialog
+      if (error?.name === 'WebGPUNotAvailableError' || 
+          error?.message?.includes('WebGPU not available')) {
+        setEmbeddingStatus('idle'); // Reset to idle so user can try again
+      } else {
+        setEmbeddingStatus('error');
+      }
       throw error;
     }
   }, []);

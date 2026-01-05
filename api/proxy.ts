@@ -78,9 +78,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Expose-Headers', '*');
 
-    // Forward response headers
+    // Forward response headers (except ones that cause issues)
+    const skipHeaders = [
+      'content-encoding', 
+      'transfer-encoding', 
+      'connection',
+      'www-authenticate', // IMPORTANT: Strip this to prevent browser's native auth popup!
+    ];
+    
     response.headers.forEach((value, key) => {
-      if (!['content-encoding', 'transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+      if (!skipHeaders.includes(key.toLowerCase())) {
         res.setHeader(key, value);
       }
     });

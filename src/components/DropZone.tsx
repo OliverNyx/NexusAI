@@ -91,8 +91,14 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
       console.error('Clone failed:', err);
       const message = err instanceof Error ? err.message : 'Failed to clone repository';
       // Provide helpful error for auth failures
-      if (message.includes('401') || message.includes('403')) {
-        setError('Authentication failed. Check your token or ensure the repo is accessible.');
+      if (message.includes('401') || message.includes('403') || message.includes('Authentication')) {
+        if (!githubToken) {
+          setError('🔒 This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.');
+        } else {
+          setError('🔑 Authentication failed. Check your token permissions (needs repo access).');
+        }
+      } else if (message.includes('404') || message.includes('not found')) {
+        setError('Repository not found. Check the URL or it might be private (needs PAT).');
       } else {
         setError(message);
       }
