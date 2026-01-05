@@ -17,11 +17,11 @@ const initFS = () => {
   return fsName;
 };
 
-// Use public proxy in development, our own proxy in production
+// Use public proxy in development, a custom proxy in production
 const USE_OWN_PROXY = !import.meta.env.DEV;
 
 /**
- * Custom HTTP client that uses our query-param based proxy in production
+ * Custom HTTP client that uses a query-param based proxy in production
  * isomorphic-git's default corsProxy appends URL as path, which doesn't work
  * well with Vercel's file-based routing.
  */
@@ -31,10 +31,10 @@ const createProxiedHttp = (): typeof http => {
     return http;
   }
 
-  // In production, wrap the HTTP client to use our proxy
+  // In production, wrap the HTTP client to use the custom proxy
   return {
     request: async (config) => {
-      // Rewrite the URL to go through our proxy
+      // Rewrite the URL to go through the proxy
       const proxyUrl = `/api/proxy?url=${encodeURIComponent(config.url)}`;
       
       // Call the original http.request with the proxied URL

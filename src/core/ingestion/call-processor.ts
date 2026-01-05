@@ -90,7 +90,7 @@ export const processCalls = async (
       });
     });
 
-    // Cleanup if we re-parsed
+    // Cleanup if re-parsed
     if (wasReparsed) {
       tree.delete();
     }
@@ -133,7 +133,7 @@ const resolveCallTarget = (
 
 /**
  * Filter out common built-in functions and noise
- * that we don't want to track as calls
+ * that shouldn't be tracked as calls
  */
 const isBuiltInOrNoise = (name: string): boolean => {
   const builtIns = new Set([
