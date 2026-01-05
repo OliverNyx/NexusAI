@@ -1,7 +1,7 @@
 import { LRUCache } from 'lru-cache';
 import Parser from 'web-tree-sitter';
 
-// Define the interface for our Cache
+// Define the interface for the Cache
 export interface ASTCache {
   get: (filePath: string) => Parser.Tree | undefined;
   set: (filePath: string, tree: Parser.Tree) => void;

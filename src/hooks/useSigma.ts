@@ -71,7 +71,7 @@ interface UseSigmaReturn {
   refreshHighlights: () => void;
 }
 
-// Noverlap for final cleanup - minimal since we start with good positions
+// Noverlap for final cleanup - minimal since it starts with good positions
 const NOVERLAP_SETTINGS = {
   maxIterations: 20,  // Reduced - less cleanup needed
   ratio: 1.1,

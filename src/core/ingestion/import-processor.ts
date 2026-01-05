@@ -103,7 +103,7 @@ export const processImports = async (
         // Clean path (remove quotes)
         const rawImportPath = sourceNode.text.replace(/['"]/g, '');
         
-        // Resolve to actual file in our system
+        // Resolve to actual file in the system
         const resolvedPath = resolveImportPath(file.path, rawImportPath, allFilePaths);
 
         if (resolvedPath) {
@@ -129,7 +129,7 @@ export const processImports = async (
       }
     });
 
-    // If we re-parsed just for this, delete the tree to save memory
+    // If re-parsed just for this, delete the tree to save memory
     if (wasReparsed) {
       tree.delete();
     }

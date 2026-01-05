@@ -330,7 +330,7 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
             {/* Security note */}
             {githubToken && (
               <p className="mt-3 text-xs text-text-muted text-center">
-                🔒 Token stays in your browser only, never sent to our servers
+                🔒 Token stays in your browser only, never sent to any server
               </p>
             )}
 

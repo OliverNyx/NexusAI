@@ -23,7 +23,7 @@ export interface SymbolTable {
   lookupFuzzy: (name: string) => SymbolDefinition[];
   
   /**
-   * Debugging: See how many symbols we have tracked
+   * Debugging: See how many symbols are tracked
    */
   getStats: () => { fileCount: number; globalSymbolCount: number };
   

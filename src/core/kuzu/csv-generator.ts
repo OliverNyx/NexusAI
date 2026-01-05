@@ -1,7 +1,7 @@
 /**
  * CSV Generator for KuzuDB
  * 
- * Converts our in-memory KnowledgeGraph into CSV format
+ * Converts the in-memory KnowledgeGraph into CSV format
  * for bulk loading into KuzuDB.
  * 
  * RFC 4180 Compliant:

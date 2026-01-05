@@ -33,7 +33,7 @@ export interface SigmaEdgeAttributes {
  */
 const getScaledNodeSize = (baseSize: number, nodeCount: number): number => {
   // Scale factor decreases as graph gets larger
-  // But we use a minimum that preserves relative differences
+  // But a minimum is used that preserves relative differences
   if (nodeCount > 50000) return Math.max(1, baseSize * 0.4);
   if (nodeCount > 20000) return Math.max(1.5, baseSize * 0.5);
   if (nodeCount > 5000) return Math.max(2, baseSize * 0.65);
@@ -72,7 +72,7 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
 };
 
 /**
- * Converts our KnowledgeGraph to a graphology Graph for Sigma.js
+ * Converts the KnowledgeGraph to a graphology Graph for Sigma.js
  * Folders are positioned in a wide spread, children positioned NEAR their parents
  */
 export const knowledgeGraphToGraphology = (
@@ -208,7 +208,7 @@ export const knowledgeGraphToGraphology = (
       if (!visited.has(childId)) {
         visited.add(childId);
         addNodeWithPosition(childId);
-        queue.push(childId); // Add to queue so we process ITS children too
+        queue.push(childId); // Add to queue so its children are processed too
       }
     }
   }

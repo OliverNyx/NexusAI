@@ -3,7 +3,7 @@ import { SupportedLanguages } from '../../config/supported-languages';
 
 let parser: Parser | null = null;
 
-// Cache the compiled Language objects so we never fetch/compile twice
+// Cache the compiled Language objects to avoid fetching/compiling twice
 const languageCache = new Map<string, Parser.Language>();
 
 export const loadParser = async (): Promise<Parser> => {

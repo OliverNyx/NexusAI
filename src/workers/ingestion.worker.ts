@@ -28,7 +28,7 @@ let isEmbeddingComplete = false;
  * Worker API exposed via Comlink
  * 
  * Note: The onProgress callback is passed as a Comlink.proxy() from the main thread,
- * allowing us to call it from the worker and have it execute on the main thread.
+ * allowing it to be called from the worker and have it execute on the main thread.
  */
 const workerApi = {
   /**
