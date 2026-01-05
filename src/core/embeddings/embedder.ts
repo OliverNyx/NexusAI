@@ -39,10 +39,12 @@ export class WebGPUNotAvailableError extends Error {
  */
 export const checkWebGPUAvailability = async (): Promise<boolean> => {
   try {
-    if (!navigator.gpu) {
+    // Cast to any to avoid WebGPU types not being available in all TS configs
+    const nav = navigator as any;
+    if (!nav.gpu) {
       return false;
     }
-    const adapter = await navigator.gpu.requestAdapter();
+    const adapter = await nav.gpu.requestAdapter();
     if (!adapter) {
       return false;
     }
@@ -133,7 +135,8 @@ export const initEmbedder = async (
             console.log('🔧 Initializing WebGPU backend...');
           }
           
-          embedderInstance = await pipeline(
+          // Type assertion needed due to complex union types in transformers.js
+          embedderInstance = await (pipeline as any)(
             'feature-extraction',
             finalConfig.modelId,
             {
@@ -162,7 +165,8 @@ export const initEmbedder = async (
           console.log('🔧 Initializing WASM backend (this will be slower)...');
         }
         
-        embedderInstance = await pipeline(
+        // Type assertion needed due to complex union types in transformers.js
+        embedderInstance = await (pipeline as any)(
           'feature-extraction',
           finalConfig.modelId,
           {
