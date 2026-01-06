@@ -10,6 +10,8 @@ import {
 } from '../core/embeddings/embedding-pipeline';
 import { isEmbedderReady, disposeEmbedder } from '../core/embeddings/embedder';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
+import type { ProviderConfig, AgentStreamChunk } from '../core/llm/types';
+import { createGraphRAGAgent, streamAgentResponse, type AgentMessage } from '../core/llm/agent';
 
 // Lazy import for Kuzu to avoid breaking worker if SharedArrayBuffer unavailable
 let kuzuAdapter: typeof import('../core/kuzu/kuzu-adapter') | null = null;
@@ -23,6 +25,13 @@ const getKuzuAdapter = async () => {
 // Embedding state
 let embeddingProgress: EmbeddingProgress | null = null;
 let isEmbeddingComplete = false;
+
+// File contents state - stores full file contents for grep/read tools
+let storedFileContents: Map<string, string> = new Map();
+
+// Agent state
+let currentAgent: ReturnType<typeof createGraphRAGAgent> | null = null;
+let currentProviderConfig: ProviderConfig | null = null;
 
 /**
  * Worker API exposed via Comlink
@@ -44,6 +53,9 @@ const workerApi = {
     // Run the actual pipeline
     const result = await runIngestionPipeline(file, onProgress);
     
+    // Store file contents for grep/read tools (full content, not truncated)
+    storedFileContents = result.fileContents;
+    
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
       onProgress({
@@ -61,8 +73,9 @@ const workerApi = {
       await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
       
       if (import.meta.env.DEV) {
-      const stats = await kuzu.getKuzuStats();
-      console.log('KuzuDB loaded:', stats);
+        const stats = await kuzu.getKuzuStats();
+        console.log('KuzuDB loaded:', stats);
+        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
       // KuzuDB is optional - silently continue without it
@@ -130,6 +143,9 @@ const workerApi = {
     // Run the pipeline
     const result = await runPipelineFromFiles(files, onProgress);
     
+    // Store file contents for grep/read tools (full content, not truncated)
+    storedFileContents = result.fileContents;
+    
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
       onProgress({
@@ -149,6 +165,7 @@ const workerApi = {
       if (import.meta.env.DEV) {
         const stats = await kuzu.getKuzuStats();
         console.log('KuzuDB loaded:', stats);
+        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
       // KuzuDB is optional - silently continue without it
@@ -284,6 +301,112 @@ const workerApi = {
       return { success: false, error: 'Database not ready' };
     }
     return kuzu.testArrayParams();
+  },
+
+  // ============================================================
+  // Graph RAG Agent Methods
+  // ============================================================
+
+  /**
+   * Initialize the Graph RAG agent with a provider configuration
+   * Must be called before using chat methods
+   * @param config - Provider configuration (Azure OpenAI or Gemini)
+   */
+  async initializeAgent(config: ProviderConfig): Promise<{ success: boolean; error?: string }> {
+    try {
+      const kuzu = await getKuzuAdapter();
+      if (!kuzu.isKuzuReady()) {
+        return { success: false, error: 'Database not ready. Please load a repository first.' };
+      }
+
+      // Create semantic search wrappers that handle embedding state
+      const semanticSearchWrapper = async (query: string, k?: number, maxDistance?: number) => {
+        if (!isEmbeddingComplete) {
+          throw new Error('Embeddings not ready');
+        }
+        return doSemanticSearch(kuzu.executeQuery, query, k, maxDistance);
+      };
+
+      const semanticSearchWithContextWrapper = async (query: string, k?: number, hops?: number) => {
+        if (!isEmbeddingComplete) {
+          throw new Error('Embeddings not ready');
+        }
+        return doSemanticSearchWithContext(kuzu.executeQuery, query, k, hops);
+      };
+
+      currentAgent = createGraphRAGAgent(
+        config,
+        kuzu.executeQuery,
+        semanticSearchWrapper,
+        semanticSearchWithContextWrapper,
+        () => isEmbeddingComplete,
+        storedFileContents
+      );
+      currentProviderConfig = config;
+
+      if (import.meta.env.DEV) {
+        console.log('🤖 Graph RAG Agent initialized with provider:', config.provider);
+      }
+
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (import.meta.env.DEV) {
+        console.error('❌ Agent initialization failed:', error);
+      }
+      return { success: false, error: message };
+    }
+  },
+
+  /**
+   * Check if the agent is initialized
+   */
+  isAgentReady(): boolean {
+    return currentAgent !== null;
+  },
+
+  /**
+   * Get current provider info
+   */
+  getAgentProvider(): { provider: string; model: string } | null {
+    if (!currentProviderConfig) return null;
+    return {
+      provider: currentProviderConfig.provider,
+      model: currentProviderConfig.model,
+    };
+  },
+
+  /**
+   * Chat with the Graph RAG agent (streaming)
+   * Sends response chunks via the onChunk callback
+   * @param messages - Conversation history
+   * @param onChunk - Proxied callback for streaming chunks (runs on main thread)
+   */
+  async chatStream(
+    messages: AgentMessage[],
+    onChunk: (chunk: AgentStreamChunk) => void
+  ): Promise<void> {
+    if (!currentAgent) {
+      onChunk({ type: 'error', error: 'Agent not initialized. Please configure an LLM provider first.' });
+      return;
+    }
+
+    try {
+      for await (const chunk of streamAgentResponse(currentAgent, messages)) {
+        onChunk(chunk);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      onChunk({ type: 'error', error: message });
+    }
+  },
+
+  /**
+   * Dispose of the current agent
+   */
+  disposeAgent(): void {
+    currentAgent = null;
+    currentProviderConfig = null;
   },
 };
 

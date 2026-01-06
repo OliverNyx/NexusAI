@@ -7,6 +7,9 @@ import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
+import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo } from '../core/llm/types';
+import { loadSettings, getActiveProviderConfig } from '../core/llm/settings-service';
+import type { AgentMessage } from '../core/llm/agent';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -82,6 +85,25 @@ interface AppState {
   
   // Debug/test methods
   testArrayParams: () => Promise<{ success: boolean; error?: string }>;
+  
+  // LLM/Agent state
+  llmSettings: LLMSettings;
+  isSettingsPanelOpen: boolean;
+  setSettingsPanelOpen: (open: boolean) => void;
+  isAgentReady: boolean;
+  isAgentInitializing: boolean;
+  agentError: string | null;
+  
+  // Chat state
+  chatMessages: ChatMessage[];
+  isChatLoading: boolean;
+  currentToolCalls: ToolCallInfo[];
+  
+  // LLM methods
+  refreshLLMSettings: () => void;
+  initializeAgent: () => Promise<void>;
+  sendChatMessage: (message: string) => Promise<void>;
+  clearChat: () => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -135,6 +157,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
   const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgress | null>(null);
+  
+  // LLM/Agent state
+  const [llmSettings, setLLMSettings] = useState<LLMSettings>(loadSettings);
+  const [isSettingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [isAgentReady, setIsAgentReady] = useState(false);
+  const [isAgentInitializing, setIsAgentInitializing] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
 
   // Worker (single instance shared across app)
   const workerRef = useRef<Worker | null>(null);
@@ -266,6 +300,276 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return api.testArrayParams();
   }, []);
 
+  // LLM methods
+  const refreshLLMSettings = useCallback(() => {
+    setLLMSettings(loadSettings());
+  }, []);
+
+  const initializeAgent = useCallback(async (): Promise<void> => {
+    const api = apiRef.current;
+    if (!api) {
+      setAgentError('Worker not initialized');
+      return;
+    }
+
+    const config = getActiveProviderConfig();
+    if (!config) {
+      setAgentError('Please configure an LLM provider in settings');
+      return;
+    }
+
+    setIsAgentInitializing(true);
+    setAgentError(null);
+
+    try {
+      const result = await api.initializeAgent(config);
+      if (result.success) {
+        setIsAgentReady(true);
+        setAgentError(null);
+        if (import.meta.env.DEV) {
+          console.log('✅ Agent initialized successfully');
+        }
+      } else {
+        setAgentError(result.error ?? 'Failed to initialize agent');
+        setIsAgentReady(false);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentError(message);
+      setIsAgentReady(false);
+    } finally {
+      setIsAgentInitializing(false);
+    }
+  }, []);
+
+  const sendChatMessage = useCallback(async (message: string): Promise<void> => {
+    const api = apiRef.current;
+    if (!api) {
+      setAgentError('Worker not initialized');
+      return;
+    }
+
+    if (!isAgentReady) {
+      // Try to initialize first
+      await initializeAgent();
+      if (!apiRef.current) return;
+    }
+
+    // Add user message
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+    };
+    setChatMessages(prev => [...prev, userMessage]);
+    setIsChatLoading(true);
+    setCurrentToolCalls([]);
+
+    // Prepare message history for agent (convert our format to AgentMessage format)
+    const history: AgentMessage[] = [...chatMessages, userMessage].map(m => ({
+      role: m.role === 'tool' ? 'assistant' : m.role,
+      content: m.content,
+    }));
+
+    // Create placeholder for assistant response
+    const assistantMessageId = `assistant-${Date.now()}`;
+    let assistantContent = '';
+    const toolCallsForMessage: ToolCallInfo[] = [];
+    let reasoningSteps: string[] = []; // Collect reasoning steps
+
+    try {
+      const onChunk = Comlink.proxy((chunk: AgentStreamChunk) => {
+        switch (chunk.type) {
+          case 'reasoning':
+            // LLM's thinking/reasoning before tool calls
+            if (chunk.reasoning) {
+              reasoningSteps.push(chunk.reasoning);
+              // Update message to show reasoning
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                // Build content with reasoning steps
+                const reasoningText = reasoningSteps.join('\n\n');
+                if (existing) {
+                  return prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: reasoningText, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                } else {
+                  return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: reasoningText,
+                    timestamp: Date.now(),
+                    toolCalls: [...toolCallsForMessage],
+                  }];
+                }
+              });
+            }
+            break;
+
+          case 'content':
+            // Final answer content
+            if (chunk.content) {
+              assistantContent = chunk.content; // Replace, don't append (it's a full message)
+              // Update the assistant message
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                // Combine reasoning + final answer
+                const fullContent = reasoningSteps.length > 0 
+                  ? reasoningSteps.join('\n\n') + '\n\n---\n\n' + assistantContent
+                  : assistantContent;
+                if (existing) {
+                  return prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: fullContent, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                } else {
+                  return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: fullContent,
+                    timestamp: Date.now(),
+                    toolCalls: [...toolCallsForMessage],
+                  }];
+                }
+              });
+            }
+            break;
+
+          case 'tool_call':
+            if (chunk.toolCall) {
+              const tc = chunk.toolCall;
+              toolCallsForMessage.push(tc);
+              setCurrentToolCalls(prev => [...prev, tc]);
+              // Update message to include this tool call
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                const currentContent = reasoningSteps.length > 0 
+                  ? reasoningSteps.join('\n\n')
+                  : assistantContent || '';
+                if (existing) {
+                  return prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: currentContent, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                } else {
+                  return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: currentContent,
+                    timestamp: Date.now(),
+                    toolCalls: [...toolCallsForMessage],
+                  }];
+                }
+              });
+            }
+            break;
+
+          case 'tool_result':
+            if (chunk.toolCall) {
+              const tc = chunk.toolCall;
+              // Update the tool call status - try ID first, then find first running tool with same name
+              let idx = toolCallsForMessage.findIndex(t => t.id === tc.id);
+              if (idx < 0) {
+                // ID didn't match - find the first RUNNING tool with same name (not already completed)
+                idx = toolCallsForMessage.findIndex(t => t.name === tc.name && t.status === 'running');
+              }
+              if (idx < 0) {
+                // Still no match - find any tool with same name
+                idx = toolCallsForMessage.findIndex(t => t.name === tc.name && !t.result);
+              }
+              if (idx >= 0) {
+                toolCallsForMessage[idx] = { 
+                  ...toolCallsForMessage[idx], 
+                  result: tc.result, 
+                  status: 'completed' 
+                };
+              }
+              // Same logic for currentToolCalls
+              setCurrentToolCalls(prev => {
+                // Find by ID first
+                let targetIdx = prev.findIndex(t => t.id === tc.id);
+                if (targetIdx < 0) {
+                  // Find first running tool with same name
+                  targetIdx = prev.findIndex(t => t.name === tc.name && t.status === 'running');
+                }
+                if (targetIdx < 0) {
+                  // Find any incomplete tool with same name
+                  targetIdx = prev.findIndex(t => t.name === tc.name && !t.result);
+                }
+                if (targetIdx >= 0) {
+                  return prev.map((t, i) => i === targetIdx 
+                    ? { ...t, result: tc.result, status: 'completed' } 
+                    : t
+                  );
+                }
+                return prev;
+              });
+              // Update message with completed tool call
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                if (existing) {
+                  return prev.map(m =>
+                    m.id === assistantMessageId
+                      ? { ...m, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                }
+                return prev;
+              });
+            }
+            break;
+
+          case 'error':
+            setAgentError(chunk.error ?? 'Unknown error');
+            break;
+
+          case 'done':
+            // Finalize the assistant message
+            setChatMessages(prev => {
+              const existing = prev.find(m => m.id === assistantMessageId);
+              const finalContent = assistantContent || (reasoningSteps.length > 0 ? reasoningSteps.join('\n\n') : '');
+              if (existing) {
+                return prev.map(m =>
+                  m.id === assistantMessageId
+                    ? { ...m, content: finalContent, toolCalls: [...toolCallsForMessage] }
+                    : m
+                );
+              } else if (finalContent || toolCallsForMessage.length > 0) {
+                return [...prev, {
+                  id: assistantMessageId,
+                  role: 'assistant' as const,
+                  content: finalContent,
+                  timestamp: Date.now(),
+                  toolCalls: [...toolCallsForMessage],
+                }];
+              }
+              return prev;
+            });
+            break;
+        }
+      });
+
+      await api.chatStream(history, onChunk);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentError(message);
+    } finally {
+      setIsChatLoading(false);
+      setCurrentToolCalls([]);
+    }
+  }, [chatMessages, isAgentReady, initializeAgent]);
+
+  const clearChat = useCallback(() => {
+    setChatMessages([]);
+    setCurrentToolCalls([]);
+    setAgentError(null);
+  }, []);
+
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels(prev => {
       if (prev.includes(label)) {
@@ -317,6 +621,22 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     isEmbeddingReady: embeddingStatus === 'ready',
     // Debug
     testArrayParams,
+    // LLM/Agent state
+    llmSettings,
+    isSettingsPanelOpen,
+    setSettingsPanelOpen,
+    isAgentReady,
+    isAgentInitializing,
+    agentError,
+    // Chat state
+    chatMessages,
+    isChatLoading,
+    currentToolCalls,
+    // LLM methods
+    refreshLLMSettings,
+    initializeAgent,
+    sendChatMessage,
+    clearChat,
   };
 
   return (

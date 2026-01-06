@@ -275,10 +275,12 @@ export const semanticSearch = async (
   const queryVecStr = `[${queryVec.join(',')}]`;
 
   // Query the vector index on CodeEmbedding, then JOIN with CodeNode for metadata
+  // Note: KuzuDB requires WITH after YIELD before using WHERE
   const cypher = `
     CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
       CAST(${queryVecStr} AS FLOAT[384]), ${k})
     YIELD node AS emb, distance
+    WITH emb, distance
     WHERE distance < ${maxDistance}
     MATCH (n:CodeNode {id: emb.nodeId})
     RETURN n.id AS nodeId, n.name AS name, n.label AS label,
@@ -301,22 +303,24 @@ export const semanticSearch = async (
 };
 
 /**
- * Semantic search with graph expansion
- * Finds similar nodes AND their connections
+ * Semantic search with graph expansion (flattened results)
+ * Finds similar nodes AND their direct connections with relationship types
  * 
- * Uses separate CodeEmbedding table and JOINs with CodeNode
+ * Uses separate CodeEmbedding table and JOINs with CodeNode.
+ * Returns flattened results: one row per (match, connected) pair.
+ * This format works with KuzuDB and preserves relationship type information.
  * 
  * @param executeQuery - Function to execute Cypher queries
  * @param query - Search query text
- * @param k - Number of initial results
- * @param hops - Number of hops to expand (default: 2)
- * @returns Search results with connected nodes
+ * @param k - Number of initial semantic matches (default: 5)
+ * @param _hops - Unused (kept for API compatibility). Use execute_vector_cypher for multi-hop.
+ * @returns Flattened results: each row is a (match → connected) pair with relationship type
  */
 export const semanticSearchWithContext = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   query: string,
   k: number = 5,
-  hops: number = 2
+  _hops: number = 1  // Currently only single-hop supported; multi-hop via execute_vector_cypher
 ): Promise<any[]> => {
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
@@ -327,23 +331,22 @@ export const semanticSearchWithContext = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
-  // Query embedding table, JOIN with CodeNode, then expand graph
+  // Query embedding table, JOIN with CodeNode, then expand to direct connections
+  // Using single-hop so we can access r.type (variable-length paths don't support this in KuzuDB)
+  // Note: KuzuDB requires WITH after YIELD before using WHERE
   const cypher = `
     CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx',
       CAST(${queryVecStr} AS FLOAT[384]), ${k})
     YIELD node AS emb, distance
+    WITH emb, distance
     WHERE distance < 0.5
     MATCH (match:CodeNode {id: emb.nodeId})
-    MATCH (match)-[r:CodeRelation*1..${hops}]-(connected:CodeNode)
+    MATCH (match)-[r:CodeRelation]-(connected:CodeNode)
     RETURN match.id AS matchId, match.name AS matchName, match.label AS matchLabel,
            match.filePath AS matchPath, distance,
-           collect(DISTINCT {
-             id: connected.id,
-             name: connected.name,
-             label: connected.label,
-             relationType: [rel IN r | rel.type]
-           }) AS connections
-    ORDER BY distance
+           connected.id AS connectedId, connected.name AS connectedName, 
+           connected.label AS connectedLabel, r.type AS relationType
+    ORDER BY distance, matchId
   `;
 
   return executeQuery(cypher);
