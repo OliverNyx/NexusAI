@@ -7,7 +7,7 @@ import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
-import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo } from '../core/llm/types';
+import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 
@@ -374,68 +374,63 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // Create placeholder for assistant response
     const assistantMessageId = `assistant-${Date.now()}`;
-    let assistantContent = '';
+    // Use an ordered steps array to preserve execution order (reasoning → tool → reasoning → tool → answer)
+    const stepsForMessage: MessageStep[] = [];
+    // Keep toolCalls for backwards compat and currentToolCalls state
     const toolCallsForMessage: ToolCallInfo[] = [];
-    let reasoningSteps: string[] = []; // Collect reasoning steps
+    let stepCounter = 0;
+
+    // Helper to update the message with current steps
+    const updateMessage = () => {
+      // Build content from steps for backwards compatibility
+      const contentParts = stepsForMessage
+        .filter(s => s.type === 'reasoning' || s.type === 'content')
+        .map(s => s.content)
+        .filter(Boolean);
+      const content = contentParts.join('\n\n');
+      
+      setChatMessages(prev => {
+        const existing = prev.find(m => m.id === assistantMessageId);
+        const newMessage: ChatMessage = {
+          id: assistantMessageId,
+          role: 'assistant' as const,
+          content,
+          steps: [...stepsForMessage],
+          toolCalls: [...toolCallsForMessage],
+          timestamp: existing?.timestamp ?? Date.now(),
+        };
+        if (existing) {
+          return prev.map(m => m.id === assistantMessageId ? newMessage : m);
+        } else {
+          return [...prev, newMessage];
+        }
+      });
+    };
 
     try {
       const onChunk = Comlink.proxy((chunk: AgentStreamChunk) => {
         switch (chunk.type) {
           case 'reasoning':
-            // LLM's thinking/reasoning before tool calls
+            // LLM's thinking/reasoning - add as a step in order
             if (chunk.reasoning) {
-              reasoningSteps.push(chunk.reasoning);
-              // Update message to show reasoning
-              setChatMessages(prev => {
-                const existing = prev.find(m => m.id === assistantMessageId);
-                // Build content with reasoning steps
-                const reasoningText = reasoningSteps.join('\n\n');
-                if (existing) {
-                  return prev.map(m => 
-                    m.id === assistantMessageId 
-                      ? { ...m, content: reasoningText, toolCalls: [...toolCallsForMessage] }
-                      : m
-                  );
-                } else {
-                  return [...prev, {
-                    id: assistantMessageId,
-                    role: 'assistant' as const,
-                    content: reasoningText,
-                    timestamp: Date.now(),
-                    toolCalls: [...toolCallsForMessage],
-                  }];
-                }
+              stepsForMessage.push({
+                id: `step-${stepCounter++}`,
+                type: 'reasoning',
+                content: chunk.reasoning,
               });
+              updateMessage();
             }
             break;
 
           case 'content':
-            // Final answer content
+            // Final answer content - add as a step
             if (chunk.content) {
-              assistantContent = chunk.content; // Replace, don't append (it's a full message)
-              // Update the assistant message
-              setChatMessages(prev => {
-                const existing = prev.find(m => m.id === assistantMessageId);
-                // Combine reasoning + final answer
-                const fullContent = reasoningSteps.length > 0 
-                  ? reasoningSteps.join('\n\n') + '\n\n---\n\n' + assistantContent
-                  : assistantContent;
-                if (existing) {
-                  return prev.map(m => 
-                    m.id === assistantMessageId 
-                      ? { ...m, content: fullContent, toolCalls: [...toolCallsForMessage] }
-                      : m
-                  );
-                } else {
-                  return [...prev, {
-                    id: assistantMessageId,
-                    role: 'assistant' as const,
-                    content: fullContent,
-                    timestamp: Date.now(),
-                    toolCalls: [...toolCallsForMessage],
-                  }];
-                }
+              stepsForMessage.push({
+                id: `step-${stepCounter++}`,
+                type: 'content',
+                content: chunk.content,
               });
+              updateMessage();
             }
             break;
 
@@ -443,43 +438,26 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
             if (chunk.toolCall) {
               const tc = chunk.toolCall;
               toolCallsForMessage.push(tc);
-              setCurrentToolCalls(prev => [...prev, tc]);
-              // Update message to include this tool call
-              setChatMessages(prev => {
-                const existing = prev.find(m => m.id === assistantMessageId);
-                const currentContent = reasoningSteps.length > 0 
-                  ? reasoningSteps.join('\n\n')
-                  : assistantContent || '';
-                if (existing) {
-                  return prev.map(m => 
-                    m.id === assistantMessageId 
-                      ? { ...m, content: currentContent, toolCalls: [...toolCallsForMessage] }
-                      : m
-                  );
-                } else {
-                  return [...prev, {
-                    id: assistantMessageId,
-                    role: 'assistant' as const,
-                    content: currentContent,
-                    timestamp: Date.now(),
-                    toolCalls: [...toolCallsForMessage],
-                  }];
-                }
+              // Add tool call as a step (in order with reasoning)
+              stepsForMessage.push({
+                id: `step-${stepCounter++}`,
+                type: 'tool_call',
+                toolCall: tc,
               });
+              setCurrentToolCalls(prev => [...prev, tc]);
+              updateMessage();
             }
             break;
 
           case 'tool_result':
             if (chunk.toolCall) {
               const tc = chunk.toolCall;
-              // Update the tool call status - try ID first, then find first running tool with same name
+              // Update the tool call status in toolCallsForMessage
               let idx = toolCallsForMessage.findIndex(t => t.id === tc.id);
               if (idx < 0) {
-                // ID didn't match - find the first RUNNING tool with same name (not already completed)
                 idx = toolCallsForMessage.findIndex(t => t.name === tc.name && t.status === 'running');
               }
               if (idx < 0) {
-                // Still no match - find any tool with same name
                 idx = toolCallsForMessage.findIndex(t => t.name === tc.name && !t.result);
               }
               if (idx >= 0) {
@@ -489,16 +467,32 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   status: 'completed' 
                 };
               }
-              // Same logic for currentToolCalls
+              
+              // Also update the tool call in steps
+              const stepIdx = stepsForMessage.findIndex(s => 
+                s.type === 'tool_call' && s.toolCall && (
+                  s.toolCall.id === tc.id || 
+                  (s.toolCall.name === tc.name && s.toolCall.status === 'running')
+                )
+              );
+              if (stepIdx >= 0 && stepsForMessage[stepIdx].toolCall) {
+                stepsForMessage[stepIdx] = {
+                  ...stepsForMessage[stepIdx],
+                  toolCall: {
+                    ...stepsForMessage[stepIdx].toolCall!,
+                    result: tc.result,
+                    status: 'completed',
+                  },
+                };
+              }
+              
+              // Update currentToolCalls
               setCurrentToolCalls(prev => {
-                // Find by ID first
                 let targetIdx = prev.findIndex(t => t.id === tc.id);
                 if (targetIdx < 0) {
-                  // Find first running tool with same name
                   targetIdx = prev.findIndex(t => t.name === tc.name && t.status === 'running');
                 }
                 if (targetIdx < 0) {
-                  // Find any incomplete tool with same name
                   targetIdx = prev.findIndex(t => t.name === tc.name && !t.result);
                 }
                 if (targetIdx >= 0) {
@@ -509,38 +503,22 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 }
                 return prev;
               });
-              // Update message with completed tool call
-              setChatMessages(prev => {
-                const existing = prev.find(m => m.id === assistantMessageId);
-                if (existing) {
-                  return prev.map(m =>
-                    m.id === assistantMessageId
-                      ? { ...m, toolCalls: [...toolCallsForMessage] }
-                      : m
-                  );
-                }
-                return prev;
-              });
+              
+              updateMessage();
               
               // Parse highlight marker from tool results
-              // Format: [HIGHLIGHT_NODES:id1,id2,id3]
               if (tc.result) {
                 const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
                 if (highlightMatch) {
                   const rawIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
-                    // Try to match IDs against actual graph nodes
-                    // This handles cases where the LLM passes partial IDs without the label prefix
                     const matchedIds = new Set<string>();
                     const graphNodeIds = graph.nodes.map(n => n.id);
                     
                     for (const rawId of rawIds) {
-                      // First try exact match
                       if (graphNodeIds.includes(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        // Try to find a node whose ID ends with the raw ID
-                        // e.g., "src/path:ClassName" should match "Class:src/path:ClassName"
                         const found = graphNodeIds.find(gid => 
                           gid.endsWith(rawId) || gid.endsWith(':' + rawId)
                         );
@@ -554,7 +532,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                       setHighlightedNodeIds(matchedIds);
                     }
                   } else if (rawIds.length > 0) {
-                    // Fallback: just use the IDs directly if no graph available
                     setHighlightedNodeIds(new Set(rawIds));
                   }
                 }
@@ -567,27 +544,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
             break;
 
           case 'done':
-            // Finalize the assistant message
-            setChatMessages(prev => {
-              const existing = prev.find(m => m.id === assistantMessageId);
-              const finalContent = assistantContent || (reasoningSteps.length > 0 ? reasoningSteps.join('\n\n') : '');
-              if (existing) {
-                return prev.map(m =>
-                  m.id === assistantMessageId
-                    ? { ...m, content: finalContent, toolCalls: [...toolCallsForMessage] }
-                    : m
-                );
-              } else if (finalContent || toolCallsForMessage.length > 0) {
-                return [...prev, {
-                  id: assistantMessageId,
-                  role: 'assistant' as const,
-                  content: finalContent,
-                  timestamp: Date.now(),
-                  toolCalls: [...toolCallsForMessage],
-                }];
-              }
-              return prev;
-            });
+            // Finalize the assistant message - just call updateMessage one more time
+            updateMessage();
             break;
         }
       });

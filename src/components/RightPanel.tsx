@@ -374,55 +374,114 @@ export const RightPanel = () => {
                       }
                     `}>
                       {message.role === 'assistant' ? (
-                        <ReactMarkdown
-                          components={{
-                            code: ({ className, children, ...props }) => {
-                              const match = /language-(\w+)/.exec(className || '');
-                              const isInline = !className && !match;
-                              const codeContent = String(children).replace(/\n$/, '');
-                              
-                              if (isInline) {
-                                return (
-                                <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
-                                  {children}
-                                </code>
-                                );
-                              }
-                              
-                              // Use SyntaxHighlighter for code blocks
-                              const language = match ? match[1] : 'text';
-                              return (
-                                <SyntaxHighlighter
-                                  style={customTheme}
-                                  language={language}
-                                  PreTag="div"
-                                  customStyle={{
-                                    margin: 0,
-                                    padding: '12px',
-                                    borderRadius: '8px',
-                                    fontSize: '12px',
-                                    background: '#0a0a10',
-                                  }}
-                                >
-                                  {codeContent}
-                                </SyntaxHighlighter>
-                              );
-                            },
-                            pre: ({ children }) => <>{children}</>,
-                          }}
-                        >
-                          {message.content}
-                        </ReactMarkdown>
+                        // Render steps in order (reasoning, tool calls, content interleaved)
+                        message.steps && message.steps.length > 0 ? (
+                          <div className="space-y-3">
+                            {message.steps.map((step) => (
+                              <div key={step.id}>
+                                {step.type === 'reasoning' && step.content && (
+                                  <div className="text-text-secondary text-sm italic border-l-2 border-accent/30 pl-3">
+                                    {step.content}
+                                  </div>
+                                )}
+                                {step.type === 'tool_call' && step.toolCall && (
+                                  <ToolCallCard toolCall={step.toolCall} defaultExpanded={false} />
+                                )}
+                                {step.type === 'content' && step.content && (
+                                  <ReactMarkdown
+                                    components={{
+                                      code: ({ className, children, ...props }) => {
+                                        const match = /language-(\w+)/.exec(className || '');
+                                        const isInline = !className && !match;
+                                        const codeContent = String(children).replace(/\n$/, '');
+                                        
+                                        if (isInline) {
+                                          return (
+                                          <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
+                                            {children}
+                                          </code>
+                                          );
+                                        }
+                                        
+                                        const language = match ? match[1] : 'text';
+                                        return (
+                                          <SyntaxHighlighter
+                                            style={customTheme}
+                                            language={language}
+                                            PreTag="div"
+                                            customStyle={{
+                                              margin: 0,
+                                              padding: '12px',
+                                              borderRadius: '8px',
+                                              fontSize: '12px',
+                                              background: '#0a0a10',
+                                            }}
+                                          >
+                                            {codeContent}
+                                          </SyntaxHighlighter>
+                                        );
+                                      },
+                                      pre: ({ children }) => <>{children}</>,
+                                    }}
+                                  >
+                                    {step.content}
+                                  </ReactMarkdown>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          // Fallback: render content + toolCalls separately (old format)
+                          <>
+                            <ReactMarkdown
+                              components={{
+                                code: ({ className, children, ...props }) => {
+                                  const match = /language-(\w+)/.exec(className || '');
+                                  const isInline = !className && !match;
+                                  const codeContent = String(children).replace(/\n$/, '');
+                                  
+                                  if (isInline) {
+                                    return (
+                                    <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
+                                      {children}
+                                    </code>
+                                    );
+                                  }
+                                  
+                                  const language = match ? match[1] : 'text';
+                                  return (
+                                    <SyntaxHighlighter
+                                      style={customTheme}
+                                      language={language}
+                                      PreTag="div"
+                                      customStyle={{
+                                        margin: 0,
+                                        padding: '12px',
+                                        borderRadius: '8px',
+                                        fontSize: '12px',
+                                        background: '#0a0a10',
+                                      }}
+                                    >
+                                      {codeContent}
+                                    </SyntaxHighlighter>
+                                  );
+                                },
+                                pre: ({ children }) => <>{children}</>,
+                              }}
+                            >
+                              {message.content}
+                            </ReactMarkdown>
+                            {message.toolCalls && message.toolCalls.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                {message.toolCalls.map(tc => (
+                                  <ToolCallCard key={tc.id} toolCall={tc} defaultExpanded={false} />
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )
                       ) : (
                         message.content
-                      )}
-                      {/* Tool calls shown as expandable cards */}
-                      {message.toolCalls && message.toolCalls.length > 0 && (
-                        <div className="mt-3 space-y-2">
-                          {message.toolCalls.map(tc => (
-                            <ToolCallCard key={tc.id} toolCall={tc} defaultExpanded={false} />
-                          ))}
-                        </div>
                       )}
                     </div>
                   </div>

@@ -94,13 +94,29 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
 };
 
 /**
+ * A single step in the agent's execution (reasoning or tool call)
+ * Steps are rendered in order to show the agent's thought process
+ */
+export interface MessageStep {
+  id: string;
+  type: 'reasoning' | 'tool_call' | 'content';
+  /** For reasoning/content steps */
+  content?: string;
+  /** For tool_call steps */
+  toolCall?: ToolCallInfo;
+}
+
+/**
  * Chat message for agent interaction
  */
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
+  /** @deprecated Use steps instead for proper ordering */
   toolCalls?: ToolCallInfo[];
+  /** Ordered steps: reasoning, tool calls, and final content interleaved */
+  steps?: MessageStep[];
   toolCallId?: string;
   timestamp: number;
 }
