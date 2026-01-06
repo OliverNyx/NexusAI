@@ -11,7 +11,11 @@ Transform codebases into interactive knowledge graphs using AST parsing, Web Wor
 
 
 
-https://github.com/user-attachments/assets/adfc3ea4-8eb3-4783-b8a7-f5969912b0c3
+
+https://github.com/user-attachments/assets/f36861c4-33a7-498f-b597-cb656d0e6b9b
+
+
+
 
 
 
