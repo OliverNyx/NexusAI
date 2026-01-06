@@ -8,6 +8,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ReactMarkdown from 'react-markdown';
 import { useAppState } from '../hooks/useAppState';
 import { NODE_COLORS } from '../lib/constants';
+import { ToolCallCard } from './ToolCallCard';
 
 // Custom syntax theme
 const customTheme = {
@@ -307,18 +308,15 @@ export const RightPanel = () => {
             </div>
           )}
 
-          {/* Tool call indicator */}
+          {/* Active tool calls - shown at top during execution */}
           {currentToolCalls.length > 0 && (
-            <div className="px-4 py-2 bg-elevated/60 border-b border-border-subtle text-xs text-text-muted flex flex-wrap gap-2">
+            <div className="px-4 py-3 bg-elevated/60 border-b border-border-subtle space-y-2">
+              <div className="text-[10px] uppercase tracking-wider text-text-muted flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Working...</span>
+              </div>
               {currentToolCalls.map(tc => (
-                <span
-                  key={tc.id}
-                  className="px-2 py-1 rounded-full border border-border-subtle bg-surface text-text-secondary flex items-center gap-1"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span>{tc.name}</span>
-                  <span className="text-[10px] text-text-muted">({tc.status})</span>
-                </span>
+                <ToolCallCard key={tc.id} toolCall={tc} defaultExpanded={false} />
               ))}
             </div>
           )}
@@ -398,14 +396,11 @@ export const RightPanel = () => {
                       ) : (
                         message.content
                       )}
+                      {/* Tool calls shown as expandable cards */}
                       {message.toolCalls && message.toolCalls.length > 0 && (
-                        <div className="mt-2 space-y-1 text-[11px] text-text-muted">
+                        <div className="mt-3 space-y-2">
                           {message.toolCalls.map(tc => (
-                            <div key={tc.id} className="flex items-center gap-1">
-                              <Sparkles className="w-3 h-3 text-accent" />
-                              <span>{tc.name}</span>
-                              {tc.result && <span className="text-text-secondary">→ {tc.result}</span>}
-                            </div>
+                            <ToolCallCard key={tc.id} toolCall={tc} defaultExpanded={false} />
                           ))}
                         </div>
                       )}

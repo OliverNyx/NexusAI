@@ -376,29 +376,63 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     const assistantMessageId = `assistant-${Date.now()}`;
     let assistantContent = '';
     const toolCallsForMessage: ToolCallInfo[] = [];
+    let reasoningSteps: string[] = []; // Collect reasoning steps
 
     try {
       const onChunk = Comlink.proxy((chunk: AgentStreamChunk) => {
         switch (chunk.type) {
-          case 'content':
-            if (chunk.content) {
-              assistantContent += chunk.content;
-              // Update the assistant message in place
+          case 'reasoning':
+            // LLM's thinking/reasoning before tool calls
+            if (chunk.reasoning) {
+              reasoningSteps.push(chunk.reasoning);
+              // Update message to show reasoning
               setChatMessages(prev => {
                 const existing = prev.find(m => m.id === assistantMessageId);
+                // Build content with reasoning steps
+                const reasoningText = reasoningSteps.join('\n\n');
                 if (existing) {
                   return prev.map(m => 
                     m.id === assistantMessageId 
-                      ? { ...m, content: assistantContent }
+                      ? { ...m, content: reasoningText, toolCalls: [...toolCallsForMessage] }
                       : m
                   );
                 } else {
                   return [...prev, {
                     id: assistantMessageId,
                     role: 'assistant' as const,
-                    content: assistantContent,
+                    content: reasoningText,
                     timestamp: Date.now(),
-                    toolCalls: toolCallsForMessage,
+                    toolCalls: [...toolCallsForMessage],
+                  }];
+                }
+              });
+            }
+            break;
+
+          case 'content':
+            // Final answer content
+            if (chunk.content) {
+              assistantContent = chunk.content; // Replace, don't append (it's a full message)
+              // Update the assistant message
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                // Combine reasoning + final answer
+                const fullContent = reasoningSteps.length > 0 
+                  ? reasoningSteps.join('\n\n') + '\n\n---\n\n' + assistantContent
+                  : assistantContent;
+                if (existing) {
+                  return prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: fullContent, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                } else {
+                  return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: fullContent,
+                    timestamp: Date.now(),
+                    toolCalls: [...toolCallsForMessage],
                   }];
                 }
               });
@@ -410,20 +444,83 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
               const tc = chunk.toolCall;
               toolCallsForMessage.push(tc);
               setCurrentToolCalls(prev => [...prev, tc]);
+              // Update message to include this tool call
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                const currentContent = reasoningSteps.length > 0 
+                  ? reasoningSteps.join('\n\n')
+                  : assistantContent || '';
+                if (existing) {
+                  return prev.map(m => 
+                    m.id === assistantMessageId 
+                      ? { ...m, content: currentContent, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                } else {
+                  return [...prev, {
+                    id: assistantMessageId,
+                    role: 'assistant' as const,
+                    content: currentContent,
+                    timestamp: Date.now(),
+                    toolCalls: [...toolCallsForMessage],
+                  }];
+                }
+              });
             }
             break;
 
           case 'tool_result':
             if (chunk.toolCall) {
               const tc = chunk.toolCall;
-              setCurrentToolCalls(prev => 
-                prev.map(t => t.id === tc.id ? { ...t, result: tc.result, status: 'completed' } : t)
-              );
-              // Update the tool call in the message too
-              const idx = toolCallsForMessage.findIndex(t => t.id === tc.id);
-              if (idx >= 0) {
-                toolCallsForMessage[idx] = { ...toolCallsForMessage[idx], result: tc.result, status: 'completed' };
+              // Update the tool call status - try ID first, then find first running tool with same name
+              let idx = toolCallsForMessage.findIndex(t => t.id === tc.id);
+              if (idx < 0) {
+                // ID didn't match - find the first RUNNING tool with same name (not already completed)
+                idx = toolCallsForMessage.findIndex(t => t.name === tc.name && t.status === 'running');
               }
+              if (idx < 0) {
+                // Still no match - find any tool with same name
+                idx = toolCallsForMessage.findIndex(t => t.name === tc.name && !t.result);
+              }
+              if (idx >= 0) {
+                toolCallsForMessage[idx] = { 
+                  ...toolCallsForMessage[idx], 
+                  result: tc.result, 
+                  status: 'completed' 
+                };
+              }
+              // Same logic for currentToolCalls
+              setCurrentToolCalls(prev => {
+                // Find by ID first
+                let targetIdx = prev.findIndex(t => t.id === tc.id);
+                if (targetIdx < 0) {
+                  // Find first running tool with same name
+                  targetIdx = prev.findIndex(t => t.name === tc.name && t.status === 'running');
+                }
+                if (targetIdx < 0) {
+                  // Find any incomplete tool with same name
+                  targetIdx = prev.findIndex(t => t.name === tc.name && !t.result);
+                }
+                if (targetIdx >= 0) {
+                  return prev.map((t, i) => i === targetIdx 
+                    ? { ...t, result: tc.result, status: 'completed' } 
+                    : t
+                  );
+                }
+                return prev;
+              });
+              // Update message with completed tool call
+              setChatMessages(prev => {
+                const existing = prev.find(m => m.id === assistantMessageId);
+                if (existing) {
+                  return prev.map(m =>
+                    m.id === assistantMessageId
+                      ? { ...m, toolCalls: [...toolCallsForMessage] }
+                      : m
+                  );
+                }
+                return prev;
+              });
             }
             break;
 
@@ -432,22 +529,23 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
             break;
 
           case 'done':
-            // Finalize the assistant message with all tool calls
+            // Finalize the assistant message
             setChatMessages(prev => {
               const existing = prev.find(m => m.id === assistantMessageId);
+              const finalContent = assistantContent || (reasoningSteps.length > 0 ? reasoningSteps.join('\n\n') : '');
               if (existing) {
                 return prev.map(m =>
                   m.id === assistantMessageId
-                    ? { ...m, content: assistantContent, toolCalls: toolCallsForMessage }
+                    ? { ...m, content: finalContent, toolCalls: [...toolCallsForMessage] }
                     : m
                 );
-              } else if (assistantContent) {
+              } else if (finalContent || toolCallsForMessage.length > 0) {
                 return [...prev, {
                   id: assistantMessageId,
                   role: 'assistant' as const,
-                  content: assistantContent,
+                  content: finalContent,
                   timestamp: Date.now(),
-                  toolCalls: toolCallsForMessage,
+                  toolCalls: [...toolCallsForMessage],
                 }];
               }
               return prev;

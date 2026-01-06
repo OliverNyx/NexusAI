@@ -27,6 +27,8 @@ CAPABILITIES:
 - Execute Cypher queries to explore code structure (functions, classes, files, imports, call graphs)
 - Perform semantic search to find code by meaning (when embeddings are available)
 - Combine semantic search + graph traversal in a SINGLE Cypher query via the vector index (when embeddings are available)
+- Search for exact text patterns using grep (regex) across all files
+- Read full file contents directly
 - Trace dependencies and relationships between code elements
 - Explain code architecture and patterns
 
@@ -34,21 +36,33 @@ APPROACH:
 1. Start by understanding what the user wants to know
 2. Choose the right tool(s) for the task:
    - Use 'get_codebase_stats' first if you need an overview
-   - Use 'semantic_search' for simple concept-based lookup (find relevant nodes)
-   - Use 'semantic_search_with_context' for simple semantic + neighborhood expansion (prebuilt 1-3 hop expansion)
-   - Use 'execute_vector_cypher' when you need semantic search + CUSTOM traversal/filters/returns in ONE query
-     - Your Cypher MUST include the placeholder {{QUERY_VECTOR}} where a FLOAT[384] vector belongs
-     - The vector index is on CodeEmbedding (code_embedding_idx). You must JOIN back to CodeNode via emb.nodeId
-   - Use 'execute_cypher' for pure structural queries (no vector search)
-   - Use 'get_code_content' to show actual source code
+   - Use 'grep_code' to find EXACT text patterns (strings, error messages, TODOs, variable names)
+   - Use 'read_file' to see the FULL content of any file
+   - Use 'semantic_search' for CONCEPT-based lookup (find code by meaning, not exact text)
+   - Use 'semantic_search_with_context' for semantic + neighborhood expansion
+   - Use 'execute_vector_cypher' when you need semantic search + CUSTOM traversal in ONE query
+   - Use 'execute_cypher' for pure structural queries (relationships, call graphs)
+   - Use 'get_code_content' to show source code for a specific node ID
 3. Interpret results and explain them clearly
 4. Suggest follow-up explorations when relevant
+
+TOOL SELECTION GUIDE:
+| Task | Best Tool |
+|------|-----------|
+| Find exact string "API_KEY" | grep_code |
+| Find all TODO comments | grep_code |
+| Find code related to "authentication" | semantic_search |
+| What functions call X? | execute_cypher |
+| Show me file utils.ts | read_file |
+| Show code for a found node | get_code_content |
+| Find auth code AND its callers | semantic_search_with_context |
 
 IMPORTANT NOTES ABOUT THE DATABASE:
 - Nodes are stored in CodeNode(id, label, name, filePath, startLine, endLine, content)
 - Edges are stored in CodeRelation(FROM CodeNode TO CodeNode, type) where type ∈ {CALLS, IMPORTS, CONTAINS, DEFINES}
 - Embeddings are stored separately in CodeEmbedding(nodeId, embedding) for memory efficiency
 - Vector index: code_embedding_idx on CodeEmbedding.embedding (cosine distance; smaller distance = more similar)
+- Full file contents are available via grep_code and read_file (not truncated)
 
 UNIFIED VECTOR + GRAPH QUERY PATTERN (ONE QUERY):
 1) Vector search to get closest embeddings
@@ -72,8 +86,7 @@ STYLE:
 - If a query fails, explain why and suggest alternatives
 
 LIMITATIONS:
-- You can only see code that's been indexed in the knowledge graph
-- Semantic search requires embeddings to be generated first
+- Semantic search requires embeddings to be generated first (but grep_code always works)
 - Large codebases may require more specific queries
 
 When showing code or query results, format them nicely using markdown.`;
@@ -140,14 +153,16 @@ export const createGraphRAGAgent = (
   executeQuery: (cypher: string) => Promise<any[]>,
   semanticSearch: (query: string, k?: number, maxDistance?: number) => Promise<any[]>,
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>,
-  isEmbeddingReady: () => boolean
+  isEmbeddingReady: () => boolean,
+  fileContents: Map<string, string>
 ) => {
   const model = createChatModel(config);
   const tools = createGraphRAGTools(
     executeQuery,
     semanticSearch,
     semanticSearchWithContext,
-    isEmbeddingReady
+    isEmbeddingReady,
+    fileContents
   );
   
   const agent = createReactAgent({
@@ -169,7 +184,13 @@ export interface AgentMessage {
 
 /**
  * Stream a response from the agent
- * Yields chunks for real-time UI updates
+ * Uses streamMode: "values" to get step-by-step updates including reasoning
+ * 
+ * Each step shows:
+ * - AI reasoning/thinking (content before tool calls)
+ * - Tool calls with arguments
+ * - Tool results
+ * - Final answer
  */
 export async function* streamAgentResponse(
   agent: ReturnType<typeof createReactAgent>,
@@ -181,53 +202,70 @@ export async function* streamAgentResponse(
       content: m.content,
     }));
     
-    // In LangGraph, we stream events to get granular updates
-    const stream = await agent.streamEvents(
+    // Use stream with "values" mode to get each step as a complete state
+    // This lets us see reasoning, tool calls, and results separately
+    const stream = await agent.stream(
       { messages: formattedMessages },
-      { version: 'v2' }
+      { streamMode: 'values' }
     );
     
-    for await (const event of stream) {
-      const { event: eventType, data } = event;
-      const dataAny = data as any;
-
-      // Handle tool calls start
-      if (eventType === 'on_tool_start') {
-        yield {
-          type: 'tool_call',
-          toolCall: {
-            id: dataAny?.tool_call_id || dataAny?.toolCallId || Date.now().toString(), // fallback if ID missing
-            name: (event as any).name,
-            args: dataAny?.input ?? {},
-            status: 'running',
-          },
-        };
-      }
+    let lastMessageCount = formattedMessages.length;
+    
+    for await (const step of stream) {
+      const stepMessages = step.messages || [];
       
-      // Handle tool output
-      if (eventType === 'on_tool_end') {
-        yield {
-          type: 'tool_result',
-          toolCall: {
-            id: dataAny?.tool_call_id || dataAny?.toolCallId || '', // we might need to match by name if ID missing
-            name: (event as any).name,
-            args: {},
-            result: typeof dataAny?.output === 'string' ? dataAny.output : JSON.stringify(dataAny?.output),
-            status: 'completed',
-          },
-        };
-      }
-
-      // Handle streamed LLM content
-      if (eventType === 'on_chat_model_stream') {
-        const content = dataAny?.chunk?.content;
-        if (content && typeof content === 'string') {
+      // Process only new messages since last step
+      for (let i = lastMessageCount; i < stepMessages.length; i++) {
+        const msg = stepMessages[i];
+        const msgType = msg._getType?.() || msg.type || 'unknown';
+        
+        // AI message with content (reasoning or final answer)
+        if (msgType === 'ai' || msgType === 'AIMessage') {
+          const content = msg.content;
+          const toolCalls = msg.tool_calls || msg.additional_kwargs?.tool_calls || [];
+          
+          // If has content, yield it (reasoning or answer)
+          if (content && typeof content === 'string' && content.trim()) {
+            yield {
+              type: toolCalls.length > 0 ? 'reasoning' : 'content',
+              reasoning: toolCalls.length > 0 ? content : undefined,
+              content: toolCalls.length === 0 ? content : undefined,
+            };
+          }
+          
+          // If has tool calls, yield each one
+          for (const tc of toolCalls) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name: tc.name || tc.function?.name || 'unknown',
+                args: tc.args || (tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}),
+                status: 'running',
+              },
+            };
+          }
+        }
+        
+        // Tool message (result from a tool)
+        if (msgType === 'tool' || msgType === 'ToolMessage') {
+          const toolCallId = msg.tool_call_id || msg.additional_kwargs?.tool_call_id || '';
+          const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+          
           yield {
-            type: 'content',
-            content: content,
+            type: 'tool_result',
+            toolCall: {
+              id: toolCallId,
+              name: msg.name || 'tool',
+              args: {},
+              result: result,
+              status: 'completed',
+            },
           };
         }
       }
+      
+      lastMessageCount = stepMessages.length;
     }
     
     yield { type: 'done' };

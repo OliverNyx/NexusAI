@@ -26,6 +26,9 @@ const getKuzuAdapter = async () => {
 let embeddingProgress: EmbeddingProgress | null = null;
 let isEmbeddingComplete = false;
 
+// File contents state - stores full file contents for grep/read tools
+let storedFileContents: Map<string, string> = new Map();
+
 // Agent state
 let currentAgent: ReturnType<typeof createGraphRAGAgent> | null = null;
 let currentProviderConfig: ProviderConfig | null = null;
@@ -50,6 +53,9 @@ const workerApi = {
     // Run the actual pipeline
     const result = await runIngestionPipeline(file, onProgress);
     
+    // Store file contents for grep/read tools (full content, not truncated)
+    storedFileContents = result.fileContents;
+    
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
       onProgress({
@@ -67,8 +73,9 @@ const workerApi = {
       await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
       
       if (import.meta.env.DEV) {
-      const stats = await kuzu.getKuzuStats();
-      console.log('KuzuDB loaded:', stats);
+        const stats = await kuzu.getKuzuStats();
+        console.log('KuzuDB loaded:', stats);
+        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
       // KuzuDB is optional - silently continue without it
@@ -136,6 +143,9 @@ const workerApi = {
     // Run the pipeline
     const result = await runPipelineFromFiles(files, onProgress);
     
+    // Store file contents for grep/read tools (full content, not truncated)
+    storedFileContents = result.fileContents;
+    
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
       onProgress({
@@ -155,6 +165,7 @@ const workerApi = {
       if (import.meta.env.DEV) {
         const stats = await kuzu.getKuzuStats();
         console.log('KuzuDB loaded:', stats);
+        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
       // KuzuDB is optional - silently continue without it
@@ -328,7 +339,8 @@ const workerApi = {
         kuzu.executeQuery,
         semanticSearchWrapper,
         semanticSearchWithContextWrapper,
-        () => isEmbeddingComplete
+        () => isEmbeddingComplete,
+        storedFileContents
       );
       currentProviderConfig = config;
 

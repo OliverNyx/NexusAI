@@ -118,12 +118,33 @@ export interface ToolCallInfo {
 
 /**
  * Streaming chunk from agent
+ * Now supports step-based streaming where each step is a distinct message
  */
 export interface AgentStreamChunk {
-  type: 'content' | 'tool_call' | 'tool_result' | 'error' | 'done';
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done';
+  /** LLM's reasoning/thinking text (shown as a step) */
+  reasoning?: string;
+  /** Final answer content (streamed token by token) */
   content?: string;
+  /** Tool call information */
   toolCall?: ToolCallInfo;
+  /** Error message */
   error?: string;
+}
+
+/**
+ * A single step in the agent's execution
+ * Used for displaying the agent's thought process
+ */
+export interface AgentStep {
+  id: string;
+  type: 'reasoning' | 'tool_call' | 'answer';
+  /** For reasoning steps */
+  content?: string;
+  /** For tool_call steps */
+  toolCall?: ToolCallInfo;
+  /** Timestamp */
+  timestamp: number;
 }
 
 /**

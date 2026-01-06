@@ -26,6 +26,8 @@ const AppContent = () => {
     setSettingsPanelOpen,
     refreshLLMSettings,
     initializeAgent,
+    startEmbeddings,
+    embeddingStatus,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -43,6 +45,17 @@ const AppContent = () => {
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
+      
+      // Auto-start embeddings pipeline in background
+      // Uses WebGPU if available, falls back to WASM
+      startEmbeddings().catch((err) => {
+        // WebGPU not available - try WASM fallback silently
+        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+          startEmbeddings('wasm').catch(console.warn);
+        } else {
+          console.warn('Embeddings auto-start failed:', err);
+        }
+      });
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -56,7 +69,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings]);
 
   const handleGitClone = useCallback(async (files: FileEntry[]) => {
     // Extract project name from first file path (e.g., "owner-repo-123/src/..." -> "owner-repo")
@@ -74,6 +87,17 @@ const AppContent = () => {
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
+      
+      // Auto-start embeddings pipeline in background
+      // Uses WebGPU if available, falls back to WASM
+      startEmbeddings().catch((err) => {
+        // WebGPU not available - try WASM fallback silently
+        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+          startEmbeddings('wasm').catch(console.warn);
+        } else {
+          console.warn('Embeddings auto-start failed:', err);
+        }
+      });
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -87,7 +111,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
