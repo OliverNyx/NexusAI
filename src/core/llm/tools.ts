@@ -600,9 +600,17 @@ export const createGraphRAGTools = (
     },
     {
       name: 'highlight_in_graph',
-      description: 'Highlight specific nodes in the visual knowledge graph that the user can see alongside this chat. Use this to visually show the user which code elements you are discussing. Pass the node IDs from previous search/query results.',
+      description: `Highlight specific nodes in the visual knowledge graph. Pass the EXACT node IDs from your query results.
+
+IMPORTANT: Node IDs include a label prefix! Format is: Label:filepath:name
+Examples:
+- Class:src/agents/base.py:BaseAgent
+- Function:src/utils.ts:calculateSum
+- File:src/main.py
+
+Copy the ID EXACTLY as it appears in query results (the "classId", "fnId", "fileId", etc. columns).`,
       schema: z.object({
-        nodeIds: z.array(z.string()).describe('Array of node IDs to highlight (from search results or queries)'),
+        nodeIds: z.array(z.string()).describe('Array of EXACT node IDs to highlight - must include the label prefix like "Class:" or "Function:"'),
         description: z.string().optional().nullable().describe('Brief description of what these nodes represent'),
       }),
     }

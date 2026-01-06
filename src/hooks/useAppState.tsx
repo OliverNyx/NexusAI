@@ -527,9 +527,35 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
               if (tc.result) {
                 const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
                 if (highlightMatch) {
-                  const nodeIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
-                  if (nodeIds.length > 0) {
-                    setHighlightedNodeIds(new Set(nodeIds));
+                  const rawIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
+                  if (rawIds.length > 0 && graph) {
+                    // Try to match IDs against actual graph nodes
+                    // This handles cases where the LLM passes partial IDs without the label prefix
+                    const matchedIds = new Set<string>();
+                    const graphNodeIds = graph.nodes.map(n => n.id);
+                    
+                    for (const rawId of rawIds) {
+                      // First try exact match
+                      if (graphNodeIds.includes(rawId)) {
+                        matchedIds.add(rawId);
+                      } else {
+                        // Try to find a node whose ID ends with the raw ID
+                        // e.g., "src/path:ClassName" should match "Class:src/path:ClassName"
+                        const found = graphNodeIds.find(gid => 
+                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
+                        );
+                        if (found) {
+                          matchedIds.add(found);
+                        }
+                      }
+                    }
+                    
+                    if (matchedIds.size > 0) {
+                      setHighlightedNodeIds(matchedIds);
+                    }
+                  } else if (rawIds.length > 0) {
+                    // Fallback: just use the IDs directly if no graph available
+                    setHighlightedNodeIds(new Set(rawIds));
                   }
                 }
               }

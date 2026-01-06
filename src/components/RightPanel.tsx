@@ -383,9 +383,9 @@ export const RightPanel = () => {
                               
                               if (isInline) {
                                 return (
-                                  <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
-                                    {children}
-                                  </code>
+                                <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
+                                  {children}
+                                </code>
                                 );
                               }
                               
