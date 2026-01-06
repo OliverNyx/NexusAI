@@ -521,6 +521,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 }
                 return prev;
               });
+              
+              // Parse highlight marker from tool results
+              // Format: [HIGHLIGHT_NODES:id1,id2,id3]
+              if (tc.result) {
+                const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
+                if (highlightMatch) {
+                  const nodeIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
+                  if (nodeIds.length > 0) {
+                    setHighlightedNodeIds(new Set(nodeIds));
+                  }
+                }
+              }
             }
             break;
 

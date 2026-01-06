@@ -580,6 +580,34 @@ export const createGraphRAGTools = (
     }
   );
 
+  /**
+   * Tool: Highlight in Graph
+   * Highlight specific nodes in the visual knowledge graph
+   * Returns a special marker that the UI parses to highlight nodes
+   */
+  const highlightInGraphTool = tool(
+    async ({ nodeIds, description }: { nodeIds: string[]; description?: string }) => {
+      if (!nodeIds || nodeIds.length === 0) {
+        return 'No node IDs provided to highlight.';
+      }
+      
+      // Return a special marker format that the UI will parse
+      // Format: [HIGHLIGHT_NODES:id1,id2,id3]
+      const marker = `[HIGHLIGHT_NODES:${nodeIds.join(',')}]`;
+      
+      const desc = description || `Highlighting ${nodeIds.length} node(s) in the knowledge graph`;
+      return `${desc}\n\n${marker}\n\nThe nodes have been highlighted in the graph visualization on the left. You can click on them to see their details.`;
+    },
+    {
+      name: 'highlight_in_graph',
+      description: 'Highlight specific nodes in the visual knowledge graph that the user can see alongside this chat. Use this to visually show the user which code elements you are discussing. Pass the node IDs from previous search/query results.',
+      schema: z.object({
+        nodeIds: z.array(z.string()).describe('Array of node IDs to highlight (from search results or queries)'),
+        description: z.string().optional().nullable().describe('Brief description of what these nodes represent'),
+      }),
+    }
+  );
+
   return [
     executeCypherTool,
     executeVectorCypherTool,
@@ -590,5 +618,6 @@ export const createGraphRAGTools = (
     getStatsTool,
     grepCodeTool,
     readFileTool,
+    highlightInGraphTool,
   ];
 };
