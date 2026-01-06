@@ -121,13 +121,15 @@ export interface ToolCallInfo {
  * Now supports step-based streaming where each step is a distinct message
  */
 export interface AgentStreamChunk {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done';
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'highlight' | 'error' | 'done';
   /** LLM's reasoning/thinking text (shown as a step) */
   reasoning?: string;
   /** Final answer content (streamed token by token) */
   content?: string;
   /** Tool call information */
   toolCall?: ToolCallInfo;
+  /** Node IDs to highlight in the graph */
+  highlightNodeIds?: string[];
   /** Error message */
   error?: string;
 }
@@ -152,6 +154,11 @@ export interface AgentStep {
  */
 export const GRAPH_SCHEMA_DESCRIPTION = `
 KUZU GRAPH DATABASE SCHEMA:
+
+⚠️ CRITICAL: There is NO "File" table, NO "Function" table, etc!
+⚠️ ALL nodes use the SINGLE "CodeNode" table with a "label" property!
+❌ WRONG: MATCH (f:File) or MATCH (fn:Function)
+✅ RIGHT: MATCH (n:CodeNode {label: 'File'}) or MATCH (n:CodeNode {label: 'Function'})
 
 NODE TABLES:
 1. CodeNode - All code elements (polymorphic)

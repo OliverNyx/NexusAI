@@ -5,9 +5,10 @@
  * Shows the tool name, status, and when expanded, the query/args and result.
  */
 
-import { useState } from 'react';
-import { ChevronDown, ChevronRight, Sparkles, Check, Loader2, AlertCircle } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { ChevronDown, ChevronRight, Sparkles, Check, Loader2, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import type { ToolCallInfo } from '../core/llm/types';
+import { useAppState } from '../hooks/useAppState';
 
 interface ToolCallCardProps {
   toolCall: ToolCallInfo;
@@ -89,14 +90,50 @@ const getToolDisplayName = (name: string): string => {
     'get_code_content': '📄 Read Code',
     'get_codebase_stats': '📊 Get Stats',
     'get_graph_schema': '📋 Get Schema',
+    'highlight_in_graph': '✨ Highlight in Graph',
+    'grep_code': '🔍 Search Code',
+    'read_file': '📄 Read File',
   };
   return names[name] || name;
 };
 
+/**
+ * Extract node IDs from highlight tool result
+ */
+const extractHighlightNodeIds = (result: string | undefined): string[] => {
+  if (!result) return [];
+  const match = result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
+  if (match) {
+    return match[1].split(',').map(id => id.trim()).filter(Boolean);
+  }
+  return [];
+};
+
 export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCardProps) => {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const { highlightedNodeIds, setHighlightedNodeIds } = useAppState();
   const status = getStatusDisplay(toolCall.status);
   const formattedArgs = formatArgs(toolCall.args);
+  
+  // Check if this is a highlight tool and extract node IDs
+  const isHighlightTool = toolCall.name === 'highlight_in_graph';
+  const highlightNodeIds = isHighlightTool ? extractHighlightNodeIds(toolCall.result) : [];
+  
+  // Check if these specific nodes are currently highlighted
+  const isHighlightActive = highlightNodeIds.length > 0 && 
+    highlightNodeIds.some(id => highlightedNodeIds.has(id));
+  
+  // Toggle highlight on/off
+  const toggleHighlight = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation(); // Don't trigger expand/collapse
+    if (isHighlightActive) {
+      // Turn off - clear highlights
+      setHighlightedNodeIds(new Set());
+    } else {
+      // Turn on - set these nodes as highlighted
+      setHighlightedNodeIds(new Set(highlightNodeIds));
+    }
+  }, [isHighlightActive, highlightNodeIds, setHighlightedNodeIds]);
   
   return (
     <div className={`rounded-lg border ${status.borderColor} ${status.bgColor} overflow-hidden transition-all`}>
@@ -114,6 +151,31 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
         <span className="flex-1 text-sm font-medium text-text-primary">
           {getToolDisplayName(toolCall.name)}
         </span>
+        
+        {/* Highlight toggle button - only for highlight_in_graph tool with results */}
+        {isHighlightTool && highlightNodeIds.length > 0 && (
+          <button
+            onClick={toggleHighlight}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
+              isHighlightActive
+                ? 'bg-accent/20 text-accent hover:bg-accent/30'
+                : 'bg-surface/50 text-text-muted hover:bg-surface hover:text-text-primary'
+            }`}
+            title={isHighlightActive ? 'Turn off highlight' : 'Turn on highlight'}
+          >
+            {isHighlightActive ? (
+              <>
+                <Eye className="w-3 h-3" />
+                <span>On</span>
+              </>
+            ) : (
+              <>
+                <EyeOff className="w-3 h-3" />
+                <span>Off</span>
+              </>
+            )}
+          </button>
+        )}
         
         {/* Status indicator */}
         <span className={`flex items-center gap-1 text-xs ${status.color}`}>

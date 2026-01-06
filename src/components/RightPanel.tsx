@@ -377,15 +377,35 @@ export const RightPanel = () => {
                         <ReactMarkdown
                           components={{
                             code: ({ className, children, ...props }) => {
-                              const isInline = !className;
-                              return isInline ? (
-                                <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
-                                  {children}
-                                </code>
-                              ) : (
-                                <code className="block p-2 bg-surface rounded text-xs font-mono overflow-x-auto" {...props}>
-                                  {children}
-                                </code>
+                              const match = /language-(\w+)/.exec(className || '');
+                              const isInline = !className && !match;
+                              const codeContent = String(children).replace(/\n$/, '');
+                              
+                              if (isInline) {
+                                return (
+                                  <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              }
+                              
+                              // Use SyntaxHighlighter for code blocks
+                              const language = match ? match[1] : 'text';
+                              return (
+                                <SyntaxHighlighter
+                                  style={customTheme}
+                                  language={language}
+                                  PreTag="div"
+                                  customStyle={{
+                                    margin: 0,
+                                    padding: '12px',
+                                    borderRadius: '8px',
+                                    fontSize: '12px',
+                                    background: '#0a0a10',
+                                  }}
+                                >
+                                  {codeContent}
+                                </SyntaxHighlighter>
                               );
                             },
                             pre: ({ children }) => <>{children}</>,
