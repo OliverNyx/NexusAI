@@ -9,6 +9,7 @@ import {
   LLMSettings, 
   DEFAULT_LLM_SETTINGS, 
   LLMProvider,
+  OpenAIConfig,
   AzureOpenAIConfig,
   GeminiConfig,
   AnthropicConfig,
@@ -34,6 +35,10 @@ export const loadSettings = (): LLMSettings => {
     return {
       ...DEFAULT_LLM_SETTINGS,
       ...parsed,
+      openai: {
+        ...DEFAULT_LLM_SETTINGS.openai,
+        ...parsed.openai,
+      },
       azureOpenAI: {
         ...DEFAULT_LLM_SETTINGS.azureOpenAI,
         ...parsed.azureOpenAI,
@@ -74,6 +79,7 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
+    T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
     T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
     T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
     T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
@@ -85,6 +91,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
 
   // Avoid spreading unions like LLMSettings[keyof LLMSettings] (can be string/undefined)
   switch (provider) {
+    case 'openai': {
+      const updated: LLMSettings = {
+        ...current,
+        openai: {
+          ...(current.openai ?? {}),
+          ...(updates as Partial<Omit<OpenAIConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     case 'azure-openai': {
       const updated: LLMSettings = {
         ...current,
@@ -158,6 +175,15 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
   const settings = loadSettings();
   
   switch (settings.activeProvider) {
+    case 'openai':
+      if (!settings.openai?.apiKey) {
+        return null;
+      }
+      return {
+        provider: 'openai',
+        ...settings.openai,
+      } as OpenAIConfig;
+      
     case 'azure-openai':
       if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
         return null;
@@ -215,6 +241,8 @@ export const clearSettings = (): void => {
  */
 export const getProviderDisplayName = (provider: LLMProvider): string => {
   switch (provider) {
+    case 'openai':
+      return 'OpenAI';
     case 'azure-openai':
       return 'Azure OpenAI';
     case 'gemini':

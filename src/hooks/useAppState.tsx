@@ -21,6 +21,18 @@ export interface QueryResult {
   executionTime: number;
 }
 
+// Code reference from AI grounding or user selection
+export interface CodeReference {
+  id: string;
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  nodeId?: string;  // Associated graph node ID
+  label?: string;   // File, Function, Class, etc.
+  name?: string;    // Display name
+  source: 'ai' | 'user';  // How it was added
+}
+
 interface AppState {
   // View state
   viewMode: ViewMode;
@@ -104,6 +116,15 @@ interface AppState {
   initializeAgent: () => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   clearChat: () => void;
+  
+  // Code References Panel
+  codeReferences: CodeReference[];
+  isCodePanelOpen: boolean;
+  setCodePanelOpen: (open: boolean) => void;
+  addCodeReference: (ref: Omit<CodeReference, 'id'>) => void;
+  removeCodeReference: (id: string) => void;
+  clearAICodeReferences: () => void;
+  clearCodeReferences: () => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -124,8 +145,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('code');
   
   const openCodePanel = useCallback(() => {
-    setRightPanelOpen(true);
-    setRightPanelTab('code');
+    // Legacy API: used by graph/tree selection.
+    // Code is now shown in the Code References Panel (left of the graph),
+    // so "openCodePanel" just ensures that panel becomes visible when needed.
+    setCodePanelOpen(true);
   }, []);
   
   const openChatPanel = useCallback(() => {
@@ -169,6 +192,122 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
+  
+  // Code References Panel state
+  const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
+  const [isCodePanelOpen, setCodePanelOpen] = useState(false);
+
+  const normalizePath = useCallback((p: string) => {
+    return p.replace(/\\/g, '/').replace(/^\.?\//, '');
+  }, []);
+
+  const resolveFilePath = useCallback((requestedPath: string): string | null => {
+    const req = normalizePath(requestedPath).toLowerCase();
+    if (!req) return null;
+
+    // Exact match first
+    for (const key of fileContents.keys()) {
+      if (normalizePath(key).toLowerCase() === req) return key;
+    }
+
+    // Ends-with match (best for partial paths like "src/foo.ts")
+    let best: { path: string; score: number } | null = null;
+    for (const key of fileContents.keys()) {
+      const norm = normalizePath(key).toLowerCase();
+      if (norm.endsWith(req)) {
+        const score = 1000 - norm.length; // shorter is better
+        if (!best || score > best.score) best = { path: key, score };
+      }
+    }
+    if (best) return best.path;
+
+    // Segment match fallback
+    const segs = req.split('/').filter(Boolean);
+    for (const key of fileContents.keys()) {
+      const normSegs = normalizePath(key).toLowerCase().split('/').filter(Boolean);
+      let idx = 0;
+      for (const s of segs) {
+        const found = normSegs.findIndex((x, i) => i >= idx && x.includes(s));
+        if (found === -1) { idx = -1; break; }
+        idx = found + 1;
+      }
+      if (idx !== -1) return key;
+    }
+
+    return null;
+  }, [fileContents, normalizePath]);
+
+  const findFileNodeId = useCallback((filePath: string): string | undefined => {
+    if (!graph) return undefined;
+    const target = normalizePath(filePath);
+    const fileNode = graph.nodes.find(
+      (n) => n.label === 'File' && normalizePath(n.properties.filePath) === target
+    );
+    return fileNode?.id;
+  }, [graph, normalizePath]);
+
+  // Code References methods
+  const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
+    const id = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newRef: CodeReference = { ...ref, id };
+    
+    setCodeReferences(prev => {
+      // Don't add duplicates (same file + line range)
+      const isDuplicate = prev.some(r => 
+        r.filePath === ref.filePath && 
+        r.startLine === ref.startLine && 
+        r.endLine === ref.endLine
+      );
+      if (isDuplicate) return prev;
+      return [...prev, newRef];
+    });
+    
+    // Auto-open panel when references are added
+    setCodePanelOpen(true);
+    
+    // Also highlight in graph if nodeId provided
+    if (ref.nodeId) {
+      setHighlightedNodeIds(prev => new Set([...prev, ref.nodeId!]));
+    }
+  }, []);
+
+  // Remove ONLY AI-provided refs so each new chat response refreshes the Code panel
+  const clearAICodeReferences = useCallback(() => {
+    setCodeReferences(prev => {
+      const removed = prev.filter(r => r.source === 'ai');
+      const kept = prev.filter(r => r.source !== 'ai');
+
+      // Update graph highlights: remove nodeIds that were ONLY highlighted via AI refs
+      const removedNodeIds = new Set(removed.map(r => r.nodeId).filter(Boolean) as string[]);
+      if (removedNodeIds.size > 0) {
+        setHighlightedNodeIds(prevHighlights => {
+          const next = new Set(prevHighlights);
+          for (const nodeId of removedNodeIds) {
+            const stillReferenced = kept.some(r => r.nodeId === nodeId);
+            const stillInQuery = queryResult?.nodeIds?.includes(nodeId) ?? false;
+            if (!stillReferenced && !stillInQuery) {
+              next.delete(nodeId);
+            }
+          }
+          return next;
+        });
+      }
+
+      // Don't auto-close if the user has something selected (top viewer)
+      if (kept.length === 0 && !selectedNode) {
+        setCodePanelOpen(false);
+      }
+      return kept;
+    });
+  }, [queryResult, selectedNode]);
+
+  // Auto-add a code reference when the user selects a node in the graph/tree
+  useEffect(() => {
+    if (!selectedNode) return;
+    // User selection should show in the top "Selected file" viewer,
+    // not be appended to the AI citations list.
+    setCodePanelOpen(true);
+  }, [selectedNode]);
 
   // Worker (single instance shared across app)
   const workerRef = useRef<Worker | null>(null);
@@ -349,6 +488,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
+    // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
+    clearAICodeReferences();
+
     if (!isAgentReady) {
       // Try to initialize first
       await initializeAgent();
@@ -411,26 +553,89 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const onChunk = Comlink.proxy((chunk: AgentStreamChunk) => {
         switch (chunk.type) {
           case 'reasoning':
-            // LLM's thinking/reasoning - add as a step in order
+            // LLM's thinking/reasoning - accumulate contiguous reasoning
             if (chunk.reasoning) {
-              stepsForMessage.push({
-                id: `step-${stepCounter++}`,
-                type: 'reasoning',
-                content: chunk.reasoning,
-              });
+              const lastStep = stepsForMessage[stepsForMessage.length - 1];
+              if (lastStep && lastStep.type === 'reasoning') {
+                // Append to existing reasoning step
+                stepsForMessage[stepsForMessage.length - 1] = {
+                  ...lastStep,
+                  content: (lastStep.content || '') + chunk.reasoning,
+                };
+              } else {
+                // Create new reasoning step (after tool calls or at start)
+                stepsForMessage.push({
+                  id: `step-${stepCounter++}`,
+                  type: 'reasoning',
+                  content: chunk.reasoning,
+                });
+              }
               updateMessage();
             }
             break;
 
           case 'content':
-            // Final answer content - add as a step
+            // Final answer content - accumulate into contiguous content step
             if (chunk.content) {
-              stepsForMessage.push({
-                id: `step-${stepCounter++}`,
-                type: 'content',
-                content: chunk.content,
-              });
+              // Only append if the LAST step is a content step (contiguous streaming)
+              const lastStep = stepsForMessage[stepsForMessage.length - 1];
+              if (lastStep && lastStep.type === 'content') {
+                // Append to existing content step
+                stepsForMessage[stepsForMessage.length - 1] = {
+                  ...lastStep,
+                  content: (lastStep.content || '') + chunk.content,
+                };
+              } else {
+                // Create new content step (after tool calls or at start)
+                stepsForMessage.push({
+                  id: `step-${stepCounter++}`,
+                  type: 'content',
+                  content: chunk.content,
+                });
+              }
               updateMessage();
+
+              // Parse inline grounding references like [[src/file.ts:10-25]]
+              // and add them to the Code References panel.
+              const currentContentStep = stepsForMessage[stepsForMessage.length - 1];
+              const fullText = (currentContentStep && currentContentStep.type === 'content')
+                ? (currentContentStep.content || '')
+                : '';
+
+              const refRegex = /\[\[([^\]\n]+?)\]\]/g;
+              let match: RegExpExecArray | null;
+              while ((match = refRegex.exec(fullText)) !== null) {
+                const inner = match[1].trim();
+                if (!inner) continue;
+
+                let rawPath = inner;
+                let startLine1: number | undefined;
+                let endLine1: number | undefined;
+
+                const lineMatch = inner.match(/^(.*):(\d+)(?:-(\d+))?$/);
+                if (lineMatch) {
+                  rawPath = lineMatch[1].trim();
+                  startLine1 = parseInt(lineMatch[2], 10);
+                  endLine1 = parseInt(lineMatch[3] || lineMatch[2], 10);
+                }
+
+                const resolvedPath = resolveFilePath(rawPath);
+                if (!resolvedPath) continue;
+
+                const startLine0 = startLine1 ? Math.max(0, startLine1 - 1) : 0;
+                const endLine0 = endLine1 ? Math.max(0, endLine1 - 1) : startLine0;
+                const nodeId = findFileNodeId(resolvedPath);
+
+                addCodeReference({
+                  filePath: resolvedPath,
+                  startLine: startLine1 ? startLine0 : undefined,
+                  endLine: endLine1 ? endLine0 : (startLine1 ? startLine0 : undefined),
+                  nodeId,
+                  label: 'File',
+                  name: resolvedPath.split('/').pop() ?? resolvedPath,
+                  source: 'ai',
+                });
+              }
             }
             break;
 
@@ -558,12 +763,43 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences]);
 
   const clearChat = useCallback(() => {
     setChatMessages([]);
     setCurrentToolCalls([]);
     setAgentError(null);
+  }, []);
+
+  const removeCodeReference = useCallback((id: string) => {
+    setCodeReferences(prev => {
+      const ref = prev.find(r => r.id === id);
+      const newRefs = prev.filter(r => r.id !== id);
+      
+      // Remove highlight if this was the only reference to that node
+      if (ref?.nodeId) {
+        const stillReferenced = newRefs.some(r => r.nodeId === ref.nodeId);
+        if (!stillReferenced) {
+          setHighlightedNodeIds(prev => {
+            const next = new Set(prev);
+            next.delete(ref.nodeId!);
+            return next;
+          });
+        }
+      }
+      
+      // Auto-close panel if no references left AND no selection in top viewer
+      if (newRefs.length === 0 && !selectedNode) {
+        setCodePanelOpen(false);
+      }
+      
+      return newRefs;
+    });
+  }, [selectedNode]);
+
+  const clearCodeReferences = useCallback(() => {
+    setCodeReferences([]);
+    setCodePanelOpen(false);
   }, []);
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
@@ -633,6 +869,14 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     initializeAgent,
     sendChatMessage,
     clearChat,
+    // Code References Panel
+    codeReferences,
+    isCodePanelOpen,
+    setCodePanelOpen,
+    addCodeReference,
+    removeCodeReference,
+    clearAICodeReferences,
+    clearCodeReferences,
   };
 
   return (

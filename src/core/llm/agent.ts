@@ -32,6 +32,9 @@ import type {
  */
 const SYSTEM_PROMPT = `You are Nexus, a code analysis agent. You explore codebases through a graph database and source files.
 
+**EXTREMELY IMPORTANT NOTE** : Even if there is a small chance of giving better context/understanding to the user using the highlight tool be extremely sure to use it. You can figure out yourself how do u use it in the specific context. 
+Always output in proper markdown formatting
+
 ## THINK ALOUD
 
 Before EVERY tool call, briefly state what you're doing and why. After results, state what you learned and what's next. Example flow:
@@ -65,6 +68,15 @@ You are diligent and tireless.
 \`execute_cypher\` - graph structure queries
 \`highlight_in_graph\` - highlight nodes for the user (they see a visual graph)
 
+## GROUNDING REFERENCES
+
+When you cite code, include inline file references so the UI can surface the code automatically:
+- Use this exact format: \`[[path/to/file.ext:LINE-START-LINE-END]]\` (or \`[[path/to/file.ext:LINE]]\`)
+- Use repo-relative paths with forward slashes
+- Line numbers are 1-based
+- Prefer a few high-signal references (2-6) over many
+ - Do NOT wrap these references in backticks or code blocks; keep them as plain text in the answer
+
 ## DATABASE SCHEMA
 
 Single polymorphic table: \`CodeNode\` with \`label\` property (File, Function, Class, etc.)
@@ -84,9 +96,16 @@ The user sees a visual knowledge graph alongside this chat. Use \`highlight_in_g
 - Point out patterns, clusters, or interesting relationships
 - Help users SEE what you're talking about
 
-When you find something, highlight it. When explaining relationships, highlight the nodes involved. Visual context dramatically improves understanding.
+**Highlight for understanding, not just proof:**
+- You CAN highlight nodes to show what's ABSENT or disconnected - "notice this config has no edges to any enforcement logic"
+- Prefer small focused highlights (2-6 nodes) the user can step through, not large dumps
+- Guide the user: "Start with this node, then click to see what calls it, notice X isn't connected"
+- Highlighting "where something would be if it existed" is valid and useful
 
-After highlighting, briefly explain what the highlighted nodes reveal - don't just list them.`;
+**After highlighting:** Explain what the nodes reveal AND what's notably missing. Tell users what to click next. Clicking a node shows its adjacent nodes and source code - leverage this for guided exploration.
+
+**EXTREMELY IMPORTANT NOTE** : Even if there is a small chance of giving better context/understanding to the user using the highlight tool be extremely sure to use it. You can figure out yourself how do u use it in the specific context.
+`;
 
 /**
  * Create a chat model instance from provider configuration
@@ -195,13 +214,11 @@ export interface AgentMessage {
 
 /**
  * Stream a response from the agent
- * Uses streamMode: "values" to get step-by-step updates including reasoning
+ * Uses BOTH streamModes for best of both worlds:
+ * - 'values' for state transitions (tool calls, results) in proper order
+ * - 'messages' for token-by-token text streaming
  * 
- * Each step shows:
- * - AI reasoning/thinking (content before tool calls)
- * - Tool calls with arguments
- * - Tool results
- * - Final answer
+ * This preserves the natural progression: reasoning → tool → reasoning → tool → answer
  */
 export async function* streamAgentResponse(
   agent: ReturnType<typeof createReactAgent>,
@@ -213,70 +230,155 @@ export async function* streamAgentResponse(
       content: m.content,
     }));
     
-    // Use stream with "values" mode to get each step as a complete state
-    // This lets us see reasoning, tool calls, and results separately
+    // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream(
       { messages: formattedMessages },
-      { streamMode: 'values' }
+      { streamMode: ['values', 'messages'] as any }
     );
     
-    let lastMessageCount = formattedMessages.length;
+    // Track what we've yielded to avoid duplicates
+    const yieldedToolCalls = new Set<string>();
+    const yieldedToolResults = new Set<string>();
+    let lastProcessedMsgCount = formattedMessages.length;
+    // Track if all tools are done (for distinguishing reasoning vs final content)
+    let allToolsDone = true;
     
-    for await (const step of stream) {
-      const stepMessages = step.messages || [];
+    for await (const event of stream) {
+      // Events come as [streamMode, data] tuples when using multiple modes
+      // or just data when using single mode
+      let mode: string;
+      let data: any;
       
-      // Process only new messages since last step
-      for (let i = lastMessageCount; i < stepMessages.length; i++) {
-        const msg = stepMessages[i];
-        const msgType = msg._getType?.() || msg.type || 'unknown';
+      if (Array.isArray(event) && event.length === 2 && typeof event[0] === 'string') {
+        [mode, data] = event;
+      } else if (Array.isArray(event) && event[0]?._getType) {
+        // Single messages mode format: [message, metadata]
+        mode = 'messages';
+        data = event;
+      } else {
+        // Assume values mode
+        mode = 'values';
+        data = event;
+      }
+      
+      // Handle 'messages' mode - token-by-token streaming
+      if (mode === 'messages') {
+        const [msg] = Array.isArray(data) ? data : [data];
+        if (!msg) continue;
         
-        // AI message with content (reasoning or final answer)
-        if (msgType === 'ai' || msgType === 'AIMessage') {
+        const msgType = msg._getType?.() || msg.type || msg.constructor?.name || 'unknown';
+        
+        // AIMessageChunk - streaming text tokens
+        if (msgType === 'ai' || msgType === 'AIMessage' || msgType === 'AIMessageChunk') {
           const content = msg.content;
-          const toolCalls = msg.tool_calls || msg.additional_kwargs?.tool_calls || [];
+          const toolCalls = msg.tool_calls || [];
           
-          // If has content, yield it (reasoning or answer)
-          if (content && typeof content === 'string' && content.trim()) {
+          // If chunk has content, stream it
+          if (content && typeof content === 'string' && content.length > 0) {
+            // Determine if this is reasoning (before/between tools) or final content
+            const isReasoning = toolCalls.length > 0 || !allToolsDone;
             yield {
-              type: toolCalls.length > 0 ? 'reasoning' : 'content',
-              reasoning: toolCalls.length > 0 ? content : undefined,
-              content: toolCalls.length === 0 ? content : undefined,
+              type: isReasoning ? 'reasoning' : 'content',
+              [isReasoning ? 'reasoning' : 'content']: content,
             };
           }
           
-          // If has tool calls, yield each one
-          for (const tc of toolCalls) {
-            yield {
-              type: 'tool_call',
-              toolCall: {
-                id: tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                name: tc.name || tc.function?.name || 'unknown',
-                args: tc.args || (tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}),
-                status: 'running',
-              },
-            };
+          // Track tool calls from message chunks
+          if (toolCalls.length > 0) {
+            allToolsDone = false;
+            for (const tc of toolCalls) {
+              const toolId = tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+              if (!yieldedToolCalls.has(toolId)) {
+                yieldedToolCalls.add(toolId);
+                yield {
+                  type: 'tool_call',
+                  toolCall: {
+                    id: toolId,
+                    name: tc.name || tc.function?.name || 'unknown',
+                    args: tc.args || (tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}),
+                    status: 'running',
+                  },
+                };
+              }
+            }
           }
         }
         
-        // Tool message (result from a tool)
+        // ToolMessage in messages mode
         if (msgType === 'tool' || msgType === 'ToolMessage') {
-          const toolCallId = msg.tool_call_id || msg.additional_kwargs?.tool_call_id || '';
-          const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          
-          yield {
-            type: 'tool_result',
-            toolCall: {
-              id: toolCallId,
-              name: msg.name || 'tool',
-              args: {},
-              result: result,
-              status: 'completed',
-            },
-          };
+          const toolCallId = msg.tool_call_id || '';
+          if (toolCallId && !yieldedToolResults.has(toolCallId)) {
+            yieldedToolResults.add(toolCallId);
+            const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            yield {
+              type: 'tool_result',
+              toolCall: {
+                id: toolCallId,
+                name: msg.name || 'tool',
+                args: {},
+                result: result,
+                status: 'completed',
+              },
+            };
+            // After tool result, next AI content could be reasoning or final
+            allToolsDone = true;
+          }
         }
       }
       
-      lastMessageCount = stepMessages.length;
+      // Handle 'values' mode - state snapshots for structure
+      if (mode === 'values' && data?.messages) {
+        const stepMessages = data.messages || [];
+        
+        // Process new messages for tool calls/results we might have missed
+        for (let i = lastProcessedMsgCount; i < stepMessages.length; i++) {
+          const msg = stepMessages[i];
+          const msgType = msg._getType?.() || msg.type || 'unknown';
+          
+          // Catch tool calls from values mode (backup)
+          if ((msgType === 'ai' || msgType === 'AIMessage') && !yieldedToolCalls.size) {
+            const toolCalls = msg.tool_calls || [];
+            for (const tc of toolCalls) {
+              const toolId = tc.id || `tool-${Date.now()}`;
+              if (!yieldedToolCalls.has(toolId)) {
+                allToolsDone = false;
+                yieldedToolCalls.add(toolId);
+                yield {
+                  type: 'tool_call',
+                  toolCall: {
+                    id: toolId,
+                    name: tc.name || 'unknown',
+                    args: tc.args || {},
+                    status: 'running',
+                  },
+                };
+              }
+            }
+          }
+          
+          // Catch tool results from values mode (backup)
+          if (msgType === 'tool' || msgType === 'ToolMessage') {
+            const toolCallId = msg.tool_call_id || '';
+            if (toolCallId && !yieldedToolResults.has(toolCallId)) {
+              yieldedToolResults.add(toolCallId);
+              const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+              yield {
+                type: 'tool_result',
+                toolCall: {
+                  id: toolCallId,
+                  name: msg.name || 'tool',
+                  args: {},
+                  result: result,
+                  status: 'completed',
+                },
+              };
+              allToolsDone = true;
+            }
+          }
+        }
+        
+        lastProcessedMsgCount = stepMessages.length;
+      }
     }
     
     yield { type: 'done' };
