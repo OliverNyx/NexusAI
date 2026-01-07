@@ -9,12 +9,14 @@ import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { SystemMessage } from '@langchain/core/messages';
 import { AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatAnthropic } from '@langchain/anthropic';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools } from './tools';
 import type { 
   ProviderConfig, 
   AzureOpenAIConfig, 
   GeminiConfig,
+  AnthropicConfig,
   AgentStreamChunk,
 } from './types';
 
@@ -33,7 +35,7 @@ const SYSTEM_PROMPT = `You are Nexus, a code analysis agent. You explore codebas
 ## THINK ALOUD
 
 Before EVERY tool call, briefly state what you're doing and why. After results, state what you learned and what's next. Example flow:
-- "Looking for authentication logic..." → semantic_search
+- "Looking for authentication logic..." → search
 - "Found 3 matches. Reading the main auth file to understand the flow..." → read_file  
 - "This imports from utils. Checking what utilities it uses..." → execute_cypher
 
@@ -57,8 +59,8 @@ You are diligent and tireless.
 
 ## TOOLS
 
+\`search\` - find code by keywords or concepts
 \`grep_code\` - exact text/regex patterns
-\`semantic_search\` - find code by meaning  
 \`read_file\` - full file contents
 \`execute_cypher\` - graph structure queries
 \`highlight_in_graph\` - highlight nodes for the user (they see a visual graph)
@@ -114,6 +116,17 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
       });
     }
     
+    case 'anthropic': {
+      const anthropicConfig = config as AnthropicConfig;
+      return new ChatAnthropic({
+        anthropicApiKey: anthropicConfig.apiKey,
+        model: anthropicConfig.model,
+        temperature: anthropicConfig.temperature ?? 0.1,
+        maxTokens: anthropicConfig.maxTokens ?? 8192,
+        streaming: true,
+      });
+    }
+    
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }
@@ -147,7 +160,9 @@ export const createGraphRAGAgent = (
   executeQuery: (cypher: string) => Promise<any[]>,
   semanticSearch: (query: string, k?: number, maxDistance?: number) => Promise<any[]>,
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>,
+  hybridSearch: (query: string, k?: number) => Promise<any[]>,
   isEmbeddingReady: () => boolean,
+  isBM25Ready: () => boolean,
   fileContents: Map<string, string>
 ) => {
   const model = createChatModel(config);
@@ -155,7 +170,9 @@ export const createGraphRAGAgent = (
     executeQuery,
     semanticSearch,
     semanticSearchWithContext,
+    hybridSearch,
     isEmbeddingReady,
+    isBM25Ready,
     fileContents
   );
   

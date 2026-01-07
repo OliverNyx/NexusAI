@@ -67,6 +67,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [modelFetchError, setModelFetchError] = useState<string | null>(null);
   const [useCustomModel, setUseCustomModel] = useState(false);
+  const [useCustomAnthropicModel, setUseCustomAnthropicModel] = useState(false);
 
   // Load settings when panel opens
   useEffect(() => {
@@ -76,6 +77,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
       setGeminiModels([]);
       setModelFetchError(null);
       setUseCustomModel(false);
+      setUseCustomAnthropicModel(false);
     }
   }, [isOpen]);
 
@@ -134,13 +136,17 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['gemini', 'azure-openai'];
+  const providers: LLMProvider[] = ['gemini', 'anthropic', 'azure-openai'];
   
   const availableGeminiModels = geminiModels.length > 0 
     ? geminiModels 
     : getAvailableModels('gemini');
   const currentGeminiModel = settings.gemini?.model ?? 'gemini-2.0-flash';
   const isCustomModelSelected = !availableGeminiModels.includes(currentGeminiModel);
+  
+  const availableAnthropicModels = getAvailableModels('anthropic');
+  const currentAnthropicModel = settings.anthropic?.model ?? 'claude-sonnet-4-20250514';
+  const isCustomAnthropicModelSelected = !availableAnthropicModels.includes(currentAnthropicModel);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -178,7 +184,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
             <label className="block text-sm font-medium text-text-secondary">
               Provider
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {providers.map(provider => (
                 <button
                   key={provider}
@@ -195,7 +201,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'gemini' ? '💎' : '☁️'}
+                    {provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -329,6 +335,104 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     <AlertCircle className="w-3 h-3" />
                     {modelFetchError}
                   </p>
+                )}
+              </div>
+            </div>
+          )}
+          
+          {/* Anthropic Settings */}
+          {settings.activeProvider === 'anthropic' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Key className="w-4 h-4" />
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey['anthropic'] ? 'text' : 'password'}
+                    value={settings.anthropic?.apiKey ?? ''}
+                    onChange={e => setSettings(prev => ({
+                      ...prev,
+                      anthropic: { ...prev.anthropic!, apiKey: e.target.value }
+                    }))}
+                    placeholder="Enter your Anthropic API key"
+                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleApiKeyVisibility('anthropic')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    {showApiKey['anthropic'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  Get your API key from{' '}
+                  <a
+                    href="https://console.anthropic.com/settings/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    Anthropic Console
+                  </a>
+                </p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Model</label>
+                
+                {(useCustomAnthropicModel || isCustomAnthropicModelSelected) ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={settings.anthropic?.model ?? ''}
+                      onChange={e => setSettings(prev => ({
+                        ...prev,
+                        anthropic: { ...prev.anthropic!, model: e.target.value }
+                      }))}
+                      placeholder="e.g., claude-sonnet-4-20250514"
+                      className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseCustomAnthropicModel(false);
+                        if (availableAnthropicModels.length > 0) {
+                          setSettings(prev => ({
+                            ...prev,
+                            anthropic: { ...prev.anthropic!, model: availableAnthropicModels[0] }
+                          }));
+                        }
+                      }}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      ← Back to model list
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <select
+                      value={currentAnthropicModel}
+                      onChange={e => setSettings(prev => ({
+                        ...prev,
+                        anthropic: { ...prev.anthropic!, model: e.target.value }
+                      }))}
+                      className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all appearance-none cursor-pointer"
+                    >
+                      {availableAnthropicModels.map(model => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setUseCustomAnthropicModel(true)}
+                      className="text-xs text-text-muted hover:text-text-primary transition-colors"
+                    >
+                      Enter model name manually →
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
