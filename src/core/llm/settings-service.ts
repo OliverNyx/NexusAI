@@ -9,8 +9,10 @@ import {
   LLMSettings, 
   DEFAULT_LLM_SETTINGS, 
   LLMProvider,
+  OpenAIConfig,
   AzureOpenAIConfig,
   GeminiConfig,
+  AnthropicConfig,
   OllamaConfig,
   ProviderConfig,
 } from './types';
@@ -33,6 +35,10 @@ export const loadSettings = (): LLMSettings => {
     return {
       ...DEFAULT_LLM_SETTINGS,
       ...parsed,
+      openai: {
+        ...DEFAULT_LLM_SETTINGS.openai,
+        ...parsed.openai,
+      },
       azureOpenAI: {
         ...DEFAULT_LLM_SETTINGS.azureOpenAI,
         ...parsed.azureOpenAI,
@@ -40,6 +46,10 @@ export const loadSettings = (): LLMSettings => {
       gemini: {
         ...DEFAULT_LLM_SETTINGS.gemini,
         ...parsed.gemini,
+      },
+      anthropic: {
+        ...DEFAULT_LLM_SETTINGS.anthropic,
+        ...parsed.anthropic,
       },
       ollama: {
         ...DEFAULT_LLM_SETTINGS.ollama,
@@ -69,8 +79,10 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
+    T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
     T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
     T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
+    T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
     T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
     never
   >
@@ -79,6 +91,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
 
   // Avoid spreading unions like LLMSettings[keyof LLMSettings] (can be string/undefined)
   switch (provider) {
+    case 'openai': {
+      const updated: LLMSettings = {
+        ...current,
+        openai: {
+          ...(current.openai ?? {}),
+          ...(updates as Partial<Omit<OpenAIConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     case 'azure-openai': {
       const updated: LLMSettings = {
         ...current,
@@ -96,6 +119,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
         gemini: {
           ...(current.gemini ?? {}),
           ...(updates as Partial<Omit<GeminiConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'anthropic': {
+      const updated: LLMSettings = {
+        ...current,
+        anthropic: {
+          ...(current.anthropic ?? {}),
+          ...(updates as Partial<Omit<AnthropicConfig, 'provider'>>),
         },
       };
       saveSettings(updated);
@@ -141,6 +175,15 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
   const settings = loadSettings();
   
   switch (settings.activeProvider) {
+    case 'openai':
+      if (!settings.openai?.apiKey) {
+        return null;
+      }
+      return {
+        provider: 'openai',
+        ...settings.openai,
+      } as OpenAIConfig;
+      
     case 'azure-openai':
       if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
         return null;
@@ -158,6 +201,15 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         provider: 'gemini',
         ...settings.gemini,
       } as GeminiConfig;
+      
+    case 'anthropic':
+      if (!settings.anthropic?.apiKey) {
+        return null;
+      }
+      return {
+        provider: 'anthropic',
+        ...settings.anthropic,
+      } as AnthropicConfig;
       
     case 'ollama':
       return {
@@ -189,10 +241,14 @@ export const clearSettings = (): void => {
  */
 export const getProviderDisplayName = (provider: LLMProvider): string => {
   switch (provider) {
+    case 'openai':
+      return 'OpenAI';
     case 'azure-openai':
       return 'Azure OpenAI';
     case 'gemini':
       return 'Google Gemini';
+    case 'anthropic':
+      return 'Anthropic';
     case 'ollama':
       return 'Ollama (Local)';
     default:
@@ -210,6 +266,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
     case 'gemini':
       return ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
+    case 'anthropic':
+      return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     default:

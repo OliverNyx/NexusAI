@@ -8,6 +8,7 @@ import { RightPanel } from './components/RightPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
+import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 
 const AppContent = () => {
@@ -28,6 +29,9 @@ const AppContent = () => {
     initializeAgent,
     startEmbeddings,
     embeddingStatus,
+    codeReferences,
+    selectedNode,
+    isCodePanelOpen,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -145,6 +149,13 @@ const AppContent = () => {
         {/* Graph area - takes remaining space */}
         <div className="flex-1 relative min-w-0">
           <GraphCanvas ref={graphCanvasRef} />
+
+          {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
+          {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
+            <div className="absolute inset-y-0 left-0 z-30 pointer-events-auto">
+              <CodeReferencesPanel onFocusNode={handleFocusNode} />
+            </div>
+          )}
         </div>
         
         {/* Right Panel - Code & Chat (tabbed) */}

@@ -1,13 +1,12 @@
-import { useState, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { 
-  X, Send, Sparkles, User, FileCode, Hash, GitBranch, Code, MessageSquare, 
+  Send, Sparkles, User,
   PanelRightClose, Loader2, Settings, AlertTriangle 
 } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ReactMarkdown from 'react-markdown';
 import { useAppState } from '../hooks/useAppState';
-import { NODE_COLORS } from '../lib/constants';
 import { ToolCallCard } from './ToolCallCard';
 
 // Custom syntax theme
@@ -30,14 +29,11 @@ const customTheme = {
 
 export const RightPanel = () => {
   const { 
-    selectedNode, 
-    setSelectedNode,
-    fileContents, 
-    graph,
     isRightPanelOpen,
     setRightPanelOpen,
-    rightPanelTab,
-    setRightPanelTab,
+    fileContents,
+    graph,
+    addCodeReference,
     // LLM / chat state
     chatMessages,
     isChatLoading,
@@ -51,55 +47,113 @@ export const RightPanel = () => {
   } = useAppState();
   
   const [chatInput, setChatInput] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Get source code for selected node
-  const sourceCode = useMemo(() => {
-    if (!selectedNode) return null;
-    
-    const filePath = selectedNode.properties.filePath;
-    const content = fileContents.get(filePath);
-    
-    if (!content) return null;
+  const resolveFilePathForUI = useCallback((requestedPath: string): string | null => {
+    const req = requestedPath.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+    if (!req) return null;
 
-    const startLine = selectedNode.properties.startLine ?? 0;
-    const endLine = selectedNode.properties.endLine ?? startLine;
-    
-    // Get lines around the definition with more context
-    const lines = content.split('\n');
-    const contextStart = Math.max(0, startLine - 3);
-    const contextEnd = Math.min(lines.length - 1, endLine + 15);
-    
-    return {
-      code: lines.slice(contextStart, contextEnd + 1).join('\n'),
-      startLine: contextStart,
-      highlightStart: startLine - contextStart,
-      highlightEnd: endLine - contextStart,
-      totalLines: lines.length,
-    };
-  }, [selectedNode, fileContents]);
+    // Exact match first (case-insensitive)
+    for (const key of fileContents.keys()) {
+      const norm = key.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+      if (norm === req) return key;
+    }
 
-  // Get language for syntax highlighting
-  const language = useMemo(() => {
-    if (!selectedNode) return 'typescript';
-    const filePath = selectedNode.properties.filePath;
-    if (filePath.endsWith('.py')) return 'python';
-    if (filePath.endsWith('.js') || filePath.endsWith('.jsx')) return 'javascript';
-    return 'typescript';
-  }, [selectedNode]);
+    // Ends-with match (best for partial paths)
+    let best: { path: string; score: number } | null = null;
+    for (const key of fileContents.keys()) {
+      const norm = key.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+      if (norm.endsWith(req)) {
+        const score = 1000 - norm.length;
+        if (!best || score > best.score) best = { path: key, score };
+      }
+    }
+    return best?.path ?? null;
+  }, [fileContents]);
 
-  // Count relationships
-  const relationshipCount = useMemo(() => {
-    if (!selectedNode || !graph) return 0;
-    return graph.relationships.filter(
-      r => r.sourceId === selectedNode.id || r.targetId === selectedNode.id
-    ).length;
-  }, [selectedNode, graph]);
+  const findFileNodeIdForUI = useCallback((filePath: string): string | undefined => {
+    if (!graph) return undefined;
+    const target = filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+    const node = graph.nodes.find(
+      (n) => n.label === 'File' && n.properties.filePath.replace(/\\/g, '/').replace(/^\.?\//, '') === target
+    );
+    return node?.id;
+  }, [graph]);
+
+  const handleGroundingClick = useCallback((inner: string) => {
+    const raw = inner.trim();
+    if (!raw) return;
+
+    let rawPath = raw;
+    let startLine1: number | undefined;
+    let endLine1: number | undefined;
+
+    const lineMatch = raw.match(/^(.*):(\d+)(?:-(\d+))?$/);
+    if (lineMatch) {
+      rawPath = lineMatch[1].trim();
+      startLine1 = parseInt(lineMatch[2], 10);
+      endLine1 = parseInt(lineMatch[3] || lineMatch[2], 10);
+    }
+
+    const resolvedPath = resolveFilePathForUI(rawPath);
+    if (!resolvedPath) return;
+
+    const nodeId = findFileNodeIdForUI(resolvedPath);
+
+    addCodeReference({
+      filePath: resolvedPath,
+      startLine: startLine1 ? Math.max(0, startLine1 - 1) : undefined,
+      endLine: endLine1 ? Math.max(0, endLine1 - 1) : (startLine1 ? Math.max(0, startLine1 - 1) : undefined),
+      nodeId,
+      label: 'File',
+      name: resolvedPath.split('/').pop() ?? resolvedPath,
+      source: 'ai',
+    });
+  }, [addCodeReference, findFileNodeIdForUI, resolveFilePathForUI]);
+
+  const formatMarkdownForDisplay = useCallback((md: string) => {
+    // Avoid rewriting inside fenced code blocks. Also avoid rewriting when immediately preceded by a backtick.
+    const parts = md.split('```');
+    for (let i = 0; i < parts.length; i += 2) {
+      parts[i] = parts[i].replace(/(^|[^`])\[\[([^\]\n]+?)\]\]/g, (_m, prefix: string, inner: string) => {
+        const trimmed = inner.trim();
+        const href = `code-ref:${encodeURIComponent(trimmed)}`;
+        return `${prefix}[${trimmed}](${href})`;
+      });
+    }
+    return parts.join('```');
+  }, []);
+  
+  // Auto-resize textarea as user types
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    
+    // Reset height to get accurate scrollHeight
+    textarea.style.height = 'auto';
+    // Set to scrollHeight, capped at max
+    const maxHeight = 160; // ~6 lines
+    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${newHeight}px`;
+    // Show scrollbar if content exceeds max
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+  
+  // Adjust height when input changes
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [chatInput, adjustTextareaHeight]);
 
   // Chat handlers
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
     const text = chatInput.trim();
     setChatInput('');
+    // Reset textarea height after sending
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '36px';
+      textareaRef.current.style.overflowY = 'hidden';
+    }
     await sendChatMessage(text);
   };
 
@@ -118,42 +172,14 @@ export const RightPanel = () => {
 
   if (!isRightPanelOpen) return null;
 
-  const nodeColor = selectedNode ? NODE_COLORS[selectedNode.label] || '#6b7280' : '#6b7280';
-
   return (
     <aside className="w-[40%] min-w-[400px] max-w-[600px] flex flex-col bg-deep border-l border-border-subtle animate-slide-in relative z-30 flex-shrink-0">
-      {/* Header with tabs */}
+      {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border-subtle">
-        <div className="flex items-center gap-1">
-          {/* Code Tab */}
-          <button
-            onClick={() => setRightPanelTab('code')}
-            className={`
-              flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors
-              ${rightPanelTab === 'code' 
-                ? 'bg-accent/20 text-accent' 
-                : 'text-text-secondary hover:text-text-primary hover:bg-hover'
-              }
-            `}
-          >
-            <Code className="w-4 h-4" />
-            <span>Code</span>
-          </button>
-          
-          {/* Chat Tab */}
-          <button
-            onClick={() => setRightPanelTab('chat')}
-            className={`
-              flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors
-              ${rightPanelTab === 'chat' 
-                ? 'bg-accent/20 text-accent' 
-                : 'text-text-secondary hover:text-text-primary hover:bg-hover'
-              }
-            `}
-          >
-            <MessageSquare className="w-4 h-4" />
-            <span>Chat</span>
-          </button>
+        <div className="flex items-center gap-2.5">
+          <Sparkles className="w-4 h-4 text-accent" />
+          <span className="font-medium text-sm">Nexus AI</span>
+          <span className="text-xs text-text-muted">• Ask about the codebase</span>
         </div>
         
         {/* Close button */}
@@ -166,139 +192,30 @@ export const RightPanel = () => {
         </button>
       </div>
 
-      {/* Code Panel Content */}
-      {rightPanelTab === 'code' && (
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {selectedNode ? (
-            <>
-              {/* File info header */}
-              <div className="flex items-center gap-3 px-4 py-3 bg-elevated/50 border-b border-border-subtle">
-                <span 
-                  className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
-                  style={{ backgroundColor: nodeColor, color: '#06060a' }}
-                >
-                  {selectedNode.label}
-                </span>
-                <span className="font-mono text-sm font-medium text-text-primary truncate">
-                  {selectedNode.properties.name}
-                </span>
-                <button
-                  onClick={() => setSelectedNode(null)}
-                  className="ml-auto p-1 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* File path breadcrumb */}
-              <div className="flex items-center gap-2 px-4 py-2 text-xs text-text-muted border-b border-border-subtle bg-surface/50">
-                <FileCode className="w-3.5 h-3.5" />
-                <span className="font-mono truncate">{selectedNode.properties.filePath}</span>
-              </div>
-
-              {/* Code content */}
-              <div className="flex-1 overflow-auto scrollbar-thin">
-                {sourceCode ? (
-                  <SyntaxHighlighter
-                    language={language}
-                    style={customTheme}
-                    showLineNumbers
-                    startingLineNumber={sourceCode.startLine + 1}
-                    lineNumberStyle={{
-                      minWidth: '3em',
-                      paddingRight: '1em',
-                      color: '#5a5a70',
-                      textAlign: 'right',
-                      userSelect: 'none',
-                    }}
-                    lineProps={(lineNumber) => {
-                      const isHighlighted = 
-                        lineNumber >= sourceCode.startLine + sourceCode.highlightStart + 1 &&
-                        lineNumber <= sourceCode.startLine + sourceCode.highlightEnd + 1;
-                      return {
-                        style: {
-                          display: 'block',
-                          backgroundColor: isHighlighted ? 'rgba(124, 58, 237, 0.15)' : 'transparent',
-                          borderLeft: isHighlighted ? '3px solid #7c3aed' : '3px solid transparent',
-                          paddingLeft: '12px',
-                          paddingRight: '16px',
-                        },
-                      };
-                    }}
-                    wrapLines
-                  >
-                    {sourceCode.code}
-                  </SyntaxHighlighter>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-sm text-text-muted">
-                    Source code not available
-                  </div>
-                )}
-              </div>
-
-              {/* Metadata footer */}
-              <div className="flex items-center gap-4 px-4 py-2.5 bg-surface border-t border-border-subtle text-xs text-text-muted">
-                {selectedNode.properties.startLine !== undefined && (
-                  <div className="flex items-center gap-1.5">
-                    <Hash className="w-3.5 h-3.5" />
-                    <span>
-                      Lines {selectedNode.properties.startLine + 1}
-                      {selectedNode.properties.endLine !== selectedNode.properties.startLine && 
-                        `–${(selectedNode.properties.endLine ?? selectedNode.properties.startLine) + 1}`
-                      }
-                    </span>
-                  </div>
-                )}
-                <div className="flex items-center gap-1.5">
-                  <GitBranch className="w-3.5 h-3.5" />
-                  <span>{relationshipCount} connections</span>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
-              <div className="w-16 h-16 mb-4 flex items-center justify-center bg-elevated border border-border-subtle rounded-xl">
-                <Code className="w-8 h-8 text-text-muted" />
-              </div>
-              <h3 className="text-base font-medium text-text-secondary mb-2">
-                No code selected
-              </h3>
-              <p className="text-sm text-text-muted">
-                Click on a node in the graph or file tree to view its source code
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Chat Panel Content */}
-      {rightPanelTab === 'chat' && (
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Chat header */}
-          <div className="flex items-center gap-2.5 px-4 py-3 bg-elevated/50 border-b border-border-subtle">
-            <Sparkles className="w-4 h-4 text-accent" />
-            <span className="font-medium text-sm">Nexus AI</span>
-            <span className="text-xs text-text-muted">• Ask about the codebase</span>
-            <div className="ml-auto flex items-center gap-2">
-              {!isAgentReady && (
-                <span className="text-[11px] px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                  Configure AI
-                </span>
-              )}
-              {isAgentInitializing && (
-                <span className="text-[11px] px-2 py-1 rounded-full bg-surface border border-border-subtle flex items-center gap-1 text-text-muted">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Connecting
-                </span>
-              )}
-              <button
-                onClick={() => setSettingsPanelOpen(true)}
-                className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-hover transition-colors"
-                title="AI Settings"
-              >
-                <Settings className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Chat Content */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Status bar */}
+        <div className="flex items-center gap-2.5 px-4 py-3 bg-elevated/50 border-b border-border-subtle">
+          <div className="ml-auto flex items-center gap-2">
+            {!isAgentReady && (
+              <span className="text-[11px] px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                Configure AI
+              </span>
+            )}
+            {isAgentInitializing && (
+              <span className="text-[11px] px-2 py-1 rounded-full bg-surface border border-border-subtle flex items-center gap-1 text-text-muted">
+                <Loader2 className="w-3 h-3 animate-spin" /> Connecting
+              </span>
+            )}
+            <button
+              onClick={() => setSettingsPanelOpen(true)}
+              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-hover transition-colors"
+              title="AI Settings"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
           </div>
+        </div>
 
           {/* Status / errors */}
           {agentError && (
@@ -347,7 +264,7 @@ export const RightPanel = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-5">
                 {chatMessages.map((message) => (
                   <div
                     key={message.id}
@@ -367,20 +284,20 @@ export const RightPanel = () => {
                       )}
                     </div>
                     <div className={`
-                      max-w-[85%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed
+                      max-w-[90%] rounded-xl
                       ${message.role === 'assistant'
-                        ? 'bg-elevated border border-border-subtle text-text-primary prose prose-sm prose-invert max-w-none'
-                        : 'bg-accent text-white'
+                        ? 'px-4 py-3 bg-elevated border border-border-subtle text-text-primary chat-prose'
+                        : 'px-3.5 py-2.5 bg-accent text-white text-sm'
                       }
                     `}>
                       {message.role === 'assistant' ? (
                         // Render steps in order (reasoning, tool calls, content interleaved)
                         message.steps && message.steps.length > 0 ? (
-                          <div className="space-y-3">
+                          <div className="space-y-4">
                             {message.steps.map((step) => (
                               <div key={step.id}>
                                 {step.type === 'reasoning' && step.content && (
-                                  <div className="text-text-secondary text-sm italic border-l-2 border-accent/30 pl-3">
+                                  <div className="text-text-secondary text-[13px] italic border-l-2 border-accent/40 pl-3 py-0.5 bg-accent/5 rounded-r">
                                     {step.content}
                                   </div>
                                 )}
@@ -390,17 +307,43 @@ export const RightPanel = () => {
                                 {step.type === 'content' && step.content && (
                                   <ReactMarkdown
                                     components={{
+                                      a: ({ href, children, ...props }) => {
+                                        if (href && href.startsWith('code-ref:')) {
+                                          const inner = decodeURIComponent(href.slice('code-ref:'.length));
+                                          return (
+                                            <a
+                                              href={href}
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                handleGroundingClick(inner);
+                                              }}
+                                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-400/40 bg-cyan-500/10 text-cyan-200 font-mono text-[12px] hover:bg-cyan-500/15 hover:border-cyan-300/60 transition-colors"
+                                              title="Open in Code panel"
+                                              {...props}
+                                            >
+                                              {children}
+                                            </a>
+                                          );
+                                        }
+                                        return (
+                                          <a
+                                            href={href}
+                                            className="text-accent underline underline-offset-2 hover:text-purple-300"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            {...props}
+                                          >
+                                            {children}
+                                          </a>
+                                        );
+                                      },
                                       code: ({ className, children, ...props }) => {
                                         const match = /language-(\w+)/.exec(className || '');
                                         const isInline = !className && !match;
                                         const codeContent = String(children).replace(/\n$/, '');
                                         
                                         if (isInline) {
-                                          return (
-                                          <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
-                                            {children}
-                                          </code>
-                                          );
+                                          return <code {...props}>{children}</code>;
                                         }
                                         
                                         const language = match ? match[1] : 'text';
@@ -411,10 +354,11 @@ export const RightPanel = () => {
                                             PreTag="div"
                                             customStyle={{
                                               margin: 0,
-                                              padding: '12px',
+                                              padding: '14px 16px',
                                               borderRadius: '8px',
-                                              fontSize: '12px',
+                                              fontSize: '13px',
                                               background: '#0a0a10',
+                                              border: '1px solid #1e1e2a',
                                             }}
                                           >
                                             {codeContent}
@@ -424,7 +368,7 @@ export const RightPanel = () => {
                                       pre: ({ children }) => <>{children}</>,
                                     }}
                                   >
-                                    {step.content}
+                                    {formatMarkdownForDisplay(step.content)}
                                   </ReactMarkdown>
                                 )}
                               </div>
@@ -435,17 +379,43 @@ export const RightPanel = () => {
                           <>
                             <ReactMarkdown
                               components={{
+                                a: ({ href, children, ...props }) => {
+                                  if (href && href.startsWith('code-ref:')) {
+                                    const inner = decodeURIComponent(href.slice('code-ref:'.length));
+                                    return (
+                                      <a
+                                        href={href}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          handleGroundingClick(inner);
+                                        }}
+                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-400/40 bg-cyan-500/10 text-cyan-200 font-mono text-[12px] hover:bg-cyan-500/15 hover:border-cyan-300/60 transition-colors"
+                                        title="Open in Code panel"
+                                        {...props}
+                                      >
+                                        {children}
+                                      </a>
+                                    );
+                                  }
+                                  return (
+                                    <a
+                                      href={href}
+                                      className="text-accent underline underline-offset-2 hover:text-purple-300"
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      {...props}
+                                    >
+                                      {children}
+                                    </a>
+                                  );
+                                },
                                 code: ({ className, children, ...props }) => {
                                   const match = /language-(\w+)/.exec(className || '');
                                   const isInline = !className && !match;
                                   const codeContent = String(children).replace(/\n$/, '');
                                   
                                   if (isInline) {
-                                    return (
-                                    <code className="px-1 py-0.5 bg-surface rounded text-accent font-mono text-xs" {...props}>
-                                      {children}
-                                    </code>
-                                    );
+                                    return <code {...props}>{children}</code>;
                                   }
                                   
                                   const language = match ? match[1] : 'text';
@@ -456,10 +426,11 @@ export const RightPanel = () => {
                                       PreTag="div"
                                       customStyle={{
                                         margin: 0,
-                                        padding: '12px',
+                                        padding: '14px 16px',
                                         borderRadius: '8px',
-                                        fontSize: '12px',
+                                        fontSize: '13px',
                                         background: '#0a0a10',
+                                        border: '1px solid #1e1e2a',
                                       }}
                                     >
                                       {codeContent}
@@ -469,7 +440,7 @@ export const RightPanel = () => {
                                 pre: ({ children }) => <>{children}</>,
                               }}
                             >
-                              {message.content}
+                              {formatMarkdownForDisplay(message.content)}
                             </ReactMarkdown>
                             {message.toolCalls && message.toolCalls.length > 0 && (
                               <div className="mt-3 space-y-2">
@@ -494,12 +465,14 @@ export const RightPanel = () => {
           <div className="p-3 bg-surface border-t border-border-subtle">
             <div className="flex items-end gap-2 px-3 py-2 bg-elevated border border-border-subtle rounded-xl transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
               <textarea
+                ref={textareaRef}
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Ask about the codebase..."
                 rows={1}
-                className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted resize-none max-h-24"
+                className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted resize-none min-h-[36px] scrollbar-thin"
+                style={{ height: '36px', overflowY: 'hidden' }}
               />
               <button
                 onClick={clearChat}
@@ -524,7 +497,6 @@ export const RightPanel = () => {
             )}
           </div>
         </div>
-      )}
     </aside>
   );
 };

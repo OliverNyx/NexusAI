@@ -12,6 +12,14 @@ import { isEmbedderReady, disposeEmbedder } from '../core/embeddings/embedder';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
 import type { ProviderConfig, AgentStreamChunk } from '../core/llm/types';
 import { createGraphRAGAgent, streamAgentResponse, type AgentMessage } from '../core/llm/agent';
+import { 
+  buildBM25Index, 
+  searchBM25, 
+  isBM25Ready, 
+  getBM25Stats,
+  mergeWithRRF,
+  type HybridSearchResult,
+} from '../core/search';
 
 // Lazy import for Kuzu to avoid breaking worker if SharedArrayBuffer unavailable
 let kuzuAdapter: typeof import('../core/kuzu/kuzu-adapter') | null = null;
@@ -55,6 +63,12 @@ const workerApi = {
     
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
+    
+    // Build BM25 index for keyword search (instant, ~100ms)
+    const bm25DocCount = buildBM25Index(storedFileContents);
+    if (import.meta.env.DEV) {
+      console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
+    }
     
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
@@ -145,6 +159,12 @@ const workerApi = {
     
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
+    
+    // Build BM25 index for keyword search (instant, ~100ms)
+    const bm25DocCount = buildBM25Index(storedFileContents);
+    if (import.meta.env.DEV) {
+      console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
+    }
     
     // Load graph into KuzuDB for querying (optional - gracefully degrades)
     try {
@@ -262,6 +282,56 @@ const workerApi = {
   },
 
   /**
+   * Perform hybrid search combining BM25 (keyword) and semantic (embedding) search
+   * Uses Reciprocal Rank Fusion (RRF) to merge results
+   * 
+   * @param query - Search query
+   * @param k - Number of results to return (default: 10)
+   * @returns Hybrid search results with RRF scores
+   */
+  async hybridSearch(
+    query: string,
+    k: number = 10
+  ): Promise<HybridSearchResult[]> {
+    if (!isBM25Ready()) {
+      throw new Error('Search index not ready. Please load a repository first.');
+    }
+    
+    // Get BM25 results (always available after ingestion)
+    const bm25Results = searchBM25(query, k * 3);  // Get more for better RRF merge
+    
+    // Get semantic results if embeddings are ready
+    let semanticResults: SemanticSearchResult[] = [];
+    if (isEmbeddingComplete) {
+      try {
+        const kuzu = await getKuzuAdapter();
+        if (kuzu.isKuzuReady()) {
+          semanticResults = await doSemanticSearch(kuzu.executeQuery, query, k * 3, 0.5);
+        }
+      } catch {
+        // Semantic search failed, continue with BM25 only
+      }
+    }
+    
+    // Merge with RRF
+    return mergeWithRRF(bm25Results, semanticResults, k);
+  },
+
+  /**
+   * Check if BM25 search index is ready
+   */
+  isBM25Ready(): boolean {
+    return isBM25Ready();
+  },
+
+  /**
+   * Get BM25 index statistics
+   */
+  getBM25Stats(): { documentCount: number; termCount: number } {
+    return getBM25Stats();
+  },
+
+  /**
    * Check if the embedding model is loaded and ready
    */
   isEmbeddingModelReady(): boolean {
@@ -334,12 +404,33 @@ const workerApi = {
         return doSemanticSearchWithContext(kuzu.executeQuery, query, k, hops);
       };
 
+      // Hybrid search wrapper - combines BM25 + semantic
+      const hybridSearchWrapper = async (query: string, k?: number) => {
+        // Get BM25 results (always available after ingestion)
+        const bm25Results = searchBM25(query, (k ?? 10) * 3);
+        
+        // Get semantic results if embeddings are ready
+        let semanticResults: any[] = [];
+        if (isEmbeddingComplete) {
+          try {
+            semanticResults = await doSemanticSearch(kuzu.executeQuery, query, (k ?? 10) * 3, 0.5);
+          } catch {
+            // Semantic search failed, continue with BM25 only
+          }
+        }
+        
+        // Merge with RRF
+        return mergeWithRRF(bm25Results, semanticResults, k ?? 10);
+      };
+
       currentAgent = createGraphRAGAgent(
         config,
         kuzu.executeQuery,
         semanticSearchWrapper,
         semanticSearchWithContextWrapper,
+        hybridSearchWrapper,
         () => isEmbeddingComplete,
+        () => isBM25Ready(),
         storedFileContents
       );
       currentProviderConfig = config;

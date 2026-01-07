@@ -8,7 +8,7 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'azure-openai' | 'gemini' | 'ollama';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama';
 
 /**
  * Base configuration shared by all providers
@@ -18,6 +18,16 @@ export interface BaseProviderConfig {
   model: string;
   temperature?: number;
   maxTokens?: number;
+}
+
+/**
+ * OpenAI specific configuration
+ */
+export interface OpenAIConfig extends BaseProviderConfig {
+  provider: 'openai';
+  apiKey: string;
+  model: string;  // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
+  baseUrl?: string;  // optional, for custom endpoints or proxies
 }
 
 /**
@@ -41,6 +51,15 @@ export interface GeminiConfig extends BaseProviderConfig {
 }
 
 /**
+ * Anthropic (Claude) configuration
+ */
+export interface AnthropicConfig extends BaseProviderConfig {
+  provider: 'anthropic';
+  apiKey: string;
+  model: string;  // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
+}
+
+/**
  * Ollama configuration (for future use)
  */
 export interface OllamaConfig extends BaseProviderConfig {
@@ -52,7 +71,7 @@ export interface OllamaConfig extends BaseProviderConfig {
 /**
  * Union type for all provider configurations
  */
-export type ProviderConfig = AzureOpenAIConfig | GeminiConfig | OllamaConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -63,8 +82,10 @@ export interface LLMSettings {
    * Provider settings are persisted to localStorage and may be partially configured.
    * We validate required fields at runtime before creating a ProviderConfig.
    */
+  openai?: Partial<Omit<OpenAIConfig, 'provider'>>;
   azureOpenAI?: Partial<Omit<AzureOpenAIConfig, 'provider'>>;
   gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
+  anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
 }
 
@@ -73,6 +94,11 @@ export interface LLMSettings {
  */
 export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   activeProvider: 'gemini',
+  openai: {
+    apiKey: '',
+    model: 'gpt-4o',
+    temperature: 0.1,
+  },
   gemini: {
     apiKey: '',
     model: 'gemini-2.0-flash',
@@ -84,6 +110,11 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     deploymentName: '',
     model: 'gpt-4o',
     apiVersion: '2024-08-01-preview',
+    temperature: 0.1,
+  },
+  anthropic: {
+    apiKey: '',
+    model: 'claude-sonnet-4-20250514',
     temperature: 0.1,
   },
   ollama: {

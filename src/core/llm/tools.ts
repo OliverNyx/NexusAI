@@ -18,7 +18,9 @@ export const createGraphRAGTools = (
   executeQuery: (cypher: string) => Promise<any[]>,
   semanticSearch: (query: string, k?: number, maxDistance?: number) => Promise<any[]>,
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>,
+  hybridSearch: (query: string, k?: number) => Promise<any[]>,
   isEmbeddingReady: () => boolean,
+  isBM25Ready: () => boolean,
   fileContents: Map<string, string>
 ) => {
   /**
@@ -148,39 +150,42 @@ export const createGraphRAGTools = (
   );
 
   /**
-   * Tool: Semantic Code Search
-   * Find code by meaning using vector embeddings
+   * Tool: Hybrid Code Search
+   * Combines keyword (BM25) and semantic search for best results
    */
-  const semanticSearchTool = tool(
+  const searchTool = tool(
     async ({ query, limit }: { query: string; limit?: number }) => {
-      if (!isEmbeddingReady()) {
-        return 'Semantic search is not available. Embeddings have not been generated yet. Please use execute_cypher tool for structured queries instead.';
+      if (!isBM25Ready()) {
+        return 'Search is not available. Please load a repository first.';
       }
       
       try {
-        const results = await semanticSearch(query, limit ?? 10, 0.5);
+        const results = await hybridSearch(query, limit ?? 10);
         
         if (results.length === 0) {
-          return `No code found matching "${query}". Try a different search term or use execute_cypher for structured queries.`;
+          return `No code found matching "${query}". Try different terms or use grep_code for exact patterns.`;
         }
         
-        const formatted = results.map((r, i) => {
+        const formatted = results.map((r: any, i: number) => {
           const location = r.startLine ? ` (lines ${r.startLine}-${r.endLine})` : '';
-          return `[${i + 1}] ${r.label}: ${r.name}\n    ID: ${r.nodeId}\n    File: ${r.filePath}${location}\n    Relevance: ${(1 - r.distance).toFixed(2)}`;
+          const label = r.label || 'File';
+          const name = r.name || r.filePath.split('/').pop();
+          const sources = r.sources?.join('+') || 'hybrid';
+          return `[${i + 1}] ${label}: ${name}\n    File: ${r.filePath}${location}\n    Found by: ${sources}`;
         });
         
-        return `Found ${results.length} semantically similar code elements (use ID with get_code_content to see source):\n\n${formatted.join('\n\n')}`;
+        return `Found ${results.length} matches:\n\n${formatted.join('\n\n')}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `Semantic search error: ${message}`;
+        return `Search error: ${message}`;
       }
     },
     {
-      name: 'semantic_search',
-      description: 'Search for code by meaning using semantic similarity. Good for finding code related to a concept even if exact terms are not used.',
+      name: 'search',
+      description: 'Search for code by keywords or concepts. Finds relevant files and functions.',
       schema: z.object({
-        query: z.string().describe('Natural language description of what you are looking for'),
-        limit: z.number().optional().nullable().describe('Maximum number of results to return (default: 10)'),
+        query: z.string().describe('What you are looking for'),
+        limit: z.number().optional().nullable().describe('Max results (default: 10)'),
       }),
     }
   );
@@ -619,7 +624,7 @@ Copy the ID EXACTLY as it appears in query results (the "classId", "fnId", "file
   return [
     executeCypherTool,
     executeVectorCypherTool,
-    semanticSearchTool,
+    searchTool,
     semanticSearchWithContextTool,
     getSchemaTool,
     getCodeContentTool,
