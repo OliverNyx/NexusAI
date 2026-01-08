@@ -4,6 +4,8 @@
 
 Transform codebases into interactive knowledge graphs using AST parsing, Web Workers, and an embedded KuzuDB WASM database. All processing happens locally - your code never leaves your machine.
 
+Currently supports Python, Js, TS ( Go, Java, C work in progress )
+
 **Next up:** Browser-based embeddings + Graph RAG. The cool part? KuzuDB supports native vector indexing, so I can do semantic search AND graph traversal in a single Cypher query. No separate vector DB needed. See [Work in Progress](#-current-work-in-progress) for the full plan.
 
 
