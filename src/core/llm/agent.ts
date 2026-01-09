@@ -108,7 +108,18 @@ Single polymorphic table: \`CodeNode\` with \`label\` property (File, Function, 
 
 Relationships: \`CodeRelation\` with \`type\` (CALLS, IMPORTS, CONTAINS, DEFINES)
 
+**IMPORTANT:** There is NO relationship label/table named \`CALLS\` / \`IMPORTS\` / etc.
+Always use \`CodeRelation\` and filter on \`r.type\`, e.g.:
+- ✅ \`MATCH (a:CodeNode)-[r:CodeRelation]->(b:CodeNode) WHERE r.type = 'CALLS'\`
+- ❌ \`MATCH (a)-[:CALLS]->(b)\` -- WRONG, will fail with "Table CALLS does not exist"
+
 Vector search requires JOIN: \`CALL QUERY_VECTOR_INDEX(...) YIELD node AS emb, distance WITH emb, distance WHERE ... MATCH (n:CodeNode {id: emb.nodeId})\`
+
+## ERROR RECOVERY (BE AGENTIC)
+
+If a tool call returns an error (e.g., Cypher binder/syntax errors), do NOT stop.
+- Correct the query and retry at least once.
+- If unsure, call \`get_graph_schema\` to ground the correct schema, then retry.
 
 ## USE HIGHLIGHTING
 
@@ -255,7 +266,11 @@ export async function* streamAgentResponse(
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream(
       { messages: formattedMessages },
-      { streamMode: ['values', 'messages'] as any }
+      {
+        streamMode: ['values', 'messages'] as any,
+        // Allow longer tool/reasoning loops (more Cursor-like persistence)
+        recursionLimit: 50,
+      } as any
     );
     
     // Track what we've yielded to avoid duplicates
@@ -264,6 +279,10 @@ export async function* streamAgentResponse(
     let lastProcessedMsgCount = formattedMessages.length;
     // Track if all tools are done (for distinguishing reasoning vs final content)
     let allToolsDone = true;
+    // Track if we've seen any tool calls in this response turn.
+    // Anything before the first tool call should be treated as "reasoning/narration"
+    // so the UI can show the Cursor-like loop: plan → tool → update → tool → answer.
+    let hasSeenToolCallThisTurn = false;
     
     for await (const event of stream) {
       // Events come as [streamMode, data] tuples when using multiple modes
@@ -297,8 +316,14 @@ export async function* streamAgentResponse(
           
           // If chunk has content, stream it
           if (content && typeof content === 'string' && content.length > 0) {
-            // Determine if this is reasoning (before/between tools) or final content
-            const isReasoning = toolCalls.length > 0 || !allToolsDone;
+            // Determine if this is reasoning/narration vs final answer content.
+            // - Before the first tool call: treat as reasoning (narration)
+            // - Between tool calls/results: treat as reasoning
+            // - After all tools are done: treat as final content
+            const isReasoning =
+              !hasSeenToolCallThisTurn ||
+              toolCalls.length > 0 ||
+              !allToolsDone;
             yield {
               type: isReasoning ? 'reasoning' : 'content',
               [isReasoning ? 'reasoning' : 'content']: content,
@@ -307,6 +332,7 @@ export async function* streamAgentResponse(
           
           // Track tool calls from message chunks
           if (toolCalls.length > 0) {
+            hasSeenToolCallThisTurn = true;
             allToolsDone = false;
             for (const tc of toolCalls) {
               const toolId = tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`;

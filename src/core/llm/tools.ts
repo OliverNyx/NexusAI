@@ -23,6 +23,26 @@ export const createGraphRAGTools = (
   isBM25Ready: () => boolean,
   fileContents: Map<string, string>
 ) => {
+  const buildCypherSchemaHint = (message: string): string => {
+    const m = message.match(/Table\s+([A-Za-z_][A-Za-z0-9_]*)\s+does\s+not\s+exist/i);
+    const missing = (m?.[1] ?? '').toUpperCase();
+    const knownRelTypes = new Set(['CALLS', 'IMPORTS', 'CONTAINS', 'DEFINES']);
+    if (!knownRelTypes.has(missing)) return '';
+
+    return [
+      '',
+      'Schema hint:',
+      `- There is NO relationship label/table named "${missing}".`,
+      "- All relationships use the single relationship label `CodeRelation` with a `type` property.",
+      `- Rewrite patterns like \`-[:${missing}]->\` to \`-[r:CodeRelation]->\` and add \`WHERE r.type = '${missing}'\`.`,
+      '',
+      'Example:',
+      "MATCH (a:CodeNode)-[r:CodeRelation]->(b:CodeNode)",
+      `WHERE r.type = '${missing}'`,
+      'RETURN a.id, b.id LIMIT 25',
+    ].join('\n');
+  };
+
   /**
    * Tool: Execute Cypher Query
    * Allows the agent to run arbitrary Cypher queries against the graph
@@ -51,7 +71,8 @@ export const createGraphRAGTools = (
         return `Query returned ${results.length} results:\n${resultText}${truncated}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `Cypher query error: ${message}\n\nPlease check your query syntax and try again.`;
+        const hint = buildCypherSchemaHint(message);
+        return `Cypher query error: ${message}\n\nPlease check your query syntax and try again.${hint ? `\n\n${hint}` : ''}`;
       }
     },
     {

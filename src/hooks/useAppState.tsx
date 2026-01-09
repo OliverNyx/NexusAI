@@ -33,6 +33,13 @@ export interface CodeReference {
   source: 'ai' | 'user';  // How it was added
 }
 
+export interface CodeReferenceFocus {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  ts: number;
+}
+
 interface AppState {
   // View state
   viewMode: ViewMode;
@@ -131,6 +138,7 @@ interface AppState {
   removeCodeReference: (id: string) => void;
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
+  codeReferenceFocus: CodeReferenceFocus | null;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -215,6 +223,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Code References Panel state
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
+  const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
 
   const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -283,6 +292,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     
     // Auto-open panel when references are added
     setCodePanelOpen(true);
+
+    // Signal the Code Inspector to focus (scroll + glow) this reference.
+    // This should happen even if the reference already exists (duplicates are ignored),
+    // so it must be separate from the add-to-list behavior.
+    setCodeReferenceFocus({
+      filePath: ref.filePath,
+      startLine: ref.startLine,
+      endLine: ref.endLine,
+      ts: Date.now(),
+    });
     
     // Track AI highlights separately so they can be toggled off in the UI
     if (ref.nodeId && ref.source === 'ai') {
@@ -832,6 +851,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const clearCodeReferences = useCallback(() => {
     setCodeReferences([]);
     setCodePanelOpen(false);
+    setCodeReferenceFocus(null);
   }, []);
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
@@ -914,6 +934,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     removeCodeReference,
     clearAICodeReferences,
     clearCodeReferences,
+    codeReferenceFocus,
   };
 
   return (

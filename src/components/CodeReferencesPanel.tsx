@@ -36,11 +36,24 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     removeCodeReference,
     clearCodeReferences,
     setSelectedNode,
+    codeReferenceFocus,
   } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [glowRefId, setGlowRefId] = useState<string | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const refCardEls = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const glowTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (glowTimerRef.current) {
+        window.clearTimeout(glowTimerRef.current);
+        glowTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     try {
@@ -89,6 +102,47 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   }, [panelWidth]);
 
   const aiReferences = useMemo(() => codeReferences.filter(r => r.source === 'ai'), [codeReferences]);
+
+  // When the user clicks a citation badge in chat, focus the corresponding snippet card:
+  // - expand the panel if collapsed
+  // - smooth-scroll the card into view
+  // - briefly glow it for discoverability
+  useEffect(() => {
+    if (!codeReferenceFocus) return;
+
+    // Ensure panel is expanded
+    setIsCollapsed(false);
+
+    const { filePath, startLine, endLine } = codeReferenceFocus;
+    const target =
+      aiReferences.find(r =>
+        r.filePath === filePath &&
+        r.startLine === startLine &&
+        r.endLine === endLine
+      ) ??
+      aiReferences.find(r => r.filePath === filePath);
+
+    if (!target) return;
+
+    // Double rAF: wait for collapse state + list DOM to render.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = refCardEls.current.get(target.id);
+        if (!el) return;
+
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setGlowRefId(target.id);
+
+        if (glowTimerRef.current) {
+          window.clearTimeout(glowTimerRef.current);
+        }
+        glowTimerRef.current = window.setTimeout(() => {
+          setGlowRefId((prev) => (prev === target.id ? null : prev));
+          glowTimerRef.current = null;
+        }, 1200);
+      });
+    });
+  }, [codeReferenceFocus?.ts, aiReferences]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
@@ -291,8 +345,17 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
             ref.filePath.endsWith('.ts') || ref.filePath.endsWith('.tsx') ? 'typescript' :
             'text';
 
+          const isGlowing = glowRefId === ref.id;
+
           return (
-            <div key={ref.id} className="bg-elevated border border-border-subtle rounded-xl overflow-hidden">
+            <div
+              key={ref.id}
+              ref={(el) => { refCardEls.current.set(ref.id, el); }}
+              className={[
+                'bg-elevated border border-border-subtle rounded-xl overflow-hidden transition-all',
+                isGlowing ? 'ring-2 ring-cyan-300/70 shadow-[0_0_0_6px_rgba(34,211,238,0.14)] animate-pulse' : '',
+              ].join(' ')}
+            >
               <div className="px-3 py-2 border-b border-border-subtle bg-surface/40 flex items-start gap-2">
                 <span
                   className="mt-0.5 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide flex-shrink-0"

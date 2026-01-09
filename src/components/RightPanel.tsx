@@ -113,17 +113,70 @@ export const RightPanel = () => {
   }, [addCodeReference, findFileNodeIdForUI, resolveFilePathForUI]);
 
   const formatMarkdownForDisplay = useCallback((md: string) => {
-    // Avoid rewriting inside fenced code blocks. Also avoid rewriting when immediately preceded by a backtick.
+    // Avoid rewriting inside fenced code blocks.
     const parts = md.split('```');
     for (let i = 0; i < parts.length; i += 2) {
-      parts[i] = parts[i].replace(/(^|[^`])\[\[([^\]\n]+?)\]\]/g, (_m, prefix: string, inner: string) => {
+      parts[i] = parts[i].replace(/\[\[([^\]\n]+?)\]\]/g, (_m, inner: string) => {
         const trimmed = inner.trim();
         const href = `code-ref:${encodeURIComponent(trimmed)}`;
-        return `${prefix}[${trimmed}](${href})`;
+        return `[${trimmed}](${href})`;
       });
     }
     return parts.join('```');
   }, []);
+
+  const formatRefChipLabel = useCallback((ref: string): string => {
+    const raw = ref.trim();
+    if (!raw) return '';
+
+    // Drop any scheme prefix we might have accidentally passed through
+    const withoutScheme = raw.startsWith('code-ref:') ? raw.slice('code-ref:'.length) : raw;
+
+    // Strip query/hash
+    const cleaned = withoutScheme.split('#')[0].split('?')[0];
+
+    const m = cleaned.match(/^(.*):(\d+)(?:-(\d+))?$/);
+    const path = (m ? m[1] : cleaned).replace(/\\/g, '/');
+    const base = path.split('/').pop() ?? path;
+
+    if (!m) return base;
+
+    const start = m[2];
+    const end = m[3] ?? m[2];
+    return `${base} ${start}–${end}`;
+  }, []);
+
+  const isLikelyFileRefHref = useCallback((href: string): boolean => {
+    const h = href.trim();
+    if (!h) return false;
+    if (h.startsWith('code-ref:')) return true;
+    if (/^(https?:|mailto:|tel:|#)/i.test(h)) return false;
+    if (h.includes('://')) return false;
+
+    // Strip query/hash
+    const cleaned = h.split('#')[0].split('?')[0];
+
+    // Looks like: path/to/file.ext or path\to\file.ext:12-34
+    return /[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?$/.test(cleaned);
+  }, []);
+
+  const extractTextFromChildren = useCallback((children: any): string => {
+    if (children == null) return '';
+    if (typeof children === 'string' || typeof children === 'number') return String(children);
+    if (Array.isArray(children)) return children.map(extractTextFromChildren).join('');
+    // React element or other objects
+    return '';
+  }, []);
+
+  const getInternalRefFromLink = useCallback((href: string | undefined, children: any): string | null => {
+    const hrefStr = (href ?? '').trim();
+    const textStr = extractTextFromChildren(children).trim();
+
+    if (hrefStr && isLikelyFileRefHref(hrefStr)) return hrefStr;
+    if (textStr && isLikelyFileRefHref(textStr)) return textStr;
+
+    return null;
+  }, [extractTextFromChildren, isLikelyFileRefHref]);
   
   // Auto-resize textarea as user types
   const adjustTextareaHeight = useCallback(() => {
@@ -298,8 +351,91 @@ export const RightPanel = () => {
                             {message.steps.map((step) => (
                               <div key={step.id}>
                                 {step.type === 'reasoning' && step.content && (
-                                  <div className="text-text-secondary text-[13px] italic border-l-2 border-accent/40 pl-3 py-0.5 bg-accent/5 rounded-r">
-                                    {step.content}
+                                  <div className="text-text-primary text-sm chat-prose">
+                                    <ReactMarkdown
+                                      components={{
+                                        a: ({ href, children, ...props }) => {
+                                          if (href && href.startsWith('code-ref:')) {
+                                            const inner = decodeURIComponent(href.slice('code-ref:'.length));
+                                            const label = formatRefChipLabel(inner);
+                                            return (
+                                              <a
+                                                href={href}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  handleGroundingClick(inner);
+                                                }}
+                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                title={`Open in Code panel • ${inner}`}
+                                                {...props}
+                                              >
+                                                <span className="text-inherit">{label || children}</span>
+                                              </a>
+                                            );
+                                          }
+                                          const internalRef = getInternalRefFromLink(href, children);
+                                          if (internalRef) {
+                                            const label = formatRefChipLabel(internalRef);
+                                            return (
+                                              <a
+                                                href={href}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  handleGroundingClick(internalRef);
+                                                }}
+                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                title={`Open in Code panel • ${internalRef}`}
+                                                {...props}
+                                              >
+                                                <span className="text-inherit">{label || children}</span>
+                                              </a>
+                                            );
+                                          }
+                                          return (
+                                            <a
+                                              href={href}
+                                              className="text-accent underline underline-offset-2 hover:text-purple-300"
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              {...props}
+                                            >
+                                              {children}
+                                            </a>
+                                          );
+                                        },
+                                        code: ({ className, children, ...props }) => {
+                                          const match = /language-(\w+)/.exec(className || '');
+                                          const isInline = !className && !match;
+                                          const codeContent = String(children).replace(/\n$/, '');
+
+                                          if (isInline) {
+                                            return <code {...props}>{children}</code>;
+                                          }
+
+                                          const language = match ? match[1] : 'text';
+                                          return (
+                                            <SyntaxHighlighter
+                                              style={customTheme}
+                                              language={language}
+                                              PreTag="div"
+                                              customStyle={{
+                                                margin: 0,
+                                                padding: '14px 16px',
+                                                borderRadius: '8px',
+                                                fontSize: '13px',
+                                                background: '#0a0a10',
+                                                border: '1px solid #1e1e2a',
+                                              }}
+                                            >
+                                              {codeContent}
+                                            </SyntaxHighlighter>
+                                          );
+                                        },
+                                        pre: ({ children }) => <>{children}</>,
+                                      }}
+                                    >
+                                      {formatMarkdownForDisplay(step.content)}
+                                    </ReactMarkdown>
                                   </div>
                                 )}
                                 {step.type === 'tool_call' && step.toolCall && (
@@ -311,6 +447,7 @@ export const RightPanel = () => {
                                       a: ({ href, children, ...props }) => {
                                         if (href && href.startsWith('code-ref:')) {
                                           const inner = decodeURIComponent(href.slice('code-ref:'.length));
+                                          const label = formatRefChipLabel(inner);
                                           return (
                                             <a
                                               href={href}
@@ -318,11 +455,29 @@ export const RightPanel = () => {
                                                 e.preventDefault();
                                                 handleGroundingClick(inner);
                                               }}
-                                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-400/40 bg-cyan-500/10 text-cyan-200 font-mono text-[12px] hover:bg-cyan-500/15 hover:border-cyan-300/60 transition-colors"
-                                              title="Open in Code panel"
+                                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                              title={`Open in Code panel • ${inner}`}
                                               {...props}
                                             >
-                                              {children}
+                                              <span className="text-inherit">{label || children}</span>
+                                            </a>
+                                          );
+                                        }
+                                        const internalRef = getInternalRefFromLink(href, children);
+                                        if (internalRef) {
+                                          const label = formatRefChipLabel(internalRef);
+                                          return (
+                                            <a
+                                              href={href}
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                handleGroundingClick(internalRef);
+                                              }}
+                                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                              title={`Open in Code panel • ${internalRef}`}
+                                              {...props}
+                                            >
+                                              <span className="text-inherit">{label || children}</span>
                                             </a>
                                           );
                                         }
@@ -383,6 +538,7 @@ export const RightPanel = () => {
                                 a: ({ href, children, ...props }) => {
                                   if (href && href.startsWith('code-ref:')) {
                                     const inner = decodeURIComponent(href.slice('code-ref:'.length));
+                                    const label = formatRefChipLabel(inner);
                                     return (
                                       <a
                                         href={href}
@@ -390,11 +546,29 @@ export const RightPanel = () => {
                                           e.preventDefault();
                                           handleGroundingClick(inner);
                                         }}
-                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-400/40 bg-cyan-500/10 text-cyan-200 font-mono text-[12px] hover:bg-cyan-500/15 hover:border-cyan-300/60 transition-colors"
-                                        title="Open in Code panel"
+                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                        title={`Open in Code panel • ${inner}`}
                                         {...props}
                                       >
-                                        {children}
+                                        <span className="text-inherit">{label || children}</span>
+                                      </a>
+                                    );
+                                  }
+                                  const internalRef = getInternalRefFromLink(href, children);
+                                  if (internalRef) {
+                                    const label = formatRefChipLabel(internalRef);
+                                    return (
+                                      <a
+                                        href={href}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          handleGroundingClick(internalRef);
+                                        }}
+                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                        title={`Open in Code panel • ${internalRef}`}
+                                        {...props}
+                                      >
+                                        <span className="text-inherit">{label || children}</span>
                                       </a>
                                     );
                                   }
