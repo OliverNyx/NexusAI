@@ -520,6 +520,23 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       timestamp: Date.now(),
     };
     setChatMessages(prev => [...prev, userMessage]);
+
+    // If embeddings are running and we're currently creating the vector index,
+    // avoid a confusing "Embeddings not ready" error and give a clear wait message.
+    if (embeddingStatus === 'indexing') {
+      const assistantMessage: ChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: 'Wait a moment, vector index is being created.',
+        timestamp: Date.now(),
+      };
+      setChatMessages(prev => [...prev, assistantMessage]);
+      setAgentError(null);
+      setIsChatLoading(false);
+      setCurrentToolCalls([]);
+      return;
+    }
+
     setIsChatLoading(true);
     setCurrentToolCalls([]);
 
@@ -778,7 +795,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
 
   const clearChat = useCallback(() => {
     setChatMessages([]);

@@ -8,6 +8,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ReactMarkdown from 'react-markdown';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
+import { isProviderConfigured } from '../core/llm/settings-service';
 
 // Custom syntax theme
 const customTheme = {
@@ -492,7 +493,11 @@ export const RightPanel = () => {
             {!isAgentReady && !isAgentInitializing && (
               <div className="mt-2 text-xs text-amber-200 flex items-center gap-2">
                 <AlertTriangle className="w-3.5 h-3.5" />
-                <span>Configure an LLM provider to enable chat.</span>
+                <span>
+                  {isProviderConfigured()
+                    ? 'Initializing AI agent...'
+                    : 'Configure an LLM provider to enable chat.'}
+                </span>
               </div>
             )}
           </div>

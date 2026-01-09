@@ -10,6 +10,7 @@ import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
+import { getActiveProviderConfig } from './core/llm/settings-service';
 
 const AppContent = () => {
   const {
@@ -49,6 +50,12 @@ const AppContent = () => {
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
+
+      // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
+      // the current codebase context (file contents + graph tools) in the worker.
+      if (getActiveProviderConfig()) {
+        initializeAgent();
+      }
       
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
@@ -73,7 +80,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent]);
 
   const handleGitClone = useCallback(async (files: FileEntry[]) => {
     // Extract project name from first file path (e.g., "owner-repo-123/src/..." -> "owner-repo")
@@ -91,6 +98,12 @@ const AppContent = () => {
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
+
+      // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
+      // the current codebase context (file contents + graph tools) in the worker.
+      if (getActiveProviderConfig()) {
+        initializeAgent();
+      }
       
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
@@ -115,7 +128,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
