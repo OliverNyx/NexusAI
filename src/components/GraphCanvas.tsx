@@ -1,5 +1,5 @@
-import { useEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause } from 'lucide-react';
+import { useEffect, useCallback, useMemo, useState, forwardRef, useImperativeHandle } from 'react';
+import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from 'lucide-react';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
@@ -11,8 +11,28 @@ export interface GraphCanvasHandle {
 }
 
 export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
-  const { graph, setSelectedNode, selectedNode: appSelectedNode, visibleLabels, openCodePanel, depthFilter, highlightedNodeIds } = useAppState();
+  const {
+    graph,
+    setSelectedNode,
+    selectedNode: appSelectedNode,
+    visibleLabels,
+    openCodePanel,
+    depthFilter,
+    highlightedNodeIds,
+    aiCitationHighlightedNodeIds,
+    aiToolHighlightedNodeIds,
+    isAIHighlightsEnabled,
+    toggleAIHighlights,
+  } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
+
+  const effectiveHighlightedNodeIds = useMemo(() => {
+    if (!isAIHighlightsEnabled) return highlightedNodeIds;
+    const next = new Set(highlightedNodeIds);
+    for (const id of aiCitationHighlightedNodeIds) next.add(id);
+    for (const id of aiToolHighlightedNodeIds) next.add(id);
+    return next;
+  }, [highlightedNodeIds, aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds, isAIHighlightsEnabled]);
   
   const handleNodeClick = useCallback((nodeId: string) => {
     if (!graph) return;
@@ -55,7 +75,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onNodeClick: handleNodeClick,
     onNodeHover: handleNodeHover,
     onStageClick: handleStageClick,
-    highlightedNodeIds,
+    highlightedNodeIds: effectiveHighlightedNodeIds,
   });
 
   // Expose focusNode to parent via ref
@@ -244,6 +264,21 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
       {/* Query FAB */}
       <QueryFAB />
+
+      {/* AI Highlights toggle - Top Right */}
+      <div className="absolute top-4 right-4 z-20">
+        <button
+          onClick={toggleAIHighlights}
+          className={
+            isAIHighlightsEnabled
+              ? 'w-10 h-10 flex items-center justify-center bg-cyan-500/15 border border-cyan-400/40 rounded-lg text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-300/60 transition-colors'
+              : 'w-10 h-10 flex items-center justify-center bg-elevated border border-border-subtle rounded-lg text-text-muted hover:bg-hover hover:text-text-primary transition-colors'
+          }
+          title={isAIHighlightsEnabled ? 'Turn off AI highlights' : 'Turn on AI highlights'}
+        >
+          {isAIHighlightsEnabled ? <Lightbulb className="w-4 h-4" /> : <LightbulbOff className="w-4 h-4" />}
+        </button>
+      </div>
     </div>
   );
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target } from 'lucide-react';
+import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
@@ -131,15 +131,22 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       <aside className="h-full w-12 bg-surface border-r border-border-subtle flex flex-col items-center py-3 gap-2 flex-shrink-0">
         <button
           onClick={() => setIsCollapsed(false)}
-          className="p-2 text-text-secondary hover:text-text-primary hover:bg-hover rounded transition-colors"
+          className="p-2 text-text-secondary hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
           title="Expand Code Panel"
         >
           <PanelLeft className="w-5 h-5" />
         </button>
         <div className="w-6 h-px bg-border-subtle my-1" />
-        <div className="text-[10px] text-text-muted rotate-90 whitespace-nowrap font-mono">
-          {showCitations ? `${aiReferences.length} refs` : 'Selected'}
-        </div>
+        {showSelectedViewer && (
+          <div className="text-[9px] text-amber-400 rotate-90 whitespace-nowrap font-medium tracking-wide">
+            SELECTED
+          </div>
+        )}
+        {showCitations && (
+          <div className="text-[9px] text-cyan-400 rotate-90 whitespace-nowrap font-medium tracking-wide mt-4">
+            AI • {aiReferences.length}
+          </div>
+        )}
       </aside>
     );
   }
@@ -157,18 +164,17 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         title="Drag to resize"
       />
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-elevated/40">
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border-subtle bg-gradient-to-r from-elevated/60 to-surface/60">
         <div className="flex items-center gap-2">
-          <Code className="w-4 h-4 text-cyan-300" />
-          <span className="text-sm font-medium">Code</span>
-          {showCitations && <span className="text-xs text-text-muted">• {aiReferences.length} refs</span>}
+          <Code className="w-4 h-4 text-cyan-400" />
+          <span className="text-sm font-semibold text-text-primary">Code Inspector</span>
         </div>
         <div className="flex items-center gap-1.5">
           {showCitations && (
             <button
               onClick={() => clearCodeReferences()}
-              className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-              title="Clear all code references"
+              className="p-1.5 text-text-muted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+              title="Clear AI citations"
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -187,14 +193,18 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         {/* Top: Selected file viewer (when a node is selected) */}
         {showSelectedViewer && (
           <div className={`${showCitations ? 'h-[42%]' : 'flex-1'} min-h-0 flex flex-col`}>
-            <div className="px-3 py-2 bg-surface/40 border-b border-border-subtle flex items-center gap-2">
-              <span className="text-[11px] text-text-muted uppercase tracking-wide">Selected</span>
+            <div className="px-3 py-2 bg-gradient-to-r from-amber-500/8 to-orange-500/5 border-b border-amber-500/20 flex items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/15 rounded-md border border-amber-500/25">
+                <MousePointerClick className="w-3 h-3 text-amber-400" />
+                <span className="text-[10px] text-amber-300 font-semibold uppercase tracking-wide">Selected</span>
+              </div>
+              <FileCode className="w-3.5 h-3.5 text-amber-400/70 ml-1" />
               <span className="text-xs text-text-primary font-mono truncate flex-1">
-                {selectedNode?.properties?.filePath ?? selectedNode?.properties?.name}
+                {selectedNode?.properties?.filePath?.split('/').pop() ?? selectedNode?.properties?.name}
               </span>
               <button
                 onClick={() => setSelectedNode(null)}
-                className="p-1 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
+                className="p-1 text-text-muted hover:text-amber-400 hover:bg-amber-500/10 rounded transition-colors"
                 title="Clear selection"
               >
                 <X className="w-4 h-4" />
@@ -255,12 +265,21 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
         {/* Divider between Selected viewer and AI refs (more visible) */}
         {showSelectedViewer && showCitations && (
-          <div className="h-2 bg-gradient-to-r from-cyan-500/0 via-cyan-400/35 to-cyan-500/0 border-y border-cyan-400/25" />
+          <div className="h-1.5 bg-gradient-to-r from-transparent via-border-subtle to-transparent" />
         )}
 
         {/* Bottom: AI citations list */}
         {showCitations && (
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3 space-y-3">
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* AI Citations Section Header */}
+            <div className="px-3 py-2 bg-gradient-to-r from-cyan-500/8 to-teal-500/5 border-b border-cyan-500/20 flex items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-cyan-500/15 rounded-md border border-cyan-500/25">
+                <Sparkles className="w-3 h-3 text-cyan-400" />
+                <span className="text-[10px] text-cyan-300 font-semibold uppercase tracking-wide">AI Citations</span>
+              </div>
+              <span className="text-xs text-text-muted ml-1">{aiReferences.length} reference{aiReferences.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3 space-y-3">
             {refsWithSnippets.map(({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
           const nodeColor = ref.label ? (NODE_COLORS as any)[ref.label] || '#6b7280' : '#6b7280';
           const hasRange = typeof ref.startLine === 'number';
@@ -368,11 +387,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
             </div>
           );
             })}
+            </div>
           </div>
         )}
       </div>
     </aside>
   );
 };
-
-

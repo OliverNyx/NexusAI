@@ -67,6 +67,12 @@ interface AppState {
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
+  // AI highlights (toggable)
+  aiCitationHighlightedNodeIds: Set<string>;
+  aiToolHighlightedNodeIds: Set<string>;
+  isAIHighlightsEnabled: boolean;
+  toggleAIHighlights: () => void;
+  clearAIToolHighlights: () => void;
   queryResult: QueryResult | null;
   setQueryResult: (result: QueryResult | null) => void;
   clearQueryHighlights: () => void;
@@ -165,6 +171,19 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Query state
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
+
+  // AI highlights (separate from user/query highlights)
+  const [aiCitationHighlightedNodeIds, setAICitationHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [aiToolHighlightedNodeIds, setAIToolHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [isAIHighlightsEnabled, setAIHighlightsEnabled] = useState(true);
+
+  const toggleAIHighlights = useCallback(() => {
+    setAIHighlightsEnabled(prev => !prev);
+  }, []);
+
+  const clearAIToolHighlights = useCallback(() => {
+    setAIToolHighlightedNodeIds(new Set());
+  }, []);
   
   const clearQueryHighlights = useCallback(() => {
     setHighlightedNodeIds(new Set());
@@ -265,9 +284,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // Auto-open panel when references are added
     setCodePanelOpen(true);
     
-    // Also highlight in graph if nodeId provided
-    if (ref.nodeId) {
-      setHighlightedNodeIds(prev => new Set([...prev, ref.nodeId!]));
+    // Track AI highlights separately so they can be toggled off in the UI
+    if (ref.nodeId && ref.source === 'ai') {
+      setAICitationHighlightedNodeIds(prev => new Set([...prev, ref.nodeId!]));
     }
   }, []);
 
@@ -277,18 +296,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const removed = prev.filter(r => r.source === 'ai');
       const kept = prev.filter(r => r.source !== 'ai');
 
-      // Update graph highlights: remove nodeIds that were ONLY highlighted via AI refs
+      // Remove citation-based AI highlights for removed refs
       const removedNodeIds = new Set(removed.map(r => r.nodeId).filter(Boolean) as string[]);
       if (removedNodeIds.size > 0) {
-        setHighlightedNodeIds(prevHighlights => {
-          const next = new Set(prevHighlights);
-          for (const nodeId of removedNodeIds) {
-            const stillReferenced = kept.some(r => r.nodeId === nodeId);
-            const stillInQuery = queryResult?.nodeIds?.includes(nodeId) ?? false;
-            if (!stillReferenced && !stillInQuery) {
-              next.delete(nodeId);
-            }
-          }
+        setAICitationHighlightedNodeIds(prevIds => {
+          const next = new Set(prevIds);
+          for (const id of removedNodeIds) next.delete(id);
           return next;
         });
       }
@@ -490,6 +503,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
     clearAICodeReferences();
+    // Also clear previous tool-driven AI highlights (highlight_in_graph)
+    clearAIToolHighlights();
 
     if (!isAgentReady) {
       // Try to initialize first
@@ -734,10 +749,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                     }
                     
                     if (matchedIds.size > 0) {
-                      setHighlightedNodeIds(matchedIds);
+                      setAIToolHighlightedNodeIds(matchedIds);
                     }
                   } else if (rawIds.length > 0) {
-                    setHighlightedNodeIds(new Set(rawIds));
+                    setAIToolHighlightedNodeIds(new Set(rawIds));
                   }
                 }
               }
@@ -763,7 +778,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph]);
 
   const clearChat = useCallback(() => {
     setChatMessages([]);
@@ -776,11 +791,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const ref = prev.find(r => r.id === id);
       const newRefs = prev.filter(r => r.id !== id);
       
-      // Remove highlight if this was the only reference to that node
-      if (ref?.nodeId) {
-        const stillReferenced = newRefs.some(r => r.nodeId === ref.nodeId);
+      // Remove AI citation highlight if this was the only AI reference to that node
+      if (ref?.nodeId && ref.source === 'ai') {
+        const stillReferenced = newRefs.some(r => r.nodeId === ref.nodeId && r.source === 'ai');
         if (!stillReferenced) {
-          setHighlightedNodeIds(prev => {
+          setAICitationHighlightedNodeIds(prev => {
             const next = new Set(prev);
             next.delete(ref.nodeId!);
             return next;
@@ -833,6 +848,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     highlightedNodeIds,
     setHighlightedNodeIds,
+    aiCitationHighlightedNodeIds,
+    aiToolHighlightedNodeIds,
+    isAIHighlightsEnabled,
+    toggleAIHighlights,
+    clearAIToolHighlights,
     queryResult,
     setQueryResult,
     clearQueryHighlights,
