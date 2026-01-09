@@ -123,8 +123,8 @@ const TreeItem = ({
         onClick={handleClick}
         className={`
           w-full flex items-center gap-1.5 px-2 py-1 text-left text-sm
-          hover:bg-hover transition-colors rounded
-          ${isSelected ? 'bg-accent/20 text-accent' : 'text-text-secondary hover:text-text-primary'}
+          hover:bg-hover transition-colors rounded relative
+          ${isSelected ? 'bg-amber-500/15 text-amber-300 border-l-2 border-amber-400' : 'text-text-secondary hover:text-text-primary border-l-2 border-transparent'}
           ${matchesSearch ? 'bg-accent/10' : ''}
         `}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
@@ -215,6 +215,31 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
       setExpandedPaths(firstLevel);
     }
   }, [fileTree.length]); // Only run when tree first loads
+
+  // Auto-expand to selected file when selectedNode changes (e.g., from graph click)
+  useEffect(() => {
+    const path = selectedNode?.properties?.filePath;
+    if (!path) return;
+    
+    // Expand all parent folders leading to this file
+    const parts = path.split('/').filter(Boolean);
+    const pathsToExpand: string[] = [];
+    let currentPath = '';
+    
+    // Build all parent paths (exclude the last part if it's a file)
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
+      pathsToExpand.push(currentPath);
+    }
+    
+    if (pathsToExpand.length > 0) {
+      setExpandedPaths(prev => {
+        const next = new Set(prev);
+        pathsToExpand.forEach(p => next.add(p));
+        return next;
+      });
+    }
+  }, [selectedNode?.id]); // Trigger when selected node changes
 
   const toggleExpanded = useCallback((path: string) => {
     setExpandedPaths(prev => {
