@@ -1,8 +1,12 @@
 /**
  * Graph RAG Tools for LangChain Agent
  * 
- * Custom tools that allow the agent to interact with the KuzuDB graph database
- * for code analysis, semantic search, and graph traversal.
+ * Consolidated tools (5 total):
+ * - search: Hybrid search (BM25 + semantic + RRF) with 1-hop expansion
+ * - cypher: Execute Cypher queries (auto-embeds {{QUERY_VECTOR}} if present)
+ * - grep: Regex pattern search across files
+ * - read: Read file content by path
+ * - highlight: Highlight nodes in graph UI
  */
 
 import { tool } from '@langchain/core/tools';
@@ -12,7 +16,6 @@ import { WebGPUNotAvailableError, embedText, embeddingToArray, initEmbedder, isE
 
 /**
  * Tool factory - creates tools bound to the KuzuDB query functions
- * This is needed because the tools run in the worker and need access to the adapter
  */
 export const createGraphRAGTools = (
   executeQuery: (cypher: string) => Promise<any[]>,
@@ -23,419 +26,193 @@ export const createGraphRAGTools = (
   isBM25Ready: () => boolean,
   fileContents: Map<string, string>
 ) => {
-  const buildCypherSchemaHint = (message: string): string => {
-    const m = message.match(/Table\s+([A-Za-z_][A-Za-z0-9_]*)\s+does\s+not\s+exist/i);
-    const missing = (m?.[1] ?? '').toUpperCase();
-    const knownRelTypes = new Set(['CALLS', 'IMPORTS', 'CONTAINS', 'DEFINES']);
-    if (!knownRelTypes.has(missing)) return '';
 
-    return [
-      '',
-      'Schema hint:',
-      `- There is NO relationship label/table named "${missing}".`,
-      "- All relationships use the single relationship label `CodeRelation` with a `type` property.",
-      `- Rewrite patterns like \`-[:${missing}]->\` to \`-[r:CodeRelation]->\` and add \`WHERE r.type = '${missing}'\`.`,
-      '',
-      'Example:',
-      "MATCH (a:CodeNode)-[r:CodeRelation]->(b:CodeNode)",
-      `WHERE r.type = '${missing}'`,
-      'RETURN a.id, b.id LIMIT 25',
-    ].join('\n');
-  };
-
+  // ============================================================================
+  // TOOL 1: SEARCH (Hybrid + 1-hop expansion)
+  // ============================================================================
+  
   /**
-   * Tool: Execute Cypher Query
-   * Allows the agent to run arbitrary Cypher queries against the graph
-   */
-  const executeCypherTool = tool(
-    async ({ query }: { query: string }) => {
-      try {
-        const results = await executeQuery(query);
-        
-        if (results.length === 0) {
-          return 'Query returned no results.';
-        }
-        
-        // Format results nicely for the LLM
-        const formatted = results.slice(0, 50).map((row, i) => {
-          // Handle both object and array results
-          if (Array.isArray(row)) {
-            return `[${i + 1}] ${row.join(', ')}`;
-          }
-          return `[${i + 1}] ${JSON.stringify(row)}`;
-        });
-        
-        const resultText = formatted.join('\n');
-        const truncated = results.length > 50 ? `\n... (${results.length - 50} more results truncated)` : '';
-        
-        return `Query returned ${results.length} results:\n${resultText}${truncated}`;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const hint = buildCypherSchemaHint(message);
-        return `Cypher query error: ${message}\n\nPlease check your query syntax and try again.${hint ? `\n\n${hint}` : ''}`;
-      }
-    },
-    {
-      name: 'execute_cypher',
-      description: 'Execute a Cypher query against the code knowledge graph. Use this for structural queries like finding functions, tracing call graphs, or analyzing imports. Call get_graph_schema first if you need to see the database schema.',
-      schema: z.object({
-        query: z.string().describe('The Cypher query to execute. Must be valid KuzuDB Cypher syntax.'),
-      }),
-    }
-  );
-
-  /**
-   * Tool: Execute Vector Cypher Query (Unified Vector + Graph in ONE query)
-   *
-   * Lets the LLM write a Cypher query that includes a vector index call,
-   * while this tool handles embedding the natural-language query and injecting
-   * the vector into the Cypher safely.
-   *
-   * IMPORTANT:
-   * - The provided Cypher MUST include the placeholder {{QUERY_VECTOR}}
-   * - The placeholder will be replaced with: CAST([..384 floats..] AS FLOAT[384])
-   * - KuzuDB requires WITH after YIELD before using WHERE
-   *
-   * Example:
-   * CALL QUERY_VECTOR_INDEX('CodeEmbedding','code_embedding_idx', {{QUERY_VECTOR}}, 10)
-   * YIELD node AS emb, distance
-   * WITH emb, distance
-   * WHERE distance < 0.5
-   * MATCH (match:CodeNode {id: emb.nodeId}) ...
-   */
-  const executeVectorCypherTool = tool(
-    async ({ query, cypher }: { query: string; cypher: string }) => {
-      if (!isEmbeddingReady()) {
-        return 'Vector Cypher is not available. Embeddings have not been generated yet.';
-      }
-
-      if (!cypher.includes('{{QUERY_VECTOR}}')) {
-        return "Invalid input: your Cypher must include the placeholder '{{QUERY_VECTOR}}' where a FLOAT[384] vector should go.";
-      }
-
-      try {
-        // Ensure embedder is loaded. If WebGPU isn't available, fall back to WASM.
-        if (!isEmbedderReady()) {
-          try {
-            await initEmbedder();
-          } catch (err) {
-            if (err instanceof WebGPUNotAvailableError) {
-              await initEmbedder(undefined, {}, 'wasm');
-            } else {
-              throw err;
-            }
-          }
-        }
-
-        // Embed the natural language query and inject into Cypher
-        const queryEmbedding = await embedText(query);
-        const queryVec = embeddingToArray(queryEmbedding);
-        const queryVecStr = `CAST([${queryVec.join(',')}] AS FLOAT[384])`;
-
-        const finalCypher = cypher.replace(/\{\{\s*QUERY_VECTOR\s*\}\}/g, queryVecStr);
-        const results = await executeQuery(finalCypher);
-
-        if (results.length === 0) {
-          return 'Query returned no results.';
-        }
-
-        const formatted = results.slice(0, 50).map((row, i) => {
-          if (Array.isArray(row)) {
-            return `[${i + 1}] ${row.join(', ')}`;
-          }
-          return `[${i + 1}] ${JSON.stringify(row)}`;
-        });
-
-        const resultText = formatted.join('\n');
-        const truncated = results.length > 50 ? `\n... (${results.length - 50} more results truncated)` : '';
-
-        return `Query returned ${results.length} results:\n${resultText}${truncated}`;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return `Vector Cypher error: ${message}\n\nTip: Ensure you're querying the vector index on CodeEmbedding and JOINing back to CodeNode via emb.nodeId.`;
-      }
-    },
-    {
-      name: 'execute_vector_cypher',
-      description:
-        "Execute a single Cypher query that combines vector similarity search and graph traversal. Provide a natural-language 'query' to embed, and a 'cypher' string containing the placeholder {{QUERY_VECTOR}}. Use this to do semantic search + traversal in ONE Cypher query. Remember: KuzuDB requires 'WITH emb, distance' after 'YIELD node AS emb, distance' before you can use WHERE.",
-      schema: z.object({
-        query: z.string().describe('Natural language query to embed (used to produce a FLOAT[384] vector)'),
-        cypher: z
-          .string()
-          .describe(
-            "Cypher query to execute. MUST contain {{QUERY_VECTOR}}. Pattern: CALL QUERY_VECTOR_INDEX('CodeEmbedding','code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance WITH emb, distance WHERE distance < 0.5 MATCH (n:CodeNode {id: emb.nodeId}) ..."
-          ),
-      }),
-    }
-  );
-
-  /**
-   * Tool: Hybrid Code Search
-   * Combines keyword (BM25) and semantic search for best results
+   * Unified search tool: BM25 + Semantic + RRF, with 1-hop graph context
    */
   const searchTool = tool(
     async ({ query, limit }: { query: string; limit?: number }) => {
-      if (!isBM25Ready()) {
+      const k = limit ?? 10;
+      
+      // Step 1: Hybrid search (BM25 + semantic with RRF)
+      let searchResults: any[] = [];
+      
+      if (isBM25Ready()) {
+        try {
+          searchResults = await hybridSearch(query, k);
+        } catch (error) {
+          // Fallback to semantic-only if hybrid fails
+          if (isEmbeddingReady()) {
+            searchResults = await semanticSearch(query, k);
+          }
+        }
+      } else if (isEmbeddingReady()) {
+        // Semantic only if BM25 not ready
+        searchResults = await semanticSearch(query, k);
+      } else {
         return 'Search is not available. Please load a repository first.';
       }
       
-      try {
-        const results = await hybridSearch(query, limit ?? 10);
+      if (searchResults.length === 0) {
+        return `No code found matching "${query}". Try different terms or use grep for exact patterns.`;
+      }
+      
+      // Step 2: Get 1-hop connections for each result
+      const resultsWithContext: string[] = [];
+      
+      for (let i = 0; i < Math.min(searchResults.length, k); i++) {
+        const r = searchResults[i];
+        const nodeId = r.nodeId || r.id;
+        const name = r.name || r.filePath?.split('/').pop() || 'Unknown';
+        const label = r.label || 'File';
+        const filePath = r.filePath || '';
+        const location = r.startLine ? ` (lines ${r.startLine}-${r.endLine})` : '';
+        const sources = r.sources?.join('+') || 'hybrid';
+        const score = r.score ? ` [score: ${r.score.toFixed(2)}]` : '';
         
-        if (results.length === 0) {
-          return `No code found matching "${query}". Try different terms or use grep_code for exact patterns.`;
+        // Get 1-hop connections using single CodeRelation table
+        let connections = '';
+        if (nodeId) {
+          try {
+            const nodeLabel = nodeId.split(':')[0];
+            const connectionsQuery = `
+              MATCH (n:${nodeLabel} {id: '${nodeId.replace(/'/g, "''")}'})
+              OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
+              OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
+              RETURN 
+                collect(DISTINCT {name: dst.name, type: r1.type}) AS outgoing,
+                collect(DISTINCT {name: src.name, type: r2.type}) AS incoming
+              LIMIT 1
+            `;
+            console.log(`[1-hop] Querying connections for: ${nodeId}`);
+            const connRes = await executeQuery(connectionsQuery);
+            console.log(`[1-hop] Result:`, JSON.stringify(connRes));
+            if (connRes.length > 0) {
+              // Result is nested array: [[outgoing], [incoming]] or {outgoing: [], incoming: []}
+              const row = connRes[0];
+              const rawOutgoing = Array.isArray(row) ? row[0] : (row.outgoing || []);
+              const rawIncoming = Array.isArray(row) ? row[1] : (row.incoming || []);
+              const outgoing = (rawOutgoing || []).filter((c: any) => c && c.name).slice(0, 3);
+              const incoming = (rawIncoming || []).filter((c: any) => c && c.name).slice(0, 3);
+              console.log(`[1-hop] Outgoing:`, outgoing, `Incoming:`, incoming);
+              const outList = outgoing.map((c: any) => `-[${c.type}]-> ${c.name}`);
+              const inList = incoming.map((c: any) => `<-[${c.type}]- ${c.name}`);
+              if (outList.length || inList.length) {
+                connections = `\n    Connections: ${[...outList, ...inList].join(', ')}`;
+              }
+            }
+          } catch (err) {
+            console.error(`[1-hop] Query failed for ${nodeId}:`, err);
+          }
         }
         
-        const formatted = results.map((r: any, i: number) => {
-          const location = r.startLine ? ` (lines ${r.startLine}-${r.endLine})` : '';
-          const label = r.label || 'File';
-          const name = r.name || r.filePath.split('/').pop();
-          const sources = r.sources?.join('+') || 'hybrid';
-          return `[${i + 1}] ${label}: ${name}\n    File: ${r.filePath}${location}\n    Found by: ${sources}`;
-        });
-        
-        return `Found ${results.length} matches:\n\n${formatted.join('\n\n')}`;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return `Search error: ${message}`;
+        resultsWithContext.push(
+          `[${i + 1}] ${label}: ${name}${score}\n    ID: ${nodeId}\n    File: ${filePath}${location}\n    Found by: ${sources}${connections}`
+        );
       }
+      
+      return `Found ${searchResults.length} matches:\n\n${resultsWithContext.join('\n\n')}`;
     },
     {
       name: 'search',
-      description: 'Search for code by keywords or concepts. Finds relevant files and functions.',
+      description: 'Search for code by keywords or concepts. Combines keyword matching and semantic understanding. Returns relevant code with their graph connections (what calls them, what they import, etc.).',
       schema: z.object({
-        query: z.string().describe('What you are looking for'),
-        limit: z.number().optional().nullable().describe('Max results (default: 10)'),
+        query: z.string().describe('What you are looking for (e.g., "authentication middleware", "database connection")'),
+        limit: z.number().optional().nullable().describe('Max results to return (default: 10)'),
       }),
     }
   );
 
+  // ============================================================================
+  // TOOL 2: CYPHER (Raw Cypher, auto-embeds {{QUERY_VECTOR}} if present)
+  // ============================================================================
+  
   /**
-   * Tool: Semantic Search with Graph Context
-   * Find similar code AND expand to connected nodes (flattened format with relationship types)
+   * Execute Cypher queries with optional vector embedding
    */
-  const semanticSearchWithContextTool = tool(
-    async ({ query, limit }: { query: string; limit?: number }) => {
-      if (!isEmbeddingReady()) {
-        return 'Semantic search is not available. Embeddings have not been generated yet. Please use execute_cypher tool for structured queries instead.';
-      }
-      
+  const cypherTool = tool(
+    async ({ query, cypher }: { query?: string; cypher: string }) => {
       try {
-        const results = await semanticSearchWithContext(query, limit ?? 5);
+        let finalCypher = cypher;
         
-        if (results.length === 0) {
-          return `No code found matching "${query}". Try a different search term.`;
-        }
-        
-        // Results are flattened: one row per (match → connected) pair
-        // Group by match for cleaner output
-        const grouped = new Map<string, {
-          matchId: string;
-          matchName: string;
-          matchLabel: string;
-          matchPath: string;
-          distance: number;
-          connections: Array<{ name: string; label: string; relType: string }>;
-        }>();
-        
-        for (const r of results) {
-          const matchId = r.matchId ?? r[0];
-          const matchName = r.matchName ?? r[1];
-          const matchLabel = r.matchLabel ?? r[2];
-          const matchPath = r.matchPath ?? r[3];
-          const distance = r.distance ?? r[4];
-          const connectedName = r.connectedName ?? r[6];
-          const connectedLabel = r.connectedLabel ?? r[7];
-          const relationType = r.relationType ?? r[8];
-          
-          if (!grouped.has(matchId)) {
-            grouped.set(matchId, {
-              matchId,
-              matchName,
-              matchLabel,
-              matchPath,
-              distance,
-              connections: [],
-            });
+        // Auto-embed if {{QUERY_VECTOR}} placeholder is present
+        if (cypher.includes('{{QUERY_VECTOR}}')) {
+          if (!query) {
+            return "Error: Your Cypher contains {{QUERY_VECTOR}} but you didn't provide a 'query' to embed. Add a natural language query.";
           }
           
-          grouped.get(matchId)!.connections.push({
-            name: connectedName,
-            label: connectedLabel,
-            relType: relationType,
-          });
+          if (!isEmbeddingReady()) {
+            // Try to init embedder
+            try {
+              await initEmbedder();
+            } catch (err) {
+              if (err instanceof WebGPUNotAvailableError) {
+                await initEmbedder(undefined, {}, 'wasm');
+              } else {
+                return 'Embeddings not available. Remove {{QUERY_VECTOR}} and use a non-vector query.';
+              }
+            }
+          }
+          
+          const queryEmbedding = await embedText(query);
+          const queryVec = embeddingToArray(queryEmbedding);
+          const queryVecStr = `CAST([${queryVec.join(',')}] AS FLOAT[384])`;
+          finalCypher = cypher.replace(/\{\{\s*QUERY_VECTOR\s*\}\}/g, queryVecStr);
         }
         
-        // Format grouped results
-        const formatted = Array.from(grouped.values()).map((g, i) => {
-          const connectionsList = g.connections
-            .slice(0, 15)
-            .map(c => `${c.name} (${c.label}) via ${c.relType}`)
-            .join('\n      ');
-          const more = g.connections.length > 15 ? `\n      ... and ${g.connections.length - 15} more` : '';
-          
-          return `[${i + 1}] ${g.matchLabel}: ${g.matchName}\n    ID: ${g.matchId}\n    File: ${g.matchPath}\n    Relevance: ${(1 - g.distance).toFixed(2)}\n    Connections:\n      ${connectionsList}${more}`;
+        const results = await executeQuery(finalCypher);
+        
+        if (results.length === 0) {
+          return 'Query returned no results.';
+        }
+        
+        // Format results
+        const formatted = results.slice(0, 50).map((row, i) => {
+          if (Array.isArray(row)) {
+            return `[${i + 1}] ${row.join(', ')}`;
+          }
+          return `[${i + 1}] ${JSON.stringify(row)}`;
         });
         
-        return `Found ${grouped.size} code elements with ${results.length} total connections (use ID with get_code_content to see source):\n\n${formatted.join('\n\n')}`;
+        const resultText = formatted.join('\n');
+        const truncated = results.length > 50 ? `\n... (${results.length - 50} more results)` : '';
+        
+        return `Query returned ${results.length} results:\n${resultText}${truncated}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `Search with context error: ${message}`;
+        return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation tables: CONTAINS_*, DEFINES_*, IMPORTS_*, CALLS_*.`;
       }
     },
     {
-      name: 'semantic_search_with_context',
-      description: 'Search for code semantically AND show directly connected code elements with relationship types (CALLS, IMPORTS, DEFINES, CONTAINS). Shows what each match is connected to and how.',
+      name: 'cypher',
+      description: `Execute a Cypher query against the code graph. Use for structural queries like finding callers, tracing imports, or custom traversals.
+
+Node tables: File, Folder, Function, Class, Interface, Method, CodeElement
+Relation tables: CONTAINS_Folder_Folder, CONTAINS_Folder_File, DEFINES_File_Function, DEFINES_File_Class, IMPORTS_File_File, CALLS_File_Function, etc.
+
+For semantic+graph queries, include {{QUERY_VECTOR}} placeholder and provide a 'query' parameter:
+CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance
+WITH emb, distance WHERE distance < 0.5
+MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       schema: z.object({
-        query: z.string().describe('Natural language description of what you are looking for'),
-        limit: z.number().optional().nullable().describe('Number of semantic matches to find (default: 5)'),
+        cypher: z.string().describe('The Cypher query to execute'),
+        query: z.string().optional().nullable().describe('Natural language query to embed (required if cypher contains {{QUERY_VECTOR}})'),
       }),
     }
   );
 
-  /**
-   * Tool: Get Graph Schema
-   * Returns the schema for reference - LLM should call this before writing Cypher queries
-   */
-  const getSchemaTool = tool(
-    async ({ includeExamples }: { includeExamples?: boolean }) => {
-      return GRAPH_SCHEMA_DESCRIPTION;
-    },
-    {
-      name: 'get_graph_schema',
-      description: 'Get the graph database schema including node types, relationships, and Cypher query patterns. Call this before writing Cypher queries.',
-      schema: z.object({
-        includeExamples: z.boolean().optional().nullable().describe('Whether to include query examples (default: true)'),
-      }),
-    }
-  );
-
-  /**
-   * Tool: Get Code Content
-   * Retrieve the source code for a specific node
-   * Uses fileContents Map for full content (not truncated DB content)
-   */
-  const getCodeContentTool = tool(
-    async ({ nodeId }: { nodeId: string }) => {
-      try {
-        // Query graph for node metadata (fast, small data)
-        const results = await executeQuery(
-          `MATCH (n:CodeNode {id: '${nodeId.replace(/'/g, "''")}'}) 
-           RETURN n.name AS name, n.label AS label, n.filePath AS filePath, 
-                  n.startLine AS startLine, n.endLine AS endLine`
-        );
-        
-        if (results.length === 0) {
-          return `No node found with ID: ${nodeId}`;
-        }
-        
-        const node = results[0];
-        const name = node.name ?? node[0];
-        const label = node.label ?? node[1];
-        const filePath = node.filePath ?? node[2];
-        const startLine = node.startLine ?? node[3];
-        const endLine = node.endLine ?? node[4];
-        
-        // Get FULL content from fileContents Map (not truncated DB)
-        const fileContent = fileContents.get(filePath);
-        
-        if (!fileContent) {
-          return `${label}: ${name}\nFile: ${filePath}\n(File content not available in memory)`;
-        }
-        
-        // For File nodes, return full content (limited for very large files)
-        if (label === 'File' || label === 'Folder') {
-          const MAX_FILE_CONTENT = 30000;
-          if (fileContent.length > MAX_FILE_CONTENT) {
-            return `${label}: ${name}\nFile: ${filePath}\nTotal size: ${fileContent.length} characters\n\n\`\`\`\n${fileContent.slice(0, MAX_FILE_CONTENT)}\n\`\`\`\n\n... [truncated, use read_file for full content]`;
-          }
-          return `${label}: ${name}\nFile: ${filePath}\n\n\`\`\`\n${fileContent}\n\`\`\``;
-        }
-        
-        // For Function/Class/Method nodes, extract specific lines with context
-        const lines = fileContent.split('\n');
-        const contextBefore = 3;
-        const contextAfter = 20; // Show more after to capture full function body
-        
-        const start = Math.max(0, (startLine ?? 0) - contextBefore);
-        const end = Math.min(lines.length - 1, (endLine ?? startLine ?? 0) + contextAfter);
-        
-        const snippet = lines.slice(start, end + 1).join('\n');
-        
-        return `${label}: ${name}\nFile: ${filePath}\nLines: ${startLine + 1}-${endLine + 1}\n\n\`\`\`\n${snippet}\n\`\`\``;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return `Error retrieving code: ${message}`;
-      }
-    },
-    {
-      name: 'get_code_content',
-      description: 'Retrieve the source code content for a specific node by its ID. Use this after finding relevant nodes to see the actual implementation.',
-      schema: z.object({
-        nodeId: z.string().describe('The ID of the node to retrieve code for'),
-      }),
-    }
-  );
-
-  /**
-   * Tool: Get Codebase Statistics
-   * Quick overview of what's in the graph
-   */
-  const getStatsTool = tool(
-    async ({ verbose }: { verbose?: boolean }) => {
-      try {
-        const labelCounts = await executeQuery(`
-          MATCH (n:CodeNode)
-          RETURN n.label AS label, count(*) AS count
-          ORDER BY count DESC
-        `);
-        
-        const relCounts = await executeQuery(`
-          MATCH ()-[r:CodeRelation]->()
-          RETURN r.type AS type, count(*) AS count
-          ORDER BY count DESC
-        `);
-        
-        const nodeStats = labelCounts.map(r => {
-          const label = r.label ?? r[0];
-          const count = r.count ?? r[1];
-          return `  ${label}: ${count}`;
-        }).join('\n');
-        
-        const relStats = relCounts.map(r => {
-          const type = r.type ?? r[0];
-          const count = r.count ?? r[1];
-          return `  ${type}: ${count}`;
-        }).join('\n');
-        
-        const embeddingStatus = isEmbeddingReady() 
-          ? 'Ready (semantic search available)'
-          : 'Not generated (use execute_cypher for queries)';
-        
-        return `Codebase Statistics:\n\nNodes by type:\n${nodeStats}\n\nRelationships by type:\n${relStats}\n\nEmbeddings: ${embeddingStatus}\n\nFiles in memory: ${fileContents.size}`;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return `Error getting stats: ${message}`;
-      }
-    },
-    {
-      name: 'get_codebase_stats',
-      description: 'Get an overview of the codebase including counts of different element types (files, functions, classes) and relationship types.',
-      schema: z.object({
-        verbose: z.boolean().optional().nullable().describe('Include detailed breakdown (default: false)'),
-      }),
-    }
-  );
-
-  /**
-   * Tool: Grep Code
-   * Search for patterns across all file contents using regex
-   */
-  const grepCodeTool = tool(
-    async ({ pattern, filePattern, caseSensitive, maxResults }: { 
+  // ============================================================================
+  // TOOL 3: GREP (Regex pattern search)
+  // ============================================================================
+  
+  const grepTool = tool(
+    async ({ pattern, fileFilter, caseSensitive, maxResults }: { 
       pattern: string; 
-      filePattern?: string;
+      fileFilter?: string;
       caseSensitive?: boolean;
       maxResults?: number;
     }) => {
@@ -445,20 +222,14 @@ export const createGraphRAGTools = (
         try {
           regex = new RegExp(pattern, flags);
         } catch (e) {
-          return `Invalid regex pattern: ${pattern}. Error: ${e instanceof Error ? e.message : String(e)}`;
+          return `Invalid regex: ${pattern}. Error: ${e instanceof Error ? e.message : String(e)}`;
         }
         
-        const results: Array<{
-          file: string;
-          line: number;
-          content: string;
-        }> = [];
-        
+        const results: Array<{ file: string; line: number; content: string }> = [];
         const limit = maxResults ?? 100;
         
         for (const [filePath, content] of fileContents.entries()) {
-          // Optional file pattern filter
-          if (filePattern && !filePath.toLowerCase().includes(filePattern.toLowerCase())) {
+          if (fileFilter && !filePath.toLowerCase().includes(fileFilter.toLowerCase())) {
             continue;
           }
           
@@ -468,105 +239,83 @@ export const createGraphRAGTools = (
               results.push({
                 file: filePath,
                 line: i + 1,
-                content: lines[i].trim().slice(0, 200), // Limit line length
+                content: lines[i].trim().slice(0, 150),
               });
-              
               if (results.length >= limit) break;
             }
-            // Reset regex lastIndex for global flag
             regex.lastIndex = 0;
           }
-          
           if (results.length >= limit) break;
         }
         
         if (results.length === 0) {
-          return `No matches found for pattern: "${pattern}"${filePattern ? ` in files matching "${filePattern}"` : ''}`;
+          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
         }
         
-        const formatted = results.map(r => 
-          `${r.file}:${r.line}: ${r.content}`
-        ).join('\n');
+        const formatted = results.map(r => `${r.file}:${r.line}: ${r.content}`).join('\n');
+        const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
         
-        const truncatedMsg = results.length >= limit 
-          ? `\n\n(Showing first ${limit} results. Use filePattern to narrow search.)` 
-          : '';
-        
-        return `Found ${results.length} matches for "${pattern}":\n\n${formatted}${truncatedMsg}`;
+        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return `Grep error: ${message}`;
+        return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
       }
     },
     {
-      name: 'grep_code',
-      description: 'Search for text patterns across all files in the codebase using regex. Use this to find exact strings, error messages, TODOs, specific variable names, or any text pattern. Returns file paths and line numbers of matches.',
+      name: 'grep',
+      description: 'Search for exact text patterns across all files using regex. Use for finding specific strings, error messages, TODOs, variable names, etc.',
       schema: z.object({
         pattern: z.string().describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
-        filePattern: z.string().optional().nullable().describe('Optional filter - only search files whose path contains this string (e.g., ".ts", "src/api")'),
-        caseSensitive: z.boolean().optional().nullable().describe('Whether search is case-sensitive (default: false)'),
-        maxResults: z.number().optional().nullable().describe('Maximum number of results to return (default: 100)'),
+        fileFilter: z.string().optional().nullable().describe('Only search files containing this string (e.g., ".ts", "src/api")'),
+        caseSensitive: z.boolean().optional().nullable().describe('Case-sensitive search (default: false)'),
+        maxResults: z.number().optional().nullable().describe('Max results (default: 100)'),
       }),
     }
   );
 
-  /**
-   * Tool: Read File
-   * Read the full content of a file by its path
-   */
-  const readFileTool = tool(
+  // ============================================================================
+  // TOOL 4: READ (Read file content)
+  // ============================================================================
+  
+  const readTool = tool(
     async ({ filePath }: { filePath: string }) => {
-      // Normalize the requested path (handle Windows-style paths)
       const normalizedRequest = filePath.replace(/\\/g, '/').toLowerCase();
       
       // Try exact match first
       let content = fileContents.get(filePath);
       let actualPath = filePath;
       
-      // If not found, try smarter matching
+      // Smart matching if not found
       if (!content) {
-        // Score each file path by how well it matches the request
         const candidates: Array<{ path: string; score: number }> = [];
         
         for (const [path] of fileContents.entries()) {
           const normalizedPath = path.toLowerCase();
           
-          // Exact match (case-insensitive)
           if (normalizedPath === normalizedRequest) {
             candidates.push({ path, score: 1000 });
-            continue;
-          }
-          
-          // Ends with the requested path (e.g., "README.md" matches "src/agent_service/README.md")
-          if (normalizedPath.endsWith(normalizedRequest)) {
-            // Score higher for shorter paths (more specific match)
+          } else if (normalizedPath.endsWith(normalizedRequest)) {
             candidates.push({ path, score: 100 + (200 - path.length) });
-            continue;
-          }
-          
-          // Path contains all segments of the request in order
-          const requestSegments = normalizedRequest.split('/').filter(Boolean);
-          const pathSegments = normalizedPath.split('/');
-          let matchScore = 0;
-          let lastMatchIdx = -1;
-          
-          for (const seg of requestSegments) {
-            const idx = pathSegments.findIndex((s, i) => i > lastMatchIdx && s.includes(seg));
-            if (idx > lastMatchIdx) {
-              matchScore += 10;
-              lastMatchIdx = idx;
+          } else {
+            const requestSegments = normalizedRequest.split('/').filter(Boolean);
+            const pathSegments = normalizedPath.split('/');
+            let matchScore = 0;
+            let lastMatchIdx = -1;
+            
+            for (const seg of requestSegments) {
+              const idx = pathSegments.findIndex((s, i) => i > lastMatchIdx && s.includes(seg));
+              if (idx > lastMatchIdx) {
+                matchScore += 10;
+                lastMatchIdx = idx;
+              }
             }
-          }
-          
-          // Only include if we matched more than half the segments
-          if (matchScore >= requestSegments.length * 5) {
-            candidates.push({ path, score: matchScore });
+            
+            if (matchScore >= requestSegments.length * 5) {
+              candidates.push({ path, score: matchScore });
+            }
           }
         }
         
-        // Sort by score descending, pick best match
         candidates.sort((a, b) => b.score - a.score);
-        
         if (candidates.length > 0) {
           actualPath = candidates[0].path;
           content = fileContents.get(actualPath);
@@ -574,84 +323,70 @@ export const createGraphRAGTools = (
       }
       
       if (!content) {
-        // List similar files to help the user
         const fileName = filePath.split('/').pop()?.toLowerCase() || '';
-        const similarFiles = Array.from(fileContents.keys())
+        const similar = Array.from(fileContents.keys())
           .filter(p => p.toLowerCase().includes(fileName))
           .slice(0, 5);
         
-        if (similarFiles.length > 0) {
-          return `File not found: "${filePath}"\n\nDid you mean one of these?\n${similarFiles.map(f => `  - ${f}`).join('\n')}`;
+        if (similar.length > 0) {
+          return `File not found: "${filePath}"\n\nDid you mean:\n${similar.map(f => `  - ${f}`).join('\n')}`;
         }
         return `File not found: "${filePath}"`;
       }
       
-      // For very large files, truncate with a warning
-      const MAX_CONTENT = 50000; // ~50KB
+      // Truncate large files
+      const MAX_CONTENT = 50000;
       if (content.length > MAX_CONTENT) {
-        const truncated = content.slice(0, MAX_CONTENT);
         const lines = content.split('\n').length;
-        return `File: ${actualPath}\nTotal lines: ${lines}\n\n(Showing first ${MAX_CONTENT} characters, file is ${content.length} characters total)\n\n${truncated}\n\n... [truncated]`;
+        return `File: ${actualPath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated]`;
       }
       
       const lines = content.split('\n').length;
-      return `File: ${actualPath}\nLines: ${lines}\n\n${content}`;
+      return `File: ${actualPath} (${lines} lines)\n\n${content}`;
     },
     {
-      name: 'read_file',
-      description: 'Read the full content of a file by its path. Use this to see the complete source code of any file in the codebase.',
+      name: 'read',
+      description: 'Read the full content of a file. Use to see source code after finding files via search or grep.',
       schema: z.object({
-        filePath: z.string().describe('The file path to read (can be partial path like "src/utils.ts")'),
+        filePath: z.string().describe('File path to read (can be partial like "src/utils.ts")'),
       }),
     }
   );
 
-  /**
-   * Tool: Highlight in Graph
-   * Highlight specific nodes in the visual knowledge graph
-   * Returns a special marker that the UI parses to highlight nodes
-   */
-  const highlightInGraphTool = tool(
+  // ============================================================================
+  // TOOL 5: HIGHLIGHT (Highlight nodes in graph UI)
+  // ============================================================================
+  
+  const highlightTool = tool(
     async ({ nodeIds, description }: { nodeIds: string[]; description?: string }) => {
       if (!nodeIds || nodeIds.length === 0) {
-        return 'No node IDs provided to highlight.';
+        return 'No node IDs provided.';
       }
       
-      // Return a special marker format that the UI will parse
-      // Format: [HIGHLIGHT_NODES:id1,id2,id3]
       const marker = `[HIGHLIGHT_NODES:${nodeIds.join(',')}]`;
+      const desc = description || `Highlighting ${nodeIds.length} node(s)`;
       
-      const desc = description || `Highlighting ${nodeIds.length} node(s) in the knowledge graph`;
-      return `${desc}\n\n${marker}\n\nThe nodes have been highlighted in the graph visualization on the left. You can click on them to see their details.`;
+      return `${desc}\n\n${marker}\n\nNodes highlighted in the graph.`;
     },
     {
-      name: 'highlight_in_graph',
-      description: `Highlight specific nodes in the visual knowledge graph. Pass the EXACT node IDs from your query results.
-
-IMPORTANT: Node IDs include a label prefix! Format is: Label:filepath:name
-Examples:
-- Class:src/agents/base.py:BaseAgent
-- Function:src/utils.ts:calculateSum
-- File:src/main.py
-
-Copy the ID EXACTLY as it appears in query results (the "classId", "fnId", "fileId", etc. columns).`,
+      name: 'highlight',
+      description: 'Highlight nodes in the visual graph. Use node IDs from search/cypher results (format: Label:filepath:name).',
       schema: z.object({
-        nodeIds: z.array(z.string()).describe('Array of EXACT node IDs to highlight - must include the label prefix like "Class:" or "Function:"'),
-        description: z.string().optional().nullable().describe('Brief description of what these nodes represent'),
+        nodeIds: z.array(z.string()).describe('Node IDs to highlight (e.g., ["Function:src/utils.ts:calculate"])'),
+        description: z.string().optional().nullable().describe('What these nodes represent'),
       }),
     }
   );
 
+  // ============================================================================
+  // RETURN ALL TOOLS
+  // ============================================================================
+  
   return [
-    executeCypherTool,
-    executeVectorCypherTool,
     searchTool,
-    semanticSearchWithContextTool,
-    getSchemaTool,
-    getCodeContentTool,
-    getStatsTool,
-    grepCodeTool,
-    readFileTool,
-    highlightInGraphTool,
+    cypherTool,
+    grepTool,
+    readTool,
+    highlightTool,
   ];
 };

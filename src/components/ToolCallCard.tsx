@@ -23,7 +23,7 @@ const formatArgs = (args: Record<string, unknown>): string => {
   if (!args || Object.keys(args).length === 0) {
     return '';
   }
-  
+
   // Special handling for Cypher queries
   if ('query' in args && typeof args.query === 'string') {
     return args.query;
@@ -37,7 +37,7 @@ const formatArgs = (args: Record<string, unknown>): string => {
     result += args.cypher;
     return result;
   }
-  
+
   // For other tools, show as formatted JSON
   return JSON.stringify(args, null, 2);
 };
@@ -83,15 +83,17 @@ const getStatusDisplay = (status: ToolCallInfo['status']) => {
  */
 const getToolDisplayName = (name: string): string => {
   const names: Record<string, string> = {
+    // New consolidated tools
+    'search': '🔍 Search Code',
+    'cypher': '🔍 Cypher Query',
+    'grep': '🔎 Pattern Search',
+    'read': '📄 Read File',
+    'highlight': '✨ Highlight in Graph',
+    // Legacy names (for backwards compatibility)
     'execute_cypher': '🔍 Cypher Query',
     'execute_vector_cypher': '🧠 Semantic + Graph Query',
-    'semantic_search': '🔎 Semantic Search',
-    'semantic_search_with_context': '🔎 Semantic Search + Context',
-    'get_code_content': '📄 Read Code',
-    'get_codebase_stats': '📊 Get Stats',
-    'get_graph_schema': '📋 Get Schema',
     'highlight_in_graph': '✨ Highlight in Graph',
-    'grep_code': '🔍 Search Code',
+    'grep_code': '🔎 Pattern Search',
     'read_file': '📄 Read File',
   };
   return names[name] || name;
@@ -114,24 +116,24 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
   const { highlightedNodeIds, setHighlightedNodeIds, graph } = useAppState();
   const status = getStatusDisplay(toolCall.status);
   const formattedArgs = formatArgs(toolCall.args);
-  
+
   // Check if this is a highlight tool and extract node IDs
-  const isHighlightTool = toolCall.name === 'highlight_in_graph';
+  const isHighlightTool = toolCall.name === 'highlight_in_graph' || toolCall.name === 'highlight';
   const rawHighlightNodeIds = isHighlightTool ? extractHighlightNodeIds(toolCall.result) : [];
-  
+
   // Resolve raw IDs to actual graph node IDs (handles partial ID matching)
   const resolvedNodeIds = useMemo(() => {
     if (rawHighlightNodeIds.length === 0 || !graph) return rawHighlightNodeIds;
-    
+
     const graphNodeIds = graph.nodes.map(n => n.id);
     const resolved: string[] = [];
-    
+
     for (const rawId of rawHighlightNodeIds) {
       if (graphNodeIds.includes(rawId)) {
         resolved.push(rawId);
       } else {
         // Try partial match - find node whose ID ends with the raw ID
-        const found = graphNodeIds.find(gid => 
+        const found = graphNodeIds.find(gid =>
           gid.endsWith(rawId) || gid.endsWith(':' + rawId)
         );
         if (found) resolved.push(found);
@@ -139,11 +141,11 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
     }
     return resolved;
   }, [rawHighlightNodeIds, graph]);
-  
+
   // Check if these specific nodes are currently highlighted
-  const isHighlightActive = resolvedNodeIds.length > 0 && 
+  const isHighlightActive = resolvedNodeIds.length > 0 &&
     resolvedNodeIds.some(id => highlightedNodeIds.has(id));
-  
+
   // Toggle highlight on/off
   const toggleHighlight = useCallback((e: React.MouseEvent) => {
     e.stopPropagation(); // Don't trigger expand/collapse
@@ -155,7 +157,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
       setHighlightedNodeIds(new Set(resolvedNodeIds));
     }
   }, [isHighlightActive, resolvedNodeIds, setHighlightedNodeIds]);
-  
+
   return (
     <div className={`rounded-lg border ${status.borderColor} ${status.bgColor} overflow-hidden transition-all`}>
       {/* Header - always visible */}
@@ -167,21 +169,20 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
         <span className="text-text-muted">
           {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </span>
-        
+
         {/* Tool name */}
         <span className="flex-1 text-sm font-medium text-text-primary">
           {getToolDisplayName(toolCall.name)}
         </span>
-        
+
         {/* Highlight toggle button - only for highlight_in_graph tool with results */}
         {isHighlightTool && resolvedNodeIds.length > 0 && (
           <button
             onClick={toggleHighlight}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
-              isHighlightActive
-                ? 'bg-accent/20 text-accent hover:bg-accent/30'
-                : 'bg-surface/50 text-text-muted hover:bg-surface hover:text-text-primary'
-            }`}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${isHighlightActive
+              ? 'bg-accent/20 text-accent hover:bg-accent/30'
+              : 'bg-surface/50 text-text-muted hover:bg-surface hover:text-text-primary'
+              }`}
             title={isHighlightActive ? 'Turn off highlight' : 'Turn on highlight'}
           >
             {isHighlightActive ? (
@@ -197,14 +198,14 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
             )}
           </button>
         )}
-        
+
         {/* Status indicator */}
         <span className={`flex items-center gap-1 text-xs ${status.color}`}>
           {status.icon}
           <span className="capitalize">{toolCall.status}</span>
         </span>
       </button>
-      
+
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border-subtle/50">
@@ -219,22 +220,24 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
               </pre>
             </div>
           )}
-          
+
           {/* Result */}
           {toolCall.result && (
             <div className="px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
                 Result
               </div>
-              <pre className="text-xs text-text-secondary bg-surface/50 rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">
-                {toolCall.result.length > 2000 
-                  ? toolCall.result.slice(0, 2000) + '\n\n... (truncated)'
-                  : toolCall.result
-                }
-              </pre>
+              <div className="max-h-[400px] overflow-y-auto bg-surface/50 rounded">
+                <pre className="text-xs text-text-secondary p-2 whitespace-pre-wrap font-mono">
+                  {toolCall.result.length > 3000
+                    ? toolCall.result.slice(0, 3000) + '\n\n... (truncated)'
+                    : toolCall.result
+                  }
+                </pre>
+              </div>
             </div>
           )}
-          
+
           {/* Loading state for in-progress */}
           {toolCall.status === 'running' && !toolCall.result && (
             <div className="px-3 py-3 flex items-center gap-2 text-xs text-text-muted">

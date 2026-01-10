@@ -200,85 +200,115 @@ export interface AgentStep {
  * Graph schema information for LLM context
  */
 export const GRAPH_SCHEMA_DESCRIPTION = `
-KUZU GRAPH DATABASE SCHEMA:
-
-⚠️ CRITICAL: There is NO "File" table, NO "Function" table, etc!
-⚠️ ALL nodes use the SINGLE "CodeNode" table with a "label" property!
-❌ WRONG: MATCH (f:File) or MATCH (fn:Function)
-✅ RIGHT: MATCH (n:CodeNode {label: 'File'}) or MATCH (n:CodeNode {label: 'Function'})
+KUZU GRAPH DATABASE SCHEMA (Multi-Table):
 
 NODE TABLES:
-1. CodeNode - All code elements (polymorphic)
+1. File - Source files
    - id: STRING (primary key)
-   - label: STRING (one of: File, Folder, Function, Class, Method, Interface)
-   - name: STRING (element name)
-   - filePath: STRING (path in project)
-   - startLine: INT64 (line number where element starts)
-   - endLine: INT64 (line number where element ends)
-   - content: STRING (source code snippet)
+   - name: STRING
+   - filePath: STRING
+   - content: STRING
 
-2. CodeEmbedding - Vector embeddings (SEPARATE TABLE for memory efficiency)
-   - nodeId: STRING (primary key, references CodeNode.id)
-   - embedding: FLOAT[384] (semantic vector)
+2. Folder - Directories
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
 
-RELATIONSHIP TABLE:
-- CodeRelation (FROM CodeNode TO CodeNode)
-  - type: STRING (one of: CALLS, IMPORTS, CONTAINS, DEFINES)
+3. Function - Function definitions
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
+   - startLine: INT64
+   - endLine: INT64
+   - content: STRING
 
-IMPORTANT QUERY PATTERNS:
+4. Class - Class definitions
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
+   - startLine: INT64
+   - endLine: INT64
+   - content: STRING
 
-1. Basic node queries:
-   MATCH (n:CodeNode {label: 'Function'}) RETURN n.name, n.filePath LIMIT 10
+5. Interface - Interface/Type definitions
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
+   - startLine: INT64
+   - endLine: INT64
+   - content: STRING
 
-2. Relationship traversal:
-   MATCH (f:CodeNode {label: 'File'})-[r:CodeRelation {type: 'DEFINES'}]->(fn:CodeNode {label: 'Function'})
-   RETURN f.name AS file, fn.name AS function
+6. Method - Class methods
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
+   - startLine: INT64
+   - endLine: INT64
+   - content: STRING
 
-3. SEMANTIC SEARCH (embeddings in separate table - MUST JOIN):
+7. CodeElement - Other code elements (fallback)
+   - id: STRING (primary key)
+   - name: STRING
+   - filePath: STRING
+   - startLine: INT64
+   - endLine: INT64
+   - content: STRING
+
+8. CodeEmbedding - Vector embeddings (separate for efficiency)
+   - nodeId: STRING (primary key)
+   - embedding: FLOAT[384]
+
+RELATIONSHIP TABLES:
+1. CONTAINS (Folder->Folder, Folder->File)
+2. DEFINES (File->Function, File->Class, File->Interface, File->Method, File->CodeElement)
+3. IMPORTS (File->File)
+4. CALLS (File->Function, File->Method)
+
+QUERY PATTERNS:
+
+1. Find all functions:
+   MATCH (f:Function) RETURN f.name, f.filePath LIMIT 10
+
+2. Find what a file defines:
+   MATCH (f:File)-[:DEFINES]->(fn:Function)
+   WHERE f.name = 'utils.ts'
+   RETURN fn.name
+
+3. Find function callers:
+   MATCH (caller:File)-[:CALLS]->(fn:Function {name: 'myFunction'})
+   RETURN caller.name, caller.filePath
+
+4. Find imports:
+   MATCH (f:File {name: 'main.ts'})-[:IMPORTS]->(imported:File)
+   RETURN imported.name
+
+5. SEMANTIC SEARCH (embeddings in separate table - MUST JOIN):
    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 10)
    YIELD node AS emb, distance
-   WITH emb, distance  -- KuzuDB requires WITH after YIELD before WHERE
+   WITH emb, distance
    WHERE distance < 0.4
-   MATCH (n:CodeNode {id: emb.nodeId})  -- JOIN required!
-   RETURN n.name, n.label, n.filePath, distance
+   MATCH (n:Function {id: emb.nodeId})
+   RETURN n.name, n.filePath, distance
    ORDER BY distance
 
-4. Semantic search + graph expansion:
-   CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 5)
-   YIELD node AS emb, distance
-   WITH emb, distance
-   WHERE distance < 0.5
-   MATCH (match:CodeNode {id: emb.nodeId})
-   MATCH (match)-[r:CodeRelation*1..2]-(connected:CodeNode)
-   RETURN match.name, distance, collect(DISTINCT connected.name) AS related
+6. Search across all code types (use UNION or separate queries):
+   MATCH (f:Function) WHERE f.name CONTAINS 'auth' RETURN f.id, f.name, 'Function' AS type
+   UNION ALL
+   MATCH (c:Class) WHERE c.name CONTAINS 'auth' RETURN c.id, c.name, 'Class' AS type
 
-5. Find callers of a function:
-   MATCH (caller:CodeNode)-[r:CodeRelation {type: 'CALLS'}]->(fn:CodeNode {name: $functionName})
-   RETURN caller.name, caller.label, caller.filePath
-
-6. Import chain analysis:
-   MATCH (f:CodeNode {name: $fileName})-[r:CodeRelation {type: 'IMPORTS'}]->(imported:CodeNode)
-   RETURN imported.name AS imports
-
-7. Unified vector + graph traversal in ONE query (recommended pattern):
-   CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 10)
-   YIELD node AS emb, distance
-   WITH emb, distance
-   WHERE distance < 0.5
-   MATCH (match:CodeNode {id: emb.nodeId})
-   MATCH (match)-[r:CodeRelation*1..2]-(ctx:CodeNode)
-   RETURN match.name AS found, match.label AS label, match.filePath AS path,
-          distance, collect(DISTINCT ctx.name) AS context
-   ORDER BY distance
+7. Folder structure:
+   MATCH (parent:Folder)-[:CONTAINS]->(child)
+   WHERE parent.name = 'src'
+   RETURN child.name, labels(child)[0] AS type
 
 TOOLING NOTE (for execute_vector_cypher):
-- When using the execute_vector_cypher tool, write Cypher containing {{QUERY_VECTOR}} where the vector should go.
-- The tool will replace {{QUERY_VECTOR}} with a CAST([..] AS FLOAT[384]) literal.
+- Write Cypher containing {{QUERY_VECTOR}} where the vector should go.
+- The tool will replace {{QUERY_VECTOR}} with CAST([..] AS FLOAT[384]).
 
 NOTES:
-- Always use WHERE clauses to filter by label when possible for performance
+- Use proper table names: File, Folder, Function, Class, Interface, Method, CodeElement
+- Relationship labels are: CONTAINS, DEFINES, IMPORTS, CALLS
+- For vector search, join CodeEmbedding.nodeId to the appropriate table's id
 - Use LIMIT to avoid returning too many results
-- For semantic search, the vector index is on CodeEmbedding table, not CodeNode
-- distance in vector search is cosine distance (0 = identical, 1 = orthogonal)
 `;
 

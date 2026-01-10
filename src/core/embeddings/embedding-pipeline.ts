@@ -28,34 +28,56 @@ export type EmbeddingProgressCallback = (progress: EmbeddingProgress) => void;
 
 /**
  * Query all embeddable nodes from KuzuDB
+ * Uses table-specific queries (File has different schema than code elements)
  */
 const queryEmbeddableNodes = async (
   executeQuery: (cypher: string) => Promise<any[]>
 ): Promise<EmbeddableNode[]> => {
-  // Build WHERE clause for embeddable labels
-  const labelConditions = EMBEDDABLE_LABELS
-    .map(label => `n.label = '${label}'`)
-    .join(' OR ');
+  const allNodes: EmbeddableNode[] = [];
+  
+  // Query each embeddable table with table-specific columns
+  for (const label of EMBEDDABLE_LABELS) {
+    try {
+      let query: string;
+      
+      if (label === 'File') {
+        // File nodes don't have startLine/endLine
+        query = `
+          MATCH (n:File)
+          RETURN n.id AS id, n.name AS name, 'File' AS label, 
+                 n.filePath AS filePath, n.content AS content
+        `;
+      } else {
+        // Code elements have startLine/endLine
+        query = `
+          MATCH (n:${label})
+          RETURN n.id AS id, n.name AS name, '${label}' AS label, 
+                 n.filePath AS filePath, n.content AS content,
+                 n.startLine AS startLine, n.endLine AS endLine
+        `;
+      }
+      
+      const rows = await executeQuery(query);
+      for (const row of rows) {
+        allNodes.push({
+          id: row.id ?? row[0],
+          name: row.name ?? row[1],
+          label: row.label ?? row[2],
+          filePath: row.filePath ?? row[3],
+          content: row.content ?? row[4] ?? '',
+          startLine: row.startLine ?? row[5],
+          endLine: row.endLine ?? row[6],
+        });
+      }
+    } catch (error) {
+      // Table might not exist or be empty, continue
+      if (import.meta.env.DEV) {
+        console.warn(`Query for ${label} nodes failed:`, error);
+      }
+    }
+  }
 
-  const cypher = `
-    MATCH (n:CodeNode)
-    WHERE ${labelConditions}
-    RETURN n.id AS id, n.name AS name, n.label AS label, 
-           n.filePath AS filePath, n.content AS content,
-           n.startLine AS startLine, n.endLine AS endLine
-  `;
-
-  const rows = await executeQuery(cypher);
-
-  return rows.map(row => ({
-    id: row.id ?? row[0],
-    name: row.name ?? row[1],
-    label: row.label ?? row[2],
-    filePath: row.filePath ?? row[3],
-    content: row.content ?? row[4] ?? '',
-    startLine: row.startLine ?? row[5],
-    endLine: row.endLine ?? row[6],
-  }));
+  return allNodes;
 };
 
 /**
@@ -251,7 +273,7 @@ export const runEmbeddingPipeline = async (
 /**
  * Perform semantic search using the vector index
  * 
- * Uses separate CodeEmbedding table and JOINs with CodeNode for metadata
+ * Uses CodeEmbedding table and queries each node table to get metadata
  * 
  * @param executeQuery - Function to execute Cypher queries
  * @param query - Search query text
@@ -274,81 +296,104 @@ export const semanticSearch = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
-  // Query the vector index on CodeEmbedding, then JOIN with CodeNode for metadata
-  // Note: KuzuDB requires WITH after YIELD before using WHERE
-  const cypher = `
+  // Query the vector index on CodeEmbedding to get nodeIds and distances
+  const vectorQuery = `
     CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
       CAST(${queryVecStr} AS FLOAT[384]), ${k})
     YIELD node AS emb, distance
     WITH emb, distance
     WHERE distance < ${maxDistance}
-    MATCH (n:CodeNode {id: emb.nodeId})
-    RETURN n.id AS nodeId, n.name AS name, n.label AS label,
-           n.filePath AS filePath, distance,
-           n.startLine AS startLine, n.endLine AS endLine
+    RETURN emb.nodeId AS nodeId, distance
     ORDER BY distance
   `;
 
-  const rows = await executeQuery(cypher);
+  const embResults = await executeQuery(vectorQuery);
+  
+  if (embResults.length === 0) {
+    return [];
+  }
 
-  return rows.map(row => ({
-    nodeId: row.nodeId ?? row[0],
-    name: row.name ?? row[1],
-    label: row.label ?? row[2],
-    filePath: row.filePath ?? row[3],
-    distance: row.distance ?? row[4],
-    startLine: row.startLine ?? row[5],
-    endLine: row.endLine ?? row[6],
-  }));
+  // Get metadata for each result by querying each node table
+  const results: SemanticSearchResult[] = [];
+  
+  for (const embRow of embResults) {
+    const nodeId = embRow.nodeId ?? embRow[0];
+    const distance = embRow.distance ?? embRow[1];
+    
+    // Extract label from node ID (format: Label:path:name)
+    const labelEndIdx = nodeId.indexOf(':');
+    const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
+    
+    // Query the specific table for this node
+    // File nodes don't have startLine/endLine
+    try {
+      let nodeQuery: string;
+      if (label === 'File') {
+        nodeQuery = `
+          MATCH (n:File {id: '${nodeId.replace(/'/g, "''")}'}) 
+          RETURN n.name AS name, n.filePath AS filePath
+        `;
+      } else {
+        nodeQuery = `
+          MATCH (n:${label} {id: '${nodeId.replace(/'/g, "''")}'}) 
+          RETURN n.name AS name, n.filePath AS filePath, 
+                 n.startLine AS startLine, n.endLine AS endLine
+        `;
+      }
+      const nodeRows = await executeQuery(nodeQuery);
+      if (nodeRows.length > 0) {
+        const nodeRow = nodeRows[0];
+        results.push({
+          nodeId,
+          name: nodeRow.name ?? nodeRow[0] ?? '',
+          label,
+          filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
+          distance,
+          startLine: label !== 'File' ? (nodeRow.startLine ?? nodeRow[2]) : undefined,
+          endLine: label !== 'File' ? (nodeRow.endLine ?? nodeRow[3]) : undefined,
+        });
+      }
+    } catch {
+      // Table might not exist, skip
+    }
+  }
+
+  return results;
 };
 
 /**
  * Semantic search with graph expansion (flattened results)
- * Finds similar nodes AND their direct connections with relationship types
  * 
- * Uses separate CodeEmbedding table and JOINs with CodeNode.
- * Returns flattened results: one row per (match, connected) pair.
- * This format works with KuzuDB and preserves relationship type information.
+ * Note: With multi-table schema, graph traversal is simplified.
+ * Returns semantic matches with their metadata.
+ * For full graph traversal, use execute_vector_cypher tool directly.
  * 
  * @param executeQuery - Function to execute Cypher queries
  * @param query - Search query text
  * @param k - Number of initial semantic matches (default: 5)
- * @param _hops - Unused (kept for API compatibility). Use execute_vector_cypher for multi-hop.
- * @returns Flattened results: each row is a (match → connected) pair with relationship type
+ * @param _hops - Unused (kept for API compatibility).
+ * @returns Semantic matches with metadata
  */
 export const semanticSearchWithContext = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   query: string,
   k: number = 5,
-  _hops: number = 1  // Currently only single-hop supported; multi-hop via execute_vector_cypher
+  _hops: number = 1
 ): Promise<any[]> => {
-  if (!isEmbedderReady()) {
-    throw new Error('Embedding model not initialized. Run embedding pipeline first.');
-  }
-
-  // Embed the query
-  const queryEmbedding = await embedText(query);
-  const queryVec = embeddingToArray(queryEmbedding);
-  const queryVecStr = `[${queryVec.join(',')}]`;
-
-  // Query embedding table, JOIN with CodeNode, then expand to direct connections
-  // Using single-hop so we can access r.type (variable-length paths don't support this in KuzuDB)
-  // Note: KuzuDB requires WITH after YIELD before using WHERE
-  const cypher = `
-    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx',
-      CAST(${queryVecStr} AS FLOAT[384]), ${k})
-    YIELD node AS emb, distance
-    WITH emb, distance
-    WHERE distance < 0.5
-    MATCH (match:CodeNode {id: emb.nodeId})
-    MATCH (match)-[r:CodeRelation]-(connected:CodeNode)
-    RETURN match.id AS matchId, match.name AS matchName, match.label AS matchLabel,
-           match.filePath AS matchPath, distance,
-           connected.id AS connectedId, connected.name AS connectedName, 
-           connected.label AS connectedLabel, r.type AS relationType
-    ORDER BY distance, matchId
-  `;
-
-  return executeQuery(cypher);
+  // For multi-table schema, just return semantic search results
+  // Graph traversal is complex with separate tables - use execute_vector_cypher instead
+  const results = await semanticSearch(executeQuery, query, k, 0.5);
+  
+  return results.map(r => ({
+    matchId: r.nodeId,
+    matchName: r.name,
+    matchLabel: r.label,
+    matchPath: r.filePath,
+    distance: r.distance,
+    connectedId: null,
+    connectedName: null,
+    connectedLabel: null,
+    relationType: null,
+  }));
 };
 
