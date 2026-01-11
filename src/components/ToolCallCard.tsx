@@ -161,9 +161,12 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
   return (
     <div className={`rounded-lg border ${status.borderColor} ${status.bgColor} overflow-hidden transition-all`}>
       {/* Header - always visible */}
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 transition-colors"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setIsExpanded(!isExpanded); } }}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 transition-colors cursor-pointer select-none"
       >
         {/* Expand/collapse icon */}
         <span className="text-text-muted">
@@ -204,7 +207,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
           {status.icon}
           <span className="capitalize">{toolCall.status}</span>
         </span>
-      </button>
+      </div>
 
       {/* Expanded content */}
       {isExpanded && (

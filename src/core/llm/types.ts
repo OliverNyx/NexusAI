@@ -258,11 +258,15 @@ NODE TABLES:
    - nodeId: STRING (primary key)
    - embedding: FLOAT[384]
 
-RELATIONSHIP TABLES:
-1. CONTAINS (Folder->Folder, Folder->File)
-2. DEFINES (File->Function, File->Class, File->Interface, File->Method, File->CodeElement)
-3. IMPORTS (File->File)
-4. CALLS (File->Function, File->Method)
+RELATIONSHIP TABLE:
+CodeRelation - Single table with 'type' property connecting all node tables
+  - type: STRING (values: CONTAINS, DEFINES, IMPORTS, CALLS)
+
+Connection patterns:
+- CONTAINS: Folder->Folder, Folder->File
+- DEFINES: File->Function, File->Class, File->Interface, File->Method, File->CodeElement
+- IMPORTS: File->File
+- CALLS: File->Function, File->Method, Function->Function, Function->Method
 
 QUERY PATTERNS:
 
@@ -270,19 +274,23 @@ QUERY PATTERNS:
    MATCH (f:Function) RETURN f.name, f.filePath LIMIT 10
 
 2. Find what a file defines:
-   MATCH (f:File)-[:DEFINES]->(fn:Function)
+   MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(fn:Function)
    WHERE f.name = 'utils.ts'
    RETURN fn.name
 
 3. Find function callers:
-   MATCH (caller:File)-[:CALLS]->(fn:Function {name: 'myFunction'})
+   MATCH (caller:File)-[:CodeRelation {type: 'CALLS'}]->(fn:Function {name: 'myFunction'})
    RETURN caller.name, caller.filePath
 
 4. Find imports:
-   MATCH (f:File {name: 'main.ts'})-[:IMPORTS]->(imported:File)
+   MATCH (f:File {name: 'main.ts'})-[:CodeRelation {type: 'IMPORTS'}]->(imported:File)
    RETURN imported.name
 
-5. SEMANTIC SEARCH (embeddings in separate table - MUST JOIN):
+5. Find files that import a specific file:
+   MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(target:File {name: 'utils.ts'})
+   RETURN f.name, f.filePath
+
+6. SEMANTIC SEARCH (embeddings in separate table - MUST JOIN):
    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 10)
    YIELD node AS emb, distance
    WITH emb, distance
@@ -291,15 +299,19 @@ QUERY PATTERNS:
    RETURN n.name, n.filePath, distance
    ORDER BY distance
 
-6. Search across all code types (use UNION or separate queries):
+7. Search across all code types (use UNION or separate queries):
    MATCH (f:Function) WHERE f.name CONTAINS 'auth' RETURN f.id, f.name, 'Function' AS type
    UNION ALL
    MATCH (c:Class) WHERE c.name CONTAINS 'auth' RETURN c.id, c.name, 'Class' AS type
 
-7. Folder structure:
-   MATCH (parent:Folder)-[:CONTAINS]->(child)
+8. Folder structure:
+   MATCH (parent:Folder)-[:CodeRelation {type: 'CONTAINS'}]->(child)
    WHERE parent.name = 'src'
    RETURN child.name, labels(child)[0] AS type
+
+9. Get all connections for a node:
+   MATCH (f:File {name: 'index.ts'})-[r:CodeRelation]-(m)
+   RETURN m.name, r.type
 
 TOOLING NOTE (for execute_vector_cypher):
 - Write Cypher containing {{QUERY_VECTOR}} where the vector should go.
@@ -307,7 +319,7 @@ TOOLING NOTE (for execute_vector_cypher):
 
 NOTES:
 - Use proper table names: File, Folder, Function, Class, Interface, Method, CodeElement
-- Relationship labels are: CONTAINS, DEFINES, IMPORTS, CALLS
+- Use CodeRelation with type property: [:CodeRelation {type: 'DEFINES'}]
 - For vector search, join CodeEmbedding.nodeId to the appropriate table's id
 - Use LIMIT to avoid returning too many results
 `;

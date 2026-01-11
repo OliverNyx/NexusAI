@@ -5,23 +5,23 @@ import { useAppState } from '../hooks/useAppState';
 const EXAMPLE_QUERIES = [
   {
     label: 'All Functions',
-    query: `MATCH (n:CodeNode) WHERE n.label = 'Function' RETURN n.id AS id, n.name AS name, n.filePath AS path`,
+    query: `MATCH (n:Function) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
     label: 'All Classes',
-    query: `MATCH (n:CodeNode) WHERE n.label = 'Class' RETURN n.id AS id, n.name AS name, n.filePath AS path`,
+    query: `MATCH (n:Class) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
     label: 'All Interfaces',
-    query: `MATCH (n:CodeNode) WHERE n.label = 'Interface' RETURN n.id AS id, n.name AS name, n.filePath AS path`,
+    query: `MATCH (n:Interface) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
     label: 'Function Calls',
-    query: `MATCH (a:CodeNode)-[r:CodeRelation]->(b:CodeNode) WHERE r.type = 'CALLS' RETURN a.id AS id, a.name AS caller, b.name AS callee LIMIT 50`,
+    query: `MATCH (a:File)-[r:CodeRelation {type: 'CALLS'}]->(b:Function) RETURN a.id AS id, a.name AS caller, b.name AS callee LIMIT 50`,
   },
   {
     label: 'Import Dependencies',
-    query: `MATCH (a:CodeNode)-[r:CodeRelation]->(b:CodeNode) WHERE r.type = 'IMPORTS' RETURN a.id AS id, a.name AS from, b.name AS imports LIMIT 50`,
+    query: `MATCH (a:File)-[r:CodeRelation {type: 'IMPORTS'}]->(b:File) RETURN a.id AS id, a.name AS from, b.name AS imports LIMIT 50`,
   },
 ];
 
@@ -203,7 +203,7 @@ export const QueryFAB = () => {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="MATCH (n:CodeNode) WHERE n.label = 'Function' RETURN n"
+            placeholder="MATCH (n:Function) RETURN n.name, n.filePath LIMIT 10"
             rows={3}
             className="
               w-full px-3 py-2.5

@@ -11,7 +11,7 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { GRAPH_SCHEMA_DESCRIPTION } from './types';
+// Note: GRAPH_SCHEMA_DESCRIPTION from './types' is available if needed for additional context
 import { WebGPUNotAvailableError, embedText, embeddingToArray, initEmbedder, isEmbedderReady } from '../embeddings/embedder';
 
 /**
