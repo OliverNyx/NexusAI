@@ -49,6 +49,14 @@ export const RightPanel = () => {
 
   const [chatInput, setChatInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages update or while streaming
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, isChatLoading]);
 
   const resolveFilePathForUI = useCallback((requestedPath: string): string | null => {
     const req = requestedPath.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
@@ -383,17 +391,8 @@ export const RightPanel = () => {
                                               </a>
                                             );
                                           }
-                                          return (
-                                            <a
-                                              href={href}
-                                              className="text-accent underline underline-offset-2 hover:text-purple-300"
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              {...props}
-                                            >
-                                              {children}
-                                            </a>
-                                          );
+                                          // Non-citation link - just render as plain text (not a useless external link)
+                                          return <span {...props}>{children}</span>;
                                         },
                                         code: ({ className, children, ...props }) => {
                                           const match = /language-(\w+)/.exec(className || '');
@@ -631,6 +630,8 @@ export const RightPanel = () => {
 
             </div>
           )}
+          {/* Scroll anchor for auto-scroll */}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input */}
