@@ -88,9 +88,7 @@ export const createGraphRAGTools = (
                 collect(DISTINCT {name: src.name, type: r2.type}) AS incoming
               LIMIT 1
             `;
-            console.log(`[1-hop] Querying connections for: ${nodeId}`);
             const connRes = await executeQuery(connectionsQuery);
-            console.log(`[1-hop] Result:`, JSON.stringify(connRes));
             if (connRes.length > 0) {
               // Result is nested array: [[outgoing], [incoming]] or {outgoing: [], incoming: []}
               const row = connRes[0];
@@ -98,15 +96,14 @@ export const createGraphRAGTools = (
               const rawIncoming = Array.isArray(row) ? row[1] : (row.incoming || []);
               const outgoing = (rawOutgoing || []).filter((c: any) => c && c.name).slice(0, 3);
               const incoming = (rawIncoming || []).filter((c: any) => c && c.name).slice(0, 3);
-              console.log(`[1-hop] Outgoing:`, outgoing, `Incoming:`, incoming);
               const outList = outgoing.map((c: any) => `-[${c.type}]-> ${c.name}`);
               const inList = incoming.map((c: any) => `<-[${c.type}]- ${c.name}`);
               if (outList.length || inList.length) {
                 connections = `\n    Connections: ${[...outList, ...inList].join(', ')}`;
               }
             }
-          } catch (err) {
-            console.error(`[1-hop] Query failed for ${nodeId}:`, err);
+          } catch {
+            // Skip connections if query fails
           }
         }
         
@@ -184,7 +181,7 @@ export const createGraphRAGTools = (
         return `Query returned ${results.length} results:\n${resultText}${truncated}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation tables: CONTAINS_*, DEFINES_*, IMPORTS_*, CALLS_*.`;
+        return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation: CodeRelation with type property (CONTAINS, DEFINES, IMPORTS, CALLS). Example: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f, g`;
       }
     },
     {
@@ -192,7 +189,12 @@ export const createGraphRAGTools = (
       description: `Execute a Cypher query against the code graph. Use for structural queries like finding callers, tracing imports, or custom traversals.
 
 Node tables: File, Folder, Function, Class, Interface, Method, CodeElement
-Relation tables: CONTAINS_Folder_Folder, CONTAINS_Folder_File, DEFINES_File_Function, DEFINES_File_Class, IMPORTS_File_File, CALLS_File_Function, etc.
+Relation: CodeRelation (single table with 'type' property: CONTAINS, DEFINES, IMPORTS, CALLS)
+
+Example queries:
+- Files importing a file: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(target:File) WHERE target.name = 'utils.ts' RETURN f.name
+- Functions defined in file: MATCH (f:File {name: 'main.ts'})-[:CodeRelation {type: 'DEFINES'}]->(fn:Function) RETURN fn.name
+- All connections: MATCH (f:File {name: 'index.ts'})-[r:CodeRelation]-(m) RETURN m.name, r.type
 
 For semantic+graph queries, include {{QUERY_VECTOR}} placeholder and provide a 'query' parameter:
 CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance
