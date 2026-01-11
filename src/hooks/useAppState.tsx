@@ -44,17 +44,17 @@ interface AppState {
   // View state
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
-  
+
   // Graph data
   graph: KnowledgeGraph | null;
   setGraph: (graph: KnowledgeGraph | null) => void;
   fileContents: Map<string, string>;
   setFileContents: (contents: Map<string, string>) => void;
-  
+
   // Selection
   selectedNode: GraphNode | null;
   setSelectedNode: (node: GraphNode | null) => void;
-  
+
   // Right Panel (unified Code + Chat)
   isRightPanelOpen: boolean;
   setRightPanelOpen: (open: boolean) => void;
@@ -62,15 +62,15 @@ interface AppState {
   setRightPanelTab: (tab: RightPanelTab) => void;
   openCodePanel: () => void;
   openChatPanel: () => void;
-  
+
   // Filters
   visibleLabels: NodeLabel[];
   toggleLabelVisibility: (label: NodeLabel) => void;
-  
+
   // Depth filter (N hops from selection)
   depthFilter: number | null;
   setDepthFilter: (depth: number | null) => void;
-  
+
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
@@ -83,34 +83,34 @@ interface AppState {
   queryResult: QueryResult | null;
   setQueryResult: (result: QueryResult | null) => void;
   clearQueryHighlights: () => void;
-  
+
   // Progress
   progress: PipelineProgress | null;
   setProgress: (progress: PipelineProgress | null) => void;
-  
+
   // Project info
   projectName: string;
   setProjectName: (name: string) => void;
-  
+
   // Worker API (shared across app)
   runPipeline: (file: File, onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
   runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void) => Promise<PipelineResult>;
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
-  
+
   // Embedding state
   embeddingStatus: EmbeddingStatus;
   embeddingProgress: EmbeddingProgress | null;
-  
+
   // Embedding methods
   startEmbeddings: (forceDevice?: 'webgpu' | 'wasm') => Promise<void>;
   semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
   isEmbeddingReady: boolean;
-  
+
   // Debug/test methods
   testArrayParams: () => Promise<{ success: boolean; error?: string }>;
-  
+
   // LLM/Agent state
   llmSettings: LLMSettings;
   isSettingsPanelOpen: boolean;
@@ -118,18 +118,18 @@ interface AppState {
   isAgentReady: boolean;
   isAgentInitializing: boolean;
   agentError: string | null;
-  
+
   // Chat state
   chatMessages: ChatMessage[];
   isChatLoading: boolean;
   currentToolCalls: ToolCallInfo[];
-  
+
   // LLM methods
   refreshLLMSettings: () => void;
   initializeAgent: () => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   clearChat: () => void;
-  
+
   // Code References Panel
   codeReferences: CodeReference[];
   isCodePanelOpen: boolean;
@@ -146,36 +146,36 @@ const AppStateContext = createContext<AppState | null>(null);
 export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>('onboarding');
-  
+
   // Graph data
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
   const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
-  
+
   // Selection
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  
+
   // Right Panel
   const [isRightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('code');
-  
+
   const openCodePanel = useCallback(() => {
     // Legacy API: used by graph/tree selection.
     // Code is now shown in the Code References Panel (left of the graph),
     // so "openCodePanel" just ensures that panel becomes visible when needed.
     setCodePanelOpen(true);
   }, []);
-  
+
   const openChatPanel = useCallback(() => {
     setRightPanelOpen(true);
     setRightPanelTab('chat');
   }, []);
-  
+
   // Filters
   const [visibleLabels, setVisibleLabels] = useState<NodeLabel[]>(DEFAULT_VISIBLE_LABELS);
-  
+
   // Depth filter
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
-  
+
   // Query state
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
@@ -192,34 +192,34 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const clearAIToolHighlights = useCallback(() => {
     setAIToolHighlightedNodeIds(new Set());
   }, []);
-  
+
   const clearQueryHighlights = useCallback(() => {
     setHighlightedNodeIds(new Set());
     setQueryResult(null);
   }, []);
-  
+
   // Progress
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
-  
+
   // Project info
   const [projectName, setProjectName] = useState<string>('');
-  
+
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
   const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgress | null>(null);
-  
+
   // LLM/Agent state
   const [llmSettings, setLLMSettings] = useState<LLMSettings>(loadSettings);
   const [isSettingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [isAgentReady, setIsAgentReady] = useState(false);
   const [isAgentInitializing, setIsAgentInitializing] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
-  
+
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
-  
+
   // Code References Panel state
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
@@ -278,18 +278,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
     const id = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newRef: CodeReference = { ...ref, id };
-    
+
     setCodeReferences(prev => {
       // Don't add duplicates (same file + line range)
-      const isDuplicate = prev.some(r => 
-        r.filePath === ref.filePath && 
-        r.startLine === ref.startLine && 
+      const isDuplicate = prev.some(r =>
+        r.filePath === ref.filePath &&
+        r.startLine === ref.startLine &&
         r.endLine === ref.endLine
       );
       if (isDuplicate) return prev;
       return [...prev, newRef];
     });
-    
+
     // Auto-open panel when references are added
     setCodePanelOpen(true);
 
@@ -302,7 +302,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       endLine: ref.endLine,
       ts: Date.now(),
     });
-    
+
     // Track AI highlights separately so they can be toggled off in the UI
     if (ref.nodeId && ref.source === 'ai') {
       setAICitationHighlightedNodeIds(prev => new Set([...prev, ref.nodeId!]));
@@ -367,7 +367,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   ): Promise<PipelineResult> => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
-    
+
     const proxiedOnProgress = Comlink.proxy(onProgress);
     const serializedResult = await api.runPipeline(file, proxiedOnProgress);
     return deserializePipelineResult(serializedResult, createKnowledgeGraph);
@@ -379,7 +379,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   ): Promise<PipelineResult> => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
-    
+
     const proxiedOnProgress = Comlink.proxy(onProgress);
     const serializedResult = await api.runPipelineFromFiles(files, proxiedOnProgress);
     return deserializePipelineResult(serializedResult, createKnowledgeGraph);
@@ -405,14 +405,14 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
-    
+
     setEmbeddingStatus('loading');
     setEmbeddingProgress(null);
-    
+
     try {
       const proxiedOnProgress = Comlink.proxy((progress: EmbeddingProgress) => {
         setEmbeddingProgress(progress);
-        
+
         // Update status based on phase
         switch (progress.phase) {
           case 'loading-model':
@@ -432,12 +432,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
             break;
         }
       });
-      
+
       await api.startEmbeddingPipeline(proxiedOnProgress, forceDevice);
     } catch (error: any) {
       // Check if it's WebGPU not available - let caller handle the dialog
-      if (error?.name === 'WebGPUNotAvailableError' || 
-          error?.message?.includes('WebGPU not available')) {
+      if (error?.name === 'WebGPUNotAvailableError' ||
+        error?.message?.includes('WebGPU not available')) {
         setEmbeddingStatus('idle'); // Reset to idle so user can try again
       } else {
         setEmbeddingStatus('error');
@@ -581,7 +581,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         .map(s => s.content)
         .filter(Boolean);
       const content = contentParts.join('\n\n');
-      
+
       setChatMessages(prev => {
         const existing = prev.find(m => m.id === assistantMessageId);
         const newMessage: ChatMessage = {
@@ -717,17 +717,17 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 idx = toolCallsForMessage.findIndex(t => t.name === tc.name && !t.result);
               }
               if (idx >= 0) {
-                toolCallsForMessage[idx] = { 
-                  ...toolCallsForMessage[idx], 
-                  result: tc.result, 
-                  status: 'completed' 
+                toolCallsForMessage[idx] = {
+                  ...toolCallsForMessage[idx],
+                  result: tc.result,
+                  status: 'completed'
                 };
               }
-              
+
               // Also update the tool call in steps
-              const stepIdx = stepsForMessage.findIndex(s => 
+              const stepIdx = stepsForMessage.findIndex(s =>
                 s.type === 'tool_call' && s.toolCall && (
-                  s.toolCall.id === tc.id || 
+                  s.toolCall.id === tc.id ||
                   (s.toolCall.name === tc.name && s.toolCall.status === 'running')
                 )
               );
@@ -741,7 +741,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   },
                 };
               }
-              
+
               // Update currentToolCalls
               setCurrentToolCalls(prev => {
                 let targetIdx = prev.findIndex(t => t.id === tc.id);
@@ -752,16 +752,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   targetIdx = prev.findIndex(t => t.name === tc.name && !t.result);
                 }
                 if (targetIdx >= 0) {
-                  return prev.map((t, i) => i === targetIdx 
-                    ? { ...t, result: tc.result, status: 'completed' } 
+                  return prev.map((t, i) => i === targetIdx
+                    ? { ...t, result: tc.result, status: 'completed' }
                     : t
                   );
                 }
                 return prev;
               });
-              
+
               updateMessage();
-              
+
               // Parse highlight marker from tool results
               if (tc.result) {
                 const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
@@ -770,12 +770,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
                     const graphNodeIds = graph.nodes.map(n => n.id);
-                    
+
                     for (const rawId of rawIds) {
                       if (graphNodeIds.includes(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        const found = graphNodeIds.find(gid => 
+                        const found = graphNodeIds.find(gid =>
                           gid.endsWith(rawId) || gid.endsWith(':' + rawId)
                         );
                         if (found) {
@@ -783,7 +783,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                         }
                       }
                     }
-                    
+
                     if (matchedIds.size > 0) {
                       setAIToolHighlightedNodeIds(matchedIds);
                     }
@@ -826,7 +826,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setCodeReferences(prev => {
       const ref = prev.find(r => r.id === id);
       const newRefs = prev.filter(r => r.id !== id);
-      
+
       // Remove AI citation highlight if this was the only AI reference to that node
       if (ref?.nodeId && ref.source === 'ai') {
         const stillReferenced = newRefs.some(r => r.nodeId === ref.nodeId && r.source === 'ai');
@@ -838,12 +838,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           });
         }
       }
-      
+
       // Auto-close panel if no references left AND no selection in top viewer
       if (newRefs.length === 0 && !selectedNode) {
         setCodePanelOpen(false);
       }
-      
+
       return newRefs;
     });
   }, [selectedNode]);
