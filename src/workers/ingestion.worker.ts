@@ -12,6 +12,7 @@ import { isEmbedderReady, disposeEmbedder } from '../core/embeddings/embedder';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
 import type { ProviderConfig, AgentStreamChunk } from '../core/llm/types';
 import { createGraphRAGAgent, streamAgentResponse, type AgentMessage } from '../core/llm/agent';
+import { buildCodebaseContext } from '../core/llm/context-builder';
 import { 
   buildBM25Index, 
   searchBM25, 
@@ -423,6 +424,25 @@ const workerApi = {
         return mergeWithRRF(bm25Results, semanticResults, k ?? 10);
       };
 
+      // Build codebase context for dynamic prompt injection
+      // Extract project name from first file path
+      const firstPath = storedFileContents.keys().next().value || '';
+      const projectName = firstPath.split('/')[0] || firstPath.split('\\')[0] || 'project';
+      
+      let codebaseContext;
+      try {
+        codebaseContext = await buildCodebaseContext(kuzu.executeQuery, projectName);
+        if (import.meta.env.DEV) {
+          console.log('📊 Codebase context built:', {
+            files: codebaseContext.stats.fileCount,
+            functions: codebaseContext.stats.functionCount,
+            hotspots: codebaseContext.hotspots.length,
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to build codebase context, proceeding without:', err);
+      }
+
       currentAgent = createGraphRAGAgent(
         config,
         kuzu.executeQuery,
@@ -431,7 +451,8 @@ const workerApi = {
         hybridSearchWrapper,
         () => isEmbeddingComplete,
         () => isBM25Ready(),
-        storedFileContents
+        storedFileContents,
+        codebaseContext
       );
       currentProviderConfig = config;
 
