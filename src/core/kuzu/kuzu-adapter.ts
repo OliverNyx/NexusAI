@@ -4,12 +4,18 @@
  * Manages the KuzuDB WASM instance for client-side graph database operations.
  * Uses the "Snapshot / Bulk Load" pattern with COPY FROM for performance.
  * 
- * Based on V1 implementation with dynamic import to handle Vite bundling.
+ * Multi-table schema: separate tables for File, Function, Class, etc.
  */
 
 import { KnowledgeGraph } from '../graph/types';
-import { NODE_SCHEMA, EDGE_SCHEMA, EMBEDDING_SCHEMA, NODE_TABLE_NAME, EDGE_TABLE_NAME } from './schema';
-import { generateNodeCSV, generateEdgeCSV } from './csv-generator';
+import { 
+  NODE_TABLES, 
+  REL_TABLE_NAME,
+  SCHEMA_QUERIES, 
+  EMBEDDING_TABLE_NAME,
+  NodeTableName,
+} from './schema';
+import { generateAllCSVs } from './csv-generator';
 
 // Holds the reference to the dynamically loaded module
 let kuzu: any = null;
@@ -35,23 +41,25 @@ export const initKuzu = async () => {
     await kuzu.init();
     
     // 4. Create Database with 512MB buffer pool
-    // Larger buffer needed for embedding storage (6K+ nodes × 384 floats)
-    // Constructor: Database(path, bufferPoolSize, maxNumThreads, enableCompression, readOnly)
     const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
     db = new kuzu.Database(':memory:', BUFFER_POOL_SIZE);
     conn = new kuzu.Connection(db);
     
     if (import.meta.env.DEV) console.log('✅ KuzuDB WASM Initialized');
 
-    // 5. Initialize Schema (wrap in try-catch for re-run scenario)
-    try {
-      await conn.query(NODE_SCHEMA);
-      await conn.query(EDGE_SCHEMA);
-      await conn.query(EMBEDDING_SCHEMA);
-      if (import.meta.env.DEV) console.log('✅ KuzuDB Schema Created');
-    } catch {
-      // Schema might already exist, skip
+    // 5. Initialize Schema (all node tables, then rel tables, then embedding table)
+    for (const schemaQuery of SCHEMA_QUERIES) {
+      try {
+        await conn.query(schemaQuery);
+      } catch (e) {
+        // Schema might already exist, skip
+        if (import.meta.env.DEV) {
+          console.warn('Schema creation skipped (may already exist):', e);
+        }
+      }
     }
+    
+    if (import.meta.env.DEV) console.log('✅ KuzuDB Multi-Table Schema Created');
 
     return { db, conn, kuzu };
   } catch (error) {
@@ -62,6 +70,7 @@ export const initKuzu = async () => {
 
 /**
  * Load a KnowledgeGraph into KuzuDB using COPY FROM (bulk load)
+ * Uses batched CSV writes and COPY statements for optimal performance
  */
 export const loadGraphToKuzu = async (
   graph: KnowledgeGraph, 
@@ -70,48 +79,112 @@ export const loadGraphToKuzu = async (
   const { conn, kuzu } = await initKuzu();
   
   try {
-    if (import.meta.env.DEV) console.log(`KuzuDB: Serializing ${graph.nodeCount} nodes...`);
+    if (import.meta.env.DEV) console.log(`KuzuDB: Generating CSVs for ${graph.nodeCount} nodes...`);
     
-    const nodesCSV = generateNodeCSV(graph, fileContents);
-    const edgesCSV = generateEdgeCSV(graph);
+    // 1. Generate all CSVs (per-table)
+    const csvData = generateAllCSVs(graph, fileContents);
     
     const fs = kuzu.FS;
-    const nodesPath = '/nodes.csv';
-    const edgesPath = '/edges.csv';
-
-    // Cleanup old files if they exist
-    try { await fs.unlink(nodesPath); } catch {}
-    try { await fs.unlink(edgesPath); } catch {}
-
-    // Write CSV files to virtual filesystem
-    await fs.writeFile(nodesPath, nodesCSV);
-    await fs.writeFile(edgesPath, edgesCSV);
     
+    // 2. Write all node CSVs to virtual filesystem
+    const nodeFiles: Array<{ table: NodeTableName; path: string }> = [];
+    for (const [tableName, csv] of csvData.nodes.entries()) {
+      // Skip empty CSVs (only header row)
+      if (csv.split('\n').length <= 1) continue;
+      
+      const path = `/${tableName.toLowerCase()}.csv`;
+      try { await fs.unlink(path); } catch {}
+      await fs.writeFile(path, csv);
+      nodeFiles.push({ table: tableName, path });
+    }
     
-    // Use HEADER=true because the CSV generator adds headers
-    // Use PARALLEL=false because content field has quoted newlines
-    // Explicitly list columns since CSV doesn't include 'embedding' (populated later via UPDATE)
-    await conn.query(`COPY ${NODE_TABLE_NAME}(id, label, name, filePath, startLine, endLine, content) FROM "${nodesPath}" (HEADER=true, PARALLEL=false)`);
-    await conn.query(`COPY ${EDGE_TABLE_NAME} FROM "${edgesPath}" (HEADER=true, PARALLEL=false)`);
+    // 3. Parse relation CSV and prepare for INSERT (COPY FROM doesn't work with multi-pair tables)
+    const relLines = csvData.relCSV.split('\n').slice(1).filter(line => line.trim());
+    const relCount = relLines.length;
     
-    // Verify results
-    const countRes = await conn.query(`MATCH (n:${NODE_TABLE_NAME}) RETURN count(n) AS cnt`);
-    const countRow = await countRes.getNext();
-    const nodeCount = countRow ? countRow.cnt || countRow[0] || 0 : 0;
+    if (import.meta.env.DEV) {
+      console.log(`KuzuDB: Wrote ${nodeFiles.length} node CSVs, ${relCount} relations to insert`);
+    }
     
-    if (import.meta.env.DEV) console.log(`✅ KuzuDB Bulk Load Complete. Nodes in DB: ${nodeCount}`);
+    // 4. COPY all node tables (must complete before rels due to FK constraints)
+    for (const { table, path } of nodeFiles) {
+      const copyQuery = getCopyQuery(table, path);
+      await conn.query(copyQuery);
+    }
+    
+    // 5. INSERT relations one by one (COPY doesn't work with multi-pair REL tables)
+    // Parse CSV format: "from","to","type"
+    let insertedRels = 0;
+    for (const line of relLines) {
+      try {
+        // Parse CSV - handle quoted fields
+        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)"/);
+        if (!match) continue;
+        
+        const [, fromId, toId, relType] = match;
+        
+        // Extract labels from node IDs (format: Label:path:name)
+        const fromLabel = fromId.split(':')[0];
+        const toLabel = toId.split(':')[0];
+        
+        // INSERT with explicit node matching
+        const insertQuery = `
+          MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'})
+          MATCH (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
+          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}'}]->(b)
+        `;
+        await conn.query(insertQuery);
+        insertedRels++;
+      } catch {
+        // Skip failed insertions (nodes might not exist)
+      }
+    }
+    
+    if (import.meta.env.DEV) {
+      console.log(`KuzuDB: Inserted ${insertedRels}/${relCount} relations`);
+    }
+    
+    // 6. Verify results
+    let totalNodes = 0;
+    for (const tableName of NODE_TABLES) {
+      try {
+        const countRes = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
+        const countRow = await countRes.getNext();
+        const count = countRow ? (countRow.cnt ?? countRow[0] ?? 0) : 0;
+        totalNodes += Number(count);
+      } catch {
+        // Table might be empty, skip
+      }
+    }
+    
+    if (import.meta.env.DEV) console.log(`✅ KuzuDB Bulk Load Complete. Total nodes: ${totalNodes}, edges: ${insertedRels}`);
 
-    // Cleanup
-    try { await fs.unlink(nodesPath); } catch {}
-    try { await fs.unlink(edgesPath); } catch {}
+    // 7. Cleanup CSV files
+    for (const { path } of nodeFiles) {
+      try { await fs.unlink(path); } catch {}
+    }
 
-    return { success: true, count: Number(nodeCount) };
+    return { success: true, count: totalNodes };
 
   } catch (error) {
     if (import.meta.env.DEV) console.error('❌ KuzuDB Bulk Load Failed:', error);
-    // Don't throw - let the app continue without KuzuDB
     return { success: false, count: 0 };
   }
+};
+
+/**
+ * Get the COPY query for a node table with correct column mapping
+ */
+const getCopyQuery = (table: NodeTableName, path: string): string => {
+  // File and Folder have different columns than code elements
+  if (table === 'File') {
+    return `COPY File(id, name, filePath, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  }
+  if (table === 'Folder') {
+    return `COPY Folder(id, name, filePath) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  }
+  // All code element tables: Function, Class, Interface, Method, CodeElement
+  return `COPY ${table}(id, name, filePath, startLine, endLine, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
 };
 
 /**
@@ -148,19 +221,29 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
   }
 
   try {
-    const nodeResult = await conn.query(`MATCH (n:${NODE_TABLE_NAME}) RETURN count(n) AS cnt`);
-    const edgeResult = await conn.query(`MATCH ()-[r:${EDGE_TABLE_NAME}]->() RETURN count(r) AS cnt`);
+    // Count nodes across all tables
+    let totalNodes = 0;
+    for (const tableName of NODE_TABLES) {
+      try {
+        const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
+        const nodeRow = await nodeResult.getNext();
+        totalNodes += Number(nodeRow?.cnt ?? nodeRow?.[0] ?? 0);
+      } catch {
+        // Table might not exist or be empty
+      }
+    }
     
-    const nodeRow = await nodeResult.getNext();
-    const edgeRow = await edgeResult.getNext();
+    // Count edges from single relation table
+    let totalEdges = 0;
+    try {
+      const edgeResult = await conn.query(`MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`);
+      const edgeRow = await edgeResult.getNext();
+      totalEdges = Number(edgeRow?.cnt ?? edgeRow?.[0] ?? 0);
+    } catch {
+      // Table might not exist or be empty
+    }
     
-    const nodeCount = nodeRow ? (nodeRow.cnt ?? nodeRow[0] ?? 0) : 0;
-    const edgeCount = edgeRow ? (edgeRow.cnt ?? edgeRow[0] ?? 0) : 0;
-    
-    return { 
-      nodes: Number(nodeCount), 
-      edges: Number(edgeCount) 
-    };
+    return { nodes: totalNodes, edges: totalEdges };
   } catch (error) {
     if (import.meta.env.DEV) {
       console.warn('Failed to get Kuzu stats:', error);
@@ -210,7 +293,6 @@ export const executePrepared = async (
   }
   
   try {
-    // Note: conn.prepare is async in kuzu-wasm
     const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
@@ -219,7 +301,6 @@ export const executePrepared = async (
     
     const result = await conn.execute(stmt, params);
     
-    // Collect all rows
     const rows: any[] = [];
     while (await result.hasNext()) {
       const row = await result.getNext();
@@ -236,9 +317,6 @@ export const executePrepared = async (
 
 /**
  * Execute a prepared statement with multiple parameter sets in small sub-batches
- * Recreates statement every SUB_BATCH_SIZE executions to allow memory cleanup
- * @param cypher - Cypher query with $param placeholders
- * @param paramsList - Array of parameter objects to execute
  */
 export const executeWithReusedStatement = async (
   cypher: string,
@@ -250,13 +328,11 @@ export const executeWithReusedStatement = async (
   
   if (paramsList.length === 0) return;
   
-  // Small sub-batch to allow memory cleanup between statement recreations
   const SUB_BATCH_SIZE = 4;
   
   for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
     const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
     
-    // Create fresh statement for each sub-batch
     const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
@@ -271,7 +347,6 @@ export const executeWithReusedStatement = async (
       await stmt.close();
     }
     
-    // Small delay to allow garbage collection between sub-batches
     if (i + SUB_BATCH_SIZE < paramsList.length) {
       await new Promise(r => setTimeout(r, 0));
     }
@@ -280,7 +355,6 @@ export const executeWithReusedStatement = async (
 
 /**
  * Test if array parameters work with prepared statements
- * This is a diagnostic function to check KuzuDB WASM capabilities
  */
 export const testArrayParams = async (): Promise<{ success: boolean; error?: string }> => {
   if (!conn) {
@@ -288,36 +362,38 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
   }
   
   try {
-    // Test with a simple array parameter
     const testEmbedding = new Array(384).fill(0).map((_, i) => i / 384);
     
-    // First, get any node ID to test with
-    const nodeResult = await conn.query(`MATCH (n:${NODE_TABLE_NAME}) RETURN n.id AS id LIMIT 1`);
-    const nodeRow = await nodeResult.getNext();
+    // Get any node ID to test with (try File first, then others)
+    let testNodeId: string | null = null;
+    for (const tableName of NODE_TABLES) {
+      try {
+        const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`);
+        const nodeRow = await nodeResult.getNext();
+        if (nodeRow) {
+          testNodeId = nodeRow.id ?? nodeRow[0];
+          break;
+        }
+      } catch {}
+    }
     
-    if (!nodeRow) {
+    if (!testNodeId) {
       return { success: false, error: 'No nodes found to test with' };
     }
     
-    const testNodeId = nodeRow.id ?? nodeRow[0];
-    
     if (import.meta.env.DEV) {
       console.log('🧪 Testing array params with node:', testNodeId);
-      console.log('🧪 Embedding sample (first 5):', testEmbedding.slice(0, 5));
     }
     
-    // Try using prepared statement with array param
-    // Note: conn.prepare is async in kuzu-wasm
-    const cypher = `MATCH (n:${NODE_TABLE_NAME} {id: $nodeId}) SET n.embedding = $embedding`;
-    const stmt = await conn.prepare(cypher);
+    // First create an embedding entry
+    const createQuery = `CREATE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId, embedding: $embedding})`;
+    const stmt = await conn.prepare(createQuery);
     
-    // In async API, isSuccess() returns boolean directly
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       return { success: false, error: `Prepare failed: ${errMsg}` };
     }
     
-    // Execute with array parameter
     await conn.execute(stmt, {
       nodeId: testNodeId,
       embedding: testEmbedding,
@@ -327,7 +403,7 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     
     // Verify it was stored
     const verifyResult = await conn.query(
-      `MATCH (n:${NODE_TABLE_NAME} {id: '${testNodeId}'}) RETURN n.embedding AS emb`
+      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
     );
     const verifyRow = await verifyResult.getNext();
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
