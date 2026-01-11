@@ -146,7 +146,15 @@ export const cloneRepository = async (
  */
 const readAllFiles = async (baseDir: string, currentDir: string): Promise<FileEntry[]> => {
   const files: FileEntry[] = [];
-  const entries = await pfs.readdir(currentDir);
+  
+  let entries: string[];
+  try {
+    entries = await pfs.readdir(currentDir);
+  } catch (err) {
+    // Directory might not exist or be inaccessible
+    console.warn(`Cannot read directory: ${currentDir}`);
+    return files;
+  }
 
   for (const entry of entries) {
     // Skip .git directory
@@ -158,7 +166,17 @@ const readAllFiles = async (baseDir: string, currentDir: string): Promise<FileEn
     // Check ignore rules
     if (shouldIgnorePath(relativePath)) continue;
 
-    const stat = await pfs.stat(fullPath);
+    // Try to stat the file - skip if it fails (broken symlinks, etc.)
+    let stat;
+    try {
+      stat = await pfs.stat(fullPath);
+    } catch {
+      // Skip files that can't be stat'd (broken symlinks, permission issues)
+      if (import.meta.env.DEV) {
+        console.warn(`Skipping unreadable entry: ${relativePath}`);
+      }
+      continue;
+    }
 
     if (stat.isDirectory()) {
       // Recurse into subdirectory
