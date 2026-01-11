@@ -14,9 +14,7 @@ Currently supports Python, Js, TS ( Go, Java, C work in progress )
 
 
 
-https://github.com/user-attachments/assets/f36861c4-33a7-498f-b597-cb656d0e6b9b
-
-
+https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
 
 
 
