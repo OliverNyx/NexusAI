@@ -1,6 +1,10 @@
 # GitNexus V2
 
 **Zero-Server, Graph-Based Code Intelligence Engine**
+Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST parsing, all happens inside browser)
+
+https://gitnexus.vercel.app
+Being client sided, it costs me zero to deploy, so you can use it for free :-) (would love a ⭐ though)
 
 > *Like DeepWiki, but deeper.* 😉
 
