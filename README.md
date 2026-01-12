@@ -14,6 +14,8 @@ That's the difference between:
 - "What does this function do?" → *understanding*
 - "What breaks if I change this function?" → *analysis*
 
+https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
+
 **Some quick tech jargon:**
 - **Enhanced Search**: BM25 + Semantic + 1-hop graph expansion via Cypher
 - **Full WASM Stack**: Tree-sitter parsing + KuzuDB graph database, all in-browser
@@ -36,7 +38,7 @@ That's the difference between:
 
 **Supports:** TypeScript, JavaScript, Python (Go, Java, C in progress)
 
-https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
+<img width="2550" height="1343" alt="gitnexus_img" src="https://github.com/user-attachments/assets/cc5d637d-e0e5-48e6-93ff-5bcfdb929285" />
 
 ---
 
