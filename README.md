@@ -2,7 +2,7 @@
 
 **Zero-Server, Graph-Based Code Intelligence Engine**
 
-> *Like DeepWiki, but deeper.* 🕳️
+> *Like DeepWiki, but deeper.* 😉
 
 DeepWiki helps you *understand* code. GitNexus lets you *analyze* it—because a knowledge graph tracks every dependency, call chain, and relationship. 
 
@@ -11,11 +11,14 @@ That's the difference between:
 - "What breaks if I change this function?" → *analysis*
 
 **What you can do:**
-- 🔍 **Codebase-wide audits** — Find layer violations, forbidden dependencies
-- 💥 **Blast radius analysis** — See every function affected by a change
-- 🧹 **Dead code detection** — Identify orphaned nodes with zero incoming calls
-- 🔗 **Dependency tracing** — Follow import chains across the entire codebase
-- 💬 **AI chat with citations** — Ask questions, get answers with `[[file:line]]` proof
+
+| Capability | Description |
+|------------|-------------|
+| **Codebase-wide audits** | Find layer violations, forbidden dependencies |
+| **Blast radius analysis** | See every function affected by a change |
+| **Dead code detection** | Identify orphaned nodes with zero incoming calls |
+| **Dependency tracing** | Follow import chains across the entire codebase |
+| **AI analyses with citations** | Ask questions, analyze, get answers with `[[file:line]]` proof |
 
 **100% client-side.** Your code never leaves your browser.
 
