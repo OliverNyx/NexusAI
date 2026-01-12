@@ -22,7 +22,7 @@ interface HeaderProps {
 }
 
 export const Header = ({ onFocusNode }: HeaderProps) => {
-  const { projectName, graph, openChatPanel, isRightPanelOpen, rightPanelTab } = useAppState();
+  const { projectName, graph, openChatPanel, isRightPanelOpen, rightPanelTab, setSettingsPanelOpen } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -35,7 +35,7 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
   // Search results - filter nodes by name
   const searchResults = useMemo(() => {
     if (!graph || !searchQuery.trim()) return [];
-    
+
     const query = searchQuery.toLowerCase();
     return graph.nodes
       .filter(node => node.properties.name.toLowerCase().includes(query))
@@ -73,7 +73,7 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
   // Handle keyboard navigation in results
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!isSearchOpen || searchResults.length === 0) return;
-    
+
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setSelectedIndex(i => Math.min(i + 1, searchResults.length - 1));
@@ -140,7 +140,7 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
             ⌘K
           </kbd>
         </div>
-        
+
         {/* Search Results Dropdown */}
         {isSearchOpen && searchQuery.trim() && (
           <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
@@ -154,14 +154,13 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
                   <button
                     key={node.id}
                     onClick={() => handleSelectNode(node)}
-                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${
-                      index === selectedIndex 
-                        ? 'bg-accent/20 text-text-primary' 
-                        : 'hover:bg-hover text-text-secondary'
-                    }`}
+                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${index === selectedIndex
+                      ? 'bg-accent/20 text-text-primary'
+                      : 'hover:bg-hover text-text-secondary'
+                      }`}
                   >
                     {/* Node type indicator */}
-                    <span 
+                    <span
                       className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                       style={{ backgroundColor: NODE_TYPE_COLORS[node.label] || '#6b7280' }}
                     />
@@ -208,7 +207,11 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
         <EmbeddingStatus />
 
         {/* Icon buttons */}
-        <button className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
+        <button
+          onClick={() => setSettingsPanelOpen(true)}
+          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+          title="AI Settings"
+        >
           <Settings className="w-[18px] h-[18px]" />
         </button>
         <button className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
@@ -221,7 +224,7 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
           className={`
             flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition-all
             ${isRightPanelOpen && rightPanelTab === 'chat'
-              ? 'bg-accent text-white shadow-glow' 
+              ? 'bg-accent text-white shadow-glow'
               : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:shadow-lg hover:-translate-y-0.5'
             }
           `}

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Sparkles, User,
-  PanelRightClose, Loader2, Settings, AlertTriangle
+  PanelRightClose, Loader2, AlertTriangle
 } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -43,7 +43,6 @@ export const RightPanel = () => {
     agentError,
     isAgentReady,
     isAgentInitializing,
-    setSettingsPanelOpen,
     sendChatMessage,
     clearChat,
   } = useAppState();
@@ -290,8 +289,9 @@ export const RightPanel = () => {
   };
 
   const chatSuggestions = [
+    'Explain the project architecture',
     'What does this project do?',
-    'Show me the entry point',
+    'Show me the most important files',
     'Find all API handlers',
   ];
 
@@ -332,13 +332,6 @@ export const RightPanel = () => {
                 <Loader2 className="w-3 h-3 animate-spin" /> Connecting
               </span>
             )}
-            <button
-              onClick={() => setSettingsPanelOpen(true)}
-              className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-hover transition-colors"
-              title="AI Settings"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
           </div>
         </div>
 

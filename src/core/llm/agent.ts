@@ -7,13 +7,14 @@
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { SystemMessage } from '@langchain/core/messages';
-import { AzureChatOpenAI } from '@langchain/openai';
+import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools } from './tools';
 import type { 
   ProviderConfig, 
+  OpenAIConfig,
   AzureOpenAIConfig, 
   GeminiConfig,
   AnthropicConfig,
@@ -109,6 +110,20 @@ GOOD: A["User Data"] --> B["Process and Save"]
 `;
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
+    case 'openai': {
+      const openaiConfig = config as OpenAIConfig;
+      return new ChatOpenAI({
+        openAIApiKey: openaiConfig.apiKey,
+        modelName: openaiConfig.model,
+        temperature: openaiConfig.temperature ?? 0.1,
+        maxTokens: openaiConfig.maxTokens,
+        configuration: openaiConfig.baseUrl ? {
+          baseURL: openaiConfig.baseUrl,
+        } : undefined,
+        streaming: true,
+      });
+    }
+    
     case 'azure-openai': {
       const azureConfig = config as AzureOpenAIConfig;
       return new AzureChatOpenAI({
