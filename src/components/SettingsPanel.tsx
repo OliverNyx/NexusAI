@@ -22,13 +22,13 @@ const fetchGeminiModels = async (apiKey: string): Promise<string[]> => {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
     );
-    
+
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
     }
-    
+
     const data = await response.json();
-    
+
     // Filter for chat-capable models and extract model names
     const models = (data.models || [])
       .filter((model: any) => {
@@ -49,7 +49,7 @@ const fetchGeminiModels = async (apiKey: string): Promise<string[]> => {
         };
         return score(a) - score(b) || a.localeCompare(b);
       });
-    
+
     return models;
   } catch (error) {
     console.warn('Failed to fetch Gemini models:', error);
@@ -61,7 +61,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
-  
+
   // Gemini model fetching state
   const [geminiModels, setGeminiModels] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -87,14 +87,14 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
       setGeminiModels([]);
       return;
     }
-    
+
     setIsLoadingModels(true);
     setModelFetchError(null);
-    
+
     const models = await fetchGeminiModels(apiKey);
-    
+
     setIsLoadingModels(false);
-    
+
     if (models.length > 0) {
       setGeminiModels(models);
       setModelFetchError(null);
@@ -136,14 +136,14 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['gemini', 'anthropic', 'azure-openai'];
-  
-  const availableGeminiModels = geminiModels.length > 0 
-    ? geminiModels 
+  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai'];
+
+  const availableGeminiModels = geminiModels.length > 0
+    ? geminiModels
     : getAvailableModels('gemini');
   const currentGeminiModel = settings.gemini?.model ?? 'gemini-2.0-flash';
   const isCustomModelSelected = !availableGeminiModels.includes(currentGeminiModel);
-  
+
   const availableAnthropicModels = getAvailableModels('anthropic');
   const currentAnthropicModel = settings.anthropic?.model ?? 'claude-sonnet-4-20250514';
   const isCustomAnthropicModelSelected = !availableAnthropicModels.includes(currentAnthropicModel);
@@ -201,13 +201,91 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : '☁️'}
+                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
               ))}
             </div>
           </div>
+
+          {/* OpenAI Settings */}
+          {settings.activeProvider === 'openai' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Key className="w-4 h-4" />
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey['openai'] ? 'text' : 'password'}
+                    value={settings.openai?.apiKey ?? ''}
+                    onChange={e => setSettings(prev => ({
+                      ...prev,
+                      openai: { ...prev.openai!, apiKey: e.target.value }
+                    }))}
+                    placeholder="Enter your OpenAI API key"
+                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleApiKeyVisibility('openai')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    {showApiKey['openai'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  Get your API key from{' '}
+                  <a
+                    href="https://platform.openai.com/api-keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    OpenAI Platform
+                  </a>
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Model</label>
+                <select
+                  value={settings.openai?.model ?? 'gpt-4o'}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    openai: { ...prev.openai!, model: e.target.value }
+                  }))}
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all appearance-none cursor-pointer"
+                >
+                  {getAvailableModels('openai').map(model => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Server className="w-4 h-4" />
+                  Base URL <span className="text-text-muted font-normal">(optional)</span>
+                </label>
+                <input
+                  type="url"
+                  value={settings.openai?.baseUrl ?? ''}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    openai: { ...prev.openai!, baseUrl: e.target.value }
+                  }))}
+                  placeholder="https://api.openai.com/v1 (default)"
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                />
+                <p className="text-xs text-text-muted">
+                  Leave empty to use the default OpenAI API. Set a custom URL for proxies or compatible APIs.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Gemini Settings */}
           {settings.activeProvider === 'gemini' && (
@@ -276,7 +354,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     )}
                   </div>
                 </div>
-                
+
                 {/* Model selector or manual input */}
                 {(useCustomModel || isCustomModelSelected) ? (
                   <div className="space-y-2">
@@ -329,7 +407,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     </button>
                   </div>
                 )}
-                
+
                 {modelFetchError && !useCustomModel && (
                   <p className="text-xs text-amber-400 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3" />
@@ -339,7 +417,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
               </div>
             </div>
           )}
-          
+
           {/* Anthropic Settings */}
           {settings.activeProvider === 'anthropic' && (
             <div className="space-y-4 animate-fade-in">
@@ -379,10 +457,10 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                   </a>
                 </p>
               </div>
-              
+
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-secondary">Model</label>
-                
+
                 {(useCustomAnthropicModel || isCustomAnthropicModelSelected) ? (
                   <div className="space-y-2">
                     <input
@@ -549,7 +627,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                 🔒
               </div>
               <div className="text-xs text-text-muted leading-relaxed">
-                <span className="text-text-secondary font-medium">Privacy:</span> Your API keys are stored only in your browser's local storage. 
+                <span className="text-text-secondary font-medium">Privacy:</span> Your API keys are stored only in your browser's local storage.
                 They're sent directly to the LLM provider when you chat. Your code never leaves your machine.
               </div>
             </div>

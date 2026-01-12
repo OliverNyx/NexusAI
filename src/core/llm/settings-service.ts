@@ -261,6 +261,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
  */
 export const getAvailableModels = (provider: LLMProvider): string[] => {
   switch (provider) {
+    case 'openai':
+      return ['gpt-4.5-preview', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];
     case 'azure-openai':
       // Azure models depend on deployment, so we show common ones
       return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
