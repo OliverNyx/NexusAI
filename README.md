@@ -1,6 +1,10 @@
 # GitNexus V2
 
 **Zero-Server, Graph-Based Code Intelligence Engine**
+Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST parsing, all happens inside browser)
+
+https://gitnexus.vercel.app
+Being client sided, it costs me zero to deploy, so you can use it for free :-) (would love a ⭐ though)
 
 > *Like DeepWiki, but deeper.* 😉
 
@@ -9,6 +13,14 @@ DeepWiki helps you *understand* code. GitNexus lets you *analyze* it—because a
 That's the difference between:
 - "What does this function do?" → *understanding*
 - "What breaks if I change this function?" → *analysis*
+
+**Some quick tech jargon:**
+- **Enhanced Search**: BM25 + Semantic + 1-hop graph expansion via Cypher
+- **Full WASM Stack**: Tree-sitter parsing + KuzuDB graph database, all in-browser
+- **Repo Map**: Complete code knowledge graph with CALLS, IMPORTS, EXTENDS relations
+- **Vector Index**: HNSW embeddings for semantic similarity search
+- **Cypher Queries**: Relational analysis for accurate context retrieval
+- **Grounded AI**: Every answer cites `[[file:line]]` as proof
 
 **What you can do:**
 
@@ -28,33 +40,37 @@ https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
 
 ---
 
-## 🤔 Why a Knowledge Graph?
+## 🔍 The Problem with AI Coding Tools
 
-Most coding tools use **grep**, **semantic search**, or at best **LSP**. Here's why that's not enough:
+Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful—but they share a fundamental limitation: **they don't truly know your codebase structure**.
 
-| Approach | What It Does | What It Misses |
-|----------|--------------|----------------|
-| **Grep** | Text matching | No understanding of code structure |
-| **Semantic/Embeddings** | "Similar" code by meaning | Doesn't know what *calls* what |
-| **LSP** | Jump-to-definition, references | Limited to current project, no cross-file call chains |
+| Tool | Context Strategy | The Gap |
+|------|------------------|---------|
+| **Cursor** | Files in tabs + embeddings | No call graph. Can't trace "what calls this?" |
+| **Claude Code** | File search + grep | Text-based. Misses semantic connections |
+| **Cline/Roo Code** | Repo map + tree-sitter | Static structure. No runtime dependencies tracked |
+| **Windsurf** | Cascade context | Limited dependency depth |
 
-**The problem for AI coding tools:** When an LLM modifies code, it might not see the full blast radius. It edits `UserService.validate()` without knowing 47 other functions depend on its return type. Result: breaking changes.
+**What happens:**
+1. AI edits `UserService.validate()` 
+2. Doesn't know 47 functions depend on its return type
+3. **Breaking changes ship** 💥
 
-**The knowledge graph solution:**
+### The Solution: Graph Coverage
+
+A knowledge graph tracks **actual relationships**, not just file contents:
 
 ```mermaid
 graph LR
-    EDIT[LLM edits UserService.validate] --> QUERY[Graph Query: What depends on this?]
+    EDIT[AI wants to edit UserService.validate] --> QUERY[Graph Query: What depends on this?]
     QUERY --> DEPS["47 callers across 12 files"]
-    DEPS --> SAFE[AI sees full impact before changing]
+    DEPS --> SAFE[AI sees full blast radius first]
 ```
 
-Unlike grep (text) or embeddings (similarity), a knowledge graph tracks **actual relationships**:
-- Who **calls** this function?
-- What **imports** this module?
-- What **extends** this class?
+**Current state:** GitNexus is a standalone tool—a better DeepWiki that's 100% client-side with graph-powered analysis.
 
-This enables accurate **blast radius analysis** and **dependency auditing**—capabilities that grep-based or embedding-only tools simply can't provide.
+**Future goal (MCP):** Expose GitNexus as an MCP server so tools like Cursor and Claude Code can query it for accurate context. They ask "what calls X?", GitNexus returns the actual call graph. No more guessing.
+
 
 ---
 
