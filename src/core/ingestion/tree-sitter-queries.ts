@@ -53,6 +53,20 @@ export const TYPESCRIPT_QUERIES = `
 (call_expression
   function: (member_expression
     property: (property_identifier) @call.name)) @call
+
+; Heritage queries - class extends
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (extends_clause
+      value: (identifier) @heritage.extends))) @heritage
+
+; Heritage queries - class implements interface
+(class_declaration
+  name: (type_identifier) @heritage.class
+  (class_heritage
+    (implements_clause
+      (type_identifier) @heritage.implements))) @heritage.impl
 `;
 
 // JavaScript queries - works with tree-sitter-javascript  
@@ -97,6 +111,13 @@ export const JAVASCRIPT_QUERIES = `
 (call_expression
   function: (member_expression
     property: (property_identifier) @call.name)) @call
+
+; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
+; In tree-sitter-javascript, class_heritage directly contains the parent identifier
+(class_declaration
+  name: (identifier) @heritage.class
+  (class_heritage
+    (identifier) @heritage.extends)) @heritage
 `;
 
 // Python queries - works with tree-sitter-python
@@ -119,6 +140,12 @@ export const PYTHON_QUERIES = `
 (call
   function: (attribute
     attribute: (identifier) @call.name)) @call
+
+; Heritage queries - Python class inheritance
+(class_definition
+  name: (identifier) @heritage.class
+  superclasses: (argument_list
+    (identifier) @heritage.extends)) @heritage
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {

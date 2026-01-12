@@ -27,14 +27,14 @@ const EXAMPLE_QUERIES = [
 
 export const QueryFAB = () => {
   const { setHighlightedNodeIds, setQueryResult, queryResult, clearQueryHighlights, graph, runQuery, isDatabaseReady } = useAppState();
-  
+
   const [isExpanded, setIsExpanded] = useState(false);
   const [query, setQuery] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(false);
   const [showResults, setShowResults] = useState(true);
-  
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -67,7 +67,7 @@ export const QueryFAB = () => {
 
   const handleRunQuery = useCallback(async () => {
     if (!query.trim() || isRunning) return;
-    
+
     if (!graph) {
       setError('No project loaded. Load a project first.');
       return;
@@ -81,25 +81,52 @@ export const QueryFAB = () => {
 
     setIsRunning(true);
     setError(null);
-    
+
     const startTime = performance.now();
-    
+
     try {
       const rows = await runQuery(query);
       const executionTime = performance.now() - startTime;
-      
-      // Extract node IDs - handle both array and object formats
-      // First column should be the ID when using example queries
+
+      // Extract node IDs from results - handles various formats
+      // 1. Array format: first element if it looks like a node ID
+      // 2. Object format: any field ending with 'id' (case-insensitive)
+      // 3. Values matching node ID pattern: Label:path:name
+      const nodeIdPattern = /^(File|Function|Class|Method|Interface|Folder|CodeElement):/;
+
       const nodeIds = rows
         .flatMap(row => {
+          const ids: string[] = [];
+
           if (Array.isArray(row)) {
-            return [row[0]];
+            // Array format - check all elements for node ID patterns
+            row.forEach(val => {
+              if (typeof val === 'string' && (nodeIdPattern.test(val) || val.includes(':'))) {
+                ids.push(val);
+              }
+            });
+          } else if (typeof row === 'object' && row !== null) {
+            // Object format - check fields ending with 'id' and values matching patterns
+            Object.entries(row).forEach(([key, val]) => {
+              const keyLower = key.toLowerCase();
+              if (typeof val === 'string') {
+                // Field name contains 'id'
+                if (keyLower.includes('id') || keyLower === 'id') {
+                  ids.push(val);
+                }
+                // Value matches node ID pattern
+                else if (nodeIdPattern.test(val)) {
+                  ids.push(val);
+                }
+              }
+            });
           }
-          return [row.id, row.ID, row['n.id'], row['a.id'], row['b.id']].filter(Boolean);
+
+          return ids;
         })
         .filter(Boolean)
         .filter((id, index, arr) => arr.indexOf(id) === index);
-      
+
       setQueryResult({ rows, nodeIds, executionTime });
       setHighlightedNodeIds(new Set(nodeIds));
     } catch (err) {
@@ -338,7 +365,7 @@ export const QueryFAB = () => {
               </button>
             </div>
           </div>
-          
+
           {showResults && queryResult.rows.length > 0 && (
             <div className="max-h-48 overflow-auto scrollbar-thin border-t border-border-subtle">
               <table className="w-full text-xs">

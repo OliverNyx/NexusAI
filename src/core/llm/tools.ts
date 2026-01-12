@@ -186,15 +186,17 @@ export const createGraphRAGTools = (
     },
     {
       name: 'cypher',
-      description: `Execute a Cypher query against the code graph. Use for structural queries like finding callers, tracing imports, or custom traversals.
+      description: `Execute a Cypher query against the code graph. Use for structural queries like finding callers, tracing imports, class inheritance, or custom traversals.
 
 Node tables: File, Folder, Function, Class, Interface, Method, CodeElement
-Relation: CodeRelation (single table with 'type' property: CONTAINS, DEFINES, IMPORTS, CALLS)
+Relation: CodeRelation (single table with 'type' property: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS)
 
 Example queries:
+- Functions calling a function: MATCH (caller:Function)-[:CodeRelation {type: 'CALLS'}]->(fn:Function {name: 'validate'}) RETURN caller.name, caller.filePath
+- Class inheritance: MATCH (child:Class)-[:CodeRelation {type: 'EXTENDS'}]->(parent:Class) RETURN child.name, parent.name
+- Classes implementing interface: MATCH (c:Class)-[:CodeRelation {type: 'IMPLEMENTS'}]->(i:Interface) RETURN c.name, i.name
 - Files importing a file: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(target:File) WHERE target.name = 'utils.ts' RETURN f.name
-- Functions defined in file: MATCH (f:File {name: 'main.ts'})-[:CodeRelation {type: 'DEFINES'}]->(fn:Function) RETURN fn.name
-- All connections: MATCH (f:File {name: 'index.ts'})-[r:CodeRelation]-(m) RETURN m.name, r.type
+- All connections: MATCH (n)-[r:CodeRelation]-(m) WHERE n.name = 'MyClass' RETURN m.name, r.type
 
 For semantic+graph queries, include {{QUERY_VECTOR}} placeholder and provide a 'query' parameter:
 CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance

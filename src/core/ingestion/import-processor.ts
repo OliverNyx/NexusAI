@@ -86,8 +86,17 @@ export const processImports = async (
     try {
       query = parser.getLanguage().query(queryStr);
       matches = query.matches(tree.rootNode);
-    } catch (queryError) {
-      console.warn(`Query error for ${file.path}:`, queryError);
+    } catch (queryError: any) {
+      // Detailed debug logging for query failures
+      console.group(`🔴 Query Error: ${file.path}`);
+      console.log('Language:', language);
+      console.log('Query (first 200 chars):', queryStr.substring(0, 200) + '...');
+      console.log('Error:', queryError?.message || queryError);
+      console.log('File content (first 300 chars):', file.content.substring(0, 300));
+      console.log('AST root type:', tree.rootNode?.type);
+      console.log('AST has errors:', tree.rootNode?.hasError);
+      console.groupEnd();
+      
       if (wasReparsed) tree.delete();
       continue;
     }

@@ -4,6 +4,7 @@ import { processStructure } from './structure-processor';
 import { processParsing } from './parsing-processor';
 import { processImports, createImportMap } from './import-processor';
 import { processCalls } from './call-processor';
+import { processHeritage } from './heritage-processor';
 import { createSymbolTable } from './symbol-table';
 import { createASTCache } from './ast-cache';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline';
@@ -131,11 +132,29 @@ export const runPipelineFromFiles = async (
   });
 
   await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
-    const callProgress = 82 + ((current / total) * 16);
+    const callProgress = 82 + ((current / total) * 10);
     onProgress({
       phase: 'calls',
       percent: Math.round(callProgress),
       message: 'Tracing function calls...',
+      stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    });
+  });
+
+  // Phase 6: Heritage - Class inheritance (92-98%)
+  onProgress({
+    phase: 'heritage',
+    percent: 92,
+    message: 'Extracting class inheritance...',
+    stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
+  });
+
+  await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
+    const heritageProgress = 92 + ((current / total) * 6);
+    onProgress({
+      phase: 'heritage',
+      percent: Math.round(heritageProgress),
+      message: 'Extracting class inheritance...',
       stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
     });
   });

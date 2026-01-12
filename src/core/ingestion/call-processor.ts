@@ -7,6 +7,81 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
 
+/**
+ * Node types that represent function/method definitions across languages.
+ * Used to find the enclosing function for a call site.
+ */
+const FUNCTION_NODE_TYPES = new Set([
+  // TypeScript/JavaScript
+  'function_declaration',
+  'arrow_function',
+  'function_expression',
+  'method_definition',
+  'generator_function_declaration',
+  // Python
+  'function_definition',
+  // Common async variants
+  'async_function_declaration',
+  'async_arrow_function',
+]);
+
+/**
+ * Walk up the AST from a node to find the enclosing function/method.
+ * Returns null if the call is at module/file level (top-level code).
+ */
+const findEnclosingFunction = (
+  node: any,
+  filePath: string,
+  symbolTable: SymbolTable
+): string | null => {
+  let current = node.parent;
+  
+  while (current) {
+    if (FUNCTION_NODE_TYPES.has(current.type)) {
+      // Found enclosing function - try to get its name
+      let funcName: string | null = null;
+      
+      // Different node types have different name locations
+      if (current.type === 'function_declaration' || 
+          current.type === 'function_definition' ||
+          current.type === 'async_function_declaration' ||
+          current.type === 'generator_function_declaration') {
+        // Named function: function foo() {}
+        const nameNode = current.childForFieldName?.('name') || 
+                         current.children?.find((c: any) => c.type === 'identifier' || c.type === 'property_identifier');
+        funcName = nameNode?.text;
+      } else if (current.type === 'method_definition') {
+        // Method: foo() {} inside class
+        const nameNode = current.childForFieldName?.('name') ||
+                         current.children?.find((c: any) => c.type === 'property_identifier');
+        funcName = nameNode?.text;
+      } else if (current.type === 'arrow_function' || current.type === 'function_expression') {
+        // Arrow/expression: const foo = () => {} - check parent variable declarator
+        const parent = current.parent;
+        if (parent?.type === 'variable_declarator') {
+          const nameNode = parent.childForFieldName?.('name') ||
+                           parent.children?.find((c: any) => c.type === 'identifier');
+          funcName = nameNode?.text;
+        }
+      }
+      
+      if (funcName) {
+        // Look up the function in symbol table to get its node ID
+        const nodeId = symbolTable.lookupExact(filePath, funcName);
+        if (nodeId) return nodeId;
+        
+        // Fallback: generate ID based on name and file
+        return generateId('Function', `${filePath}:${funcName}`);
+      }
+      
+      // Couldn't determine function name - try parent (might be nested)
+    }
+    current = current.parent;
+  }
+  
+  return null; // Top-level call (not inside any function)
+};
+
 export const processCalls = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
@@ -78,9 +153,14 @@ export const processCalls = async (
 
       if (!targetNodeId) return;
 
-      // 5. Create CALLS relationship (File -> Function/Method)
-      const sourceId = generateId('File', file.path);
-      const relId = generateId('CALLS', `${file.path}:${calledName}->${targetNodeId}`);
+      // 5. Find the enclosing function (caller)
+      const callNode = captureMap['call'];
+      const enclosingFuncId = findEnclosingFunction(callNode, file.path, symbolTable);
+      
+      // Use enclosing function as source, fallback to file for top-level calls
+      const sourceId = enclosingFuncId || generateId('File', file.path);
+      
+      const relId = generateId('CALLS', `${sourceId}:${calledName}->${targetNodeId}`);
 
       graph.addRelationship({
         id: relId,
