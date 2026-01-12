@@ -646,44 +646,65 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
               }
               updateMessage();
 
-              // Parse inline grounding references like [[src/file.ts:10-25]]
-              // and add them to the Code References panel.
+              // Parse inline grounding references and add them to the Code References panel.
+              // Supports: [[file.ts:10-25]] (file refs) and [[Class:View]] (node refs)
               const currentContentStep = stepsForMessage[stepsForMessage.length - 1];
               const fullText = (currentContentStep && currentContentStep.type === 'content')
                 ? (currentContentStep.content || '')
                 : '';
 
-              const refRegex = /\[\[([^\]\n]+?)\]\]/g;
-              let match: RegExpExecArray | null;
-              while ((match = refRegex.exec(fullText)) !== null) {
-                const inner = match[1].trim();
-                if (!inner) continue;
-
-                let rawPath = inner;
-                let startLine1: number | undefined;
-                let endLine1: number | undefined;
-
-                const lineMatch = inner.match(/^(.*):(\d+)(?:-(\d+))?$/);
-                if (lineMatch) {
-                  rawPath = lineMatch[1].trim();
-                  startLine1 = parseInt(lineMatch[2], 10);
-                  endLine1 = parseInt(lineMatch[3] || lineMatch[2], 10);
-                }
+              // Pattern 1: File refs - [[path/file.ext]] or [[path/file.ext:line]] or [[path/file.ext:line-line]]
+              // Line numbers are optional
+              const fileRefRegex = /\[\[([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(?::(\d+)(?:[-–](\d+))?)?\]\]/g;
+              let fileMatch: RegExpExecArray | null;
+              while ((fileMatch = fileRefRegex.exec(fullText)) !== null) {
+                const rawPath = fileMatch[1].trim();
+                const startLine1 = fileMatch[2] ? parseInt(fileMatch[2], 10) : undefined;
+                const endLine1 = fileMatch[3] ? parseInt(fileMatch[3], 10) : startLine1;
 
                 const resolvedPath = resolveFilePath(rawPath);
                 if (!resolvedPath) continue;
 
-                const startLine0 = startLine1 ? Math.max(0, startLine1 - 1) : 0;
-                const endLine0 = endLine1 ? Math.max(0, endLine1 - 1) : startLine0;
+                const startLine0 = startLine1 !== undefined ? Math.max(0, startLine1 - 1) : undefined;
+                const endLine0 = endLine1 !== undefined ? Math.max(0, endLine1 - 1) : startLine0;
                 const nodeId = findFileNodeId(resolvedPath);
 
                 addCodeReference({
                   filePath: resolvedPath,
-                  startLine: startLine1 ? startLine0 : undefined,
-                  endLine: endLine1 ? endLine0 : (startLine1 ? startLine0 : undefined),
+                  startLine: startLine0,
+                  endLine: endLine0,
                   nodeId,
                   label: 'File',
                   name: resolvedPath.split('/').pop() ?? resolvedPath,
+                  source: 'ai',
+                });
+              }
+
+              // Pattern 2: Node refs - [[Type:Name]] or [[graph:Type:Name]]
+              const nodeRefRegex = /\[\[(?:graph:)?(Class|Function|Method|Interface|File|Folder|Variable|Enum|Type|CodeElement):([^\]]+)\]\]/g;
+              let nodeMatch: RegExpExecArray | null;
+              while ((nodeMatch = nodeRefRegex.exec(fullText)) !== null) {
+                const nodeType = nodeMatch[1];
+                const nodeName = nodeMatch[2].trim();
+
+                // Find node in graph
+                if (!graph) continue;
+                const node = graph.nodes.find(n =>
+                  n.label === nodeType &&
+                  n.properties.name === nodeName
+                );
+                if (!node || !node.properties.filePath) continue;
+
+                const resolvedPath = resolveFilePath(node.properties.filePath);
+                if (!resolvedPath) continue;
+
+                addCodeReference({
+                  filePath: resolvedPath,
+                  startLine: node.properties.startLine ? node.properties.startLine - 1 : undefined,
+                  endLine: node.properties.endLine ? node.properties.endLine - 1 : undefined,
+                  nodeId: node.id,
+                  label: node.label,
+                  name: node.properties.name,
                   source: 'ai',
                 });
               }

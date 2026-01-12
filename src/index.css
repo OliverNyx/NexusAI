@@ -305,14 +305,14 @@ body {
   border-top: 1px solid var(--color-border-subtle);
 }
 
-/* Links */
-.chat-prose a {
+/* Links - but NOT grounding/citation buttons (those have their own Tailwind styles) */
+.chat-prose a:not(.code-ref-btn) {
   color: var(--color-accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.chat-prose a:hover {
+.chat-prose a:not(.code-ref-btn):hover {
   color: #a78bfa;
 }
 

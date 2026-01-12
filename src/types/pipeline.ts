@@ -1,6 +1,6 @@
 import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types';
 
-export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'complete' | 'error';
+export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'complete' | 'error';
 
 export interface PipelineProgress {
   phase: PipelinePhase;

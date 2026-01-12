@@ -19,7 +19,7 @@ const DEFAULT_IGNORE_LIST = new Set([
     'bower_components',
     'jspm_packages',
     'vendor',           // PHP/Go
-    'packages',         // Sometimes used for deps
+    // 'packages' removed - commonly used for monorepo source code (lerna, pnpm, yarn workspaces)
     'venv',
     '.venv',
     'env',

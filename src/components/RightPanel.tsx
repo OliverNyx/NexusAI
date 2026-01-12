@@ -6,6 +6,7 @@ import {
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
@@ -97,7 +98,8 @@ export const RightPanel = () => {
     let startLine1: number | undefined;
     let endLine1: number | undefined;
 
-    const lineMatch = raw.match(/^(.*):(\d+)(?:-(\d+))?$/);
+    // Match line:num or line:num-num (supports both hyphen - and en dash –)
+    const lineMatch = raw.match(/^(.*):(\d+)(?:[-–](\d+))?$/);
     if (lineMatch) {
       rawPath = lineMatch[1].trim();
       startLine1 = parseInt(lineMatch[2], 10);
@@ -120,15 +122,75 @@ export const RightPanel = () => {
     });
   }, [addCodeReference, findFileNodeIdForUI, resolveFilePathForUI]);
 
+  // Handler for node grounding: [[Class:View]], [[Function:trigger]], etc.
+  const handleNodeGroundingClick = useCallback((nodeTypeAndName: string) => {
+    const raw = nodeTypeAndName.trim();
+    if (!raw || !graph) return;
+
+    // Parse Type:Name format
+    const match = raw.match(/^(Class|Function|Method|Interface|File|Folder|Variable|Enum|Type|CodeElement):(.+)$/);
+    if (!match) return;
+
+    const [, nodeType, nodeName] = match;
+    const trimmedName = nodeName.trim();
+
+    // Find node in graph by type + name
+    const node = graph.nodes.find(n =>
+      n.label === nodeType &&
+      n.properties.name === trimmedName
+    );
+
+    if (!node) {
+      console.warn(`Node not found: ${nodeType}:${trimmedName}`);
+      return;
+    }
+
+    // 1. Highlight in graph (add to AI citation highlights)
+    // Note: This requires accessing the state setter from parent context
+    // For now, we'll add to code references which triggers the highlight
+
+    // 2. Add to Code Panel (if node has file/line info)
+    if (node.properties.filePath) {
+      const resolvedPath = resolveFilePathForUI(node.properties.filePath);
+      if (resolvedPath) {
+        addCodeReference({
+          filePath: resolvedPath,
+          startLine: node.properties.startLine ? node.properties.startLine - 1 : undefined,
+          endLine: node.properties.endLine ? node.properties.endLine - 1 : undefined,
+          nodeId: node.id,
+          label: node.label,
+          name: node.properties.name,
+          source: 'ai',
+        });
+      }
+    }
+  }, [graph, resolveFilePathForUI, addCodeReference]);
+
   const formatMarkdownForDisplay = useCallback((md: string) => {
     // Avoid rewriting inside fenced code blocks.
     const parts = md.split('```');
     for (let i = 0; i < parts.length; i += 2) {
-      parts[i] = parts[i].replace(/\[\[([^\]\n]+?)\]\]/g, (_m, inner: string) => {
-        const trimmed = inner.trim();
-        const href = `code-ref:${encodeURIComponent(trimmed)}`;
-        return `[${trimmed}](${href})`;
-      });
+      // Pattern 1: File grounding - [[file.ext]] or [[file.ext:line]] or [[file.ext:line-line]]
+      // Line numbers are optional
+      parts[i] = parts[i].replace(
+        /\[\[([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+(?::\d+(?:[-–]\d+)?)?)\]\]/g,
+        (_m, inner: string) => {
+          const trimmed = inner.trim();
+          const href = `code-ref:${encodeURIComponent(trimmed)}`;
+          return `[${trimmed}](${href})`;
+        }
+      );
+
+      // Pattern 2: Node grounding - [[Type:Name]] or [[graph:Type:Name]]
+      // Valid types: Class, Function, Method, Interface, File, Folder, Variable, Enum, Type, CodeElement
+      parts[i] = parts[i].replace(
+        /\[\[(?:graph:)?(Class|Function|Method|Interface|File|Folder|Variable|Enum|Type|CodeElement):([^\]]+)\]\]/g,
+        (_m, nodeType: string, nodeName: string) => {
+          const trimmed = `${nodeType}:${nodeName.trim()}`;
+          const href = `node-ref:${encodeURIComponent(trimmed)}`;
+          return `[${trimmed}](${href})`;
+        }
+      );
     }
     return parts.join('```');
   }, []);
@@ -143,7 +205,8 @@ export const RightPanel = () => {
     // Strip query/hash
     const cleaned = withoutScheme.split('#')[0].split('?')[0];
 
-    const m = cleaned.match(/^(.*):(\d+)(?:-(\d+))?$/);
+    // Support both hyphen - and en dash – for line ranges
+    const m = cleaned.match(/^(.*):(\d+)(?:[-–](\d+))?$/);
     const path = (m ? m[1] : cleaned).replace(/\\/g, '/');
     const base = path.split('/').pop() ?? path;
 
@@ -164,8 +227,8 @@ export const RightPanel = () => {
     // Strip query/hash
     const cleaned = h.split('#')[0].split('?')[0];
 
-    // Looks like: path/to/file.ext or path\to\file.ext:12-34
-    return /[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?$/.test(cleaned);
+    // Looks like: path/to/file.ext or path\to\file.ext:12-34 (supports both hyphen and en dash)
+    return /[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+(?::\d+(?:[-–]\d+)?)?$/.test(cleaned);
   }, []);
 
   const extractTextFromChildren = useCallback((children: any): string => {
@@ -353,6 +416,7 @@ export const RightPanel = () => {
                                 {step.type === 'reasoning' && step.content && (
                                   <div className="text-text-secondary text-sm italic border-l-2 border-text-muted/30 pl-3 mb-3">
                                     <ReactMarkdown
+                                      remarkPlugins={[remarkGfm]}
                                       components={{
                                         a: ({ href, children, ...props }) => {
                                           if (href && href.startsWith('code-ref:')) {
@@ -365,11 +429,29 @@ export const RightPanel = () => {
                                                   e.preventDefault();
                                                   handleGroundingClick(inner);
                                                 }}
-                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                                 title={`Open in Code panel • ${inner}`}
                                                 {...props}
                                               >
                                                 <span className="text-inherit">{label || children}</span>
+                                              </a>
+                                            );
+                                          }
+                                          // Handle node grounding: node-ref:Type:Name
+                                          if (href && href.startsWith('node-ref:')) {
+                                            const inner = decodeURIComponent(href.slice('node-ref:'.length));
+                                            return (
+                                              <a
+                                                href={href}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  handleNodeGroundingClick(inner);
+                                                }}
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-amber-300/55 bg-amber-400/10 !text-amber-200 visited:!text-amber-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-amber-400/15 hover:border-amber-200/70 transition-colors"
+                                                title={`View ${inner} in Code panel`}
+                                                {...props}
+                                              >
+                                                <span className="text-inherit">{children}</span>
                                               </a>
                                             );
                                           }
@@ -383,7 +465,7 @@ export const RightPanel = () => {
                                                   e.preventDefault();
                                                   handleGroundingClick(internalRef);
                                                 }}
-                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                                 title={`Open in Code panel • ${internalRef}`}
                                                 {...props}
                                               >
@@ -437,6 +519,7 @@ export const RightPanel = () => {
                                 {step.type === 'content' && step.content && (
                                   <div className="text-text-primary text-sm">
                                     <ReactMarkdown
+                                      remarkPlugins={[remarkGfm]}
                                       components={{
                                         a: ({ href, children, ...props }) => {
                                           if (href && href.startsWith('code-ref:')) {
@@ -449,11 +532,29 @@ export const RightPanel = () => {
                                                   e.preventDefault();
                                                   handleGroundingClick(inner);
                                                 }}
-                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                                 title={`Open in Code panel • ${inner}`}
                                                 {...props}
                                               >
                                                 <span className="text-inherit">{label || children}</span>
+                                              </a>
+                                            );
+                                          }
+                                          // Handle node grounding: node-ref:Type:Name
+                                          if (href && href.startsWith('node-ref:')) {
+                                            const inner = decodeURIComponent(href.slice('node-ref:'.length));
+                                            return (
+                                              <a
+                                                href={href}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  handleNodeGroundingClick(inner);
+                                                }}
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-amber-300/55 bg-amber-400/10 !text-amber-200 visited:!text-amber-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-amber-400/15 hover:border-amber-200/70 transition-colors"
+                                                title={`View ${inner} in Code panel`}
+                                                {...props}
+                                              >
+                                                <span className="text-inherit">{children}</span>
                                               </a>
                                             );
                                           }
@@ -467,7 +568,7 @@ export const RightPanel = () => {
                                                   e.preventDefault();
                                                   handleGroundingClick(internalRef);
                                                 }}
-                                                className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                                className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                                 title={`Open in Code panel • ${internalRef}`}
                                                 {...props}
                                               >
@@ -529,6 +630,7 @@ export const RightPanel = () => {
                           // Fallback: render content + toolCalls separately (old format)
                           <div className="text-text-primary text-sm">
                             <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
                               components={{
                                 a: ({ href, children, ...props }) => {
                                   if (href && href.startsWith('code-ref:')) {
@@ -541,11 +643,29 @@ export const RightPanel = () => {
                                           e.preventDefault();
                                           handleGroundingClick(inner);
                                         }}
-                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                        className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                         title={`Open in Code panel • ${inner}`}
                                         {...props}
                                       >
                                         <span className="text-inherit">{label || children}</span>
+                                      </a>
+                                    );
+                                  }
+                                  // Handle node grounding: node-ref:Type:Name
+                                  if (href && href.startsWith('node-ref:')) {
+                                    const inner = decodeURIComponent(href.slice('node-ref:'.length));
+                                    return (
+                                      <a
+                                        href={href}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          handleNodeGroundingClick(inner);
+                                        }}
+                                        className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-amber-300/55 bg-amber-400/10 !text-amber-200 visited:!text-amber-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-amber-400/15 hover:border-amber-200/70 transition-colors"
+                                        title={`View ${inner} in Code panel`}
+                                        {...props}
+                                      >
+                                        <span className="text-inherit">{children}</span>
                                       </a>
                                     );
                                   }
@@ -559,7 +679,7 @@ export const RightPanel = () => {
                                           e.preventDefault();
                                           handleGroundingClick(internalRef);
                                         }}
-                                        className="inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
+                                        className="code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 font-mono text-[12px] !no-underline hover:!no-underline hover:bg-cyan-400/15 hover:border-cyan-200/70 transition-colors"
                                         title={`Open in Code panel • ${internalRef}`}
                                         {...props}
                                       >
