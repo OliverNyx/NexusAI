@@ -3,6 +3,8 @@
 **Zero-Server, Graph-Based Code Intelligence Engine**
 Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST parsing, all happens inside browser)
 
+https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
+
 https://gitnexus.vercel.app
 Being client sided, it costs me zero to deploy, so you can use it for free :-) (would love a ⭐ though)
 
@@ -13,8 +15,6 @@ DeepWiki helps you *understand* code. GitNexus lets you *analyze* it—because a
 That's the difference between:
 - "What does this function do?" → *understanding*
 - "What breaks if I change this function?" → *analysis*
-
-https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
 
 **Some quick tech jargon:**
 - **Enhanced Search**: BM25 + Semantic + 1-hop graph expansion via Cypher
