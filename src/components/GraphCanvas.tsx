@@ -21,6 +21,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     highlightedNodeIds,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
+    blastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
   } = useAppState();
@@ -31,9 +32,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     const next = new Set(highlightedNodeIds);
     for (const id of aiCitationHighlightedNodeIds) next.add(id);
     for (const id of aiToolHighlightedNodeIds) next.add(id);
+    // Note: blast radius nodes are handled separately with red color
     return next;
   }, [highlightedNodeIds, aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds, isAIHighlightsEnabled]);
-  
+
+  // Blast radius nodes (only when AI highlights enabled)
+  const effectiveBlastRadiusNodeIds = useMemo(() => {
+    if (!isAIHighlightsEnabled) return new Set<string>();
+    return blastRadiusNodeIds;
+  }, [blastRadiusNodeIds, isAIHighlightsEnabled]);
+
   const handleNodeClick = useCallback((nodeId: string) => {
     if (!graph) return;
     const node = graph.nodes.find(n => n.id === nodeId);
@@ -76,6 +84,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onNodeHover: handleNodeHover,
     onStageClick: handleStageClick,
     highlightedNodeIds: effectiveHighlightedNodeIds,
+    blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
   });
 
   // Expose focusNode to parent via ref
@@ -104,10 +113,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma) return;
-    
+
     const sigmaGraph = sigma.getGraph() as Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
     if (sigmaGraph.order === 0) return; // Don't filter empty graph
-    
+
     filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
     sigma.refresh();
   }, [visibleLabels, depthFilter, appSelectedNode, sigmaRef]);
@@ -139,7 +148,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     <div className="relative w-full h-full bg-void">
       {/* Background gradient */}
       <div className="absolute inset-0 pointer-events-none">
-        <div 
+        <div
           className="absolute inset-0"
           style={{
             background: `
@@ -151,8 +160,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       </div>
 
       {/* Sigma container */}
-      <div 
-        ref={containerRef} 
+      <div
+        ref={containerRef}
         className="sigma-container w-full h-full cursor-grab active:cursor-grabbing"
       />
 
@@ -205,10 +214,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         >
           <Maximize2 className="w-4 h-4" />
         </button>
-        
+
         {/* Divider */}
         <div className="h-px bg-border-subtle my-1" />
-        
+
         {/* Focus on selected */}
         {appSelectedNode && (
           <button
@@ -219,7 +228,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             <Focus className="w-4 h-4" />
           </button>
         )}
-        
+
         {/* Clear selection */}
         {sigmaSelectedNode && (
           <button
@@ -230,17 +239,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             <RotateCcw className="w-4 h-4" />
           </button>
         )}
-        
+
         {/* Divider */}
         <div className="h-px bg-border-subtle my-1" />
-        
+
         {/* Layout control */}
         <button
           onClick={isLayoutRunning ? stopLayout : startLayout}
           className={`
             w-9 h-9 flex items-center justify-center border rounded-md transition-all
-            ${isLayoutRunning 
-              ? 'bg-accent border-accent text-white shadow-glow animate-pulse' 
+            ${isLayoutRunning
+              ? 'bg-accent border-accent text-white shadow-glow animate-pulse'
               : 'bg-elevated border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary'
             }
           `}

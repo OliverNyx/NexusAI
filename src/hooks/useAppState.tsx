@@ -77,9 +77,11 @@ interface AppState {
   // AI highlights (toggable)
   aiCitationHighlightedNodeIds: Set<string>;
   aiToolHighlightedNodeIds: Set<string>;
+  blastRadiusNodeIds: Set<string>;
   isAIHighlightsEnabled: boolean;
   toggleAIHighlights: () => void;
   clearAIToolHighlights: () => void;
+  clearBlastRadius: () => void;
   queryResult: QueryResult | null;
   setQueryResult: (result: QueryResult | null) => void;
   clearQueryHighlights: () => void;
@@ -183,6 +185,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // AI highlights (separate from user/query highlights)
   const [aiCitationHighlightedNodeIds, setAICitationHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [aiToolHighlightedNodeIds, setAIToolHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [blastRadiusNodeIds, setBlastRadiusNodeIds] = useState<Set<string>>(new Set());
   const [isAIHighlightsEnabled, setAIHighlightsEnabled] = useState(true);
 
   const toggleAIHighlights = useCallback(() => {
@@ -191,6 +194,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   const clearAIToolHighlights = useCallback(() => {
     setAIToolHighlightedNodeIds(new Set());
+  }, []);
+
+  const clearBlastRadius = useCallback(() => {
+    setBlastRadiusNodeIds(new Set());
   }, []);
 
   const clearQueryHighlights = useCallback(() => {
@@ -812,6 +819,35 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                     setAIToolHighlightedNodeIds(new Set(rawIds));
                   }
                 }
+
+                // Parse blast radius marker from tool results
+                const blastMatch = tc.result.match(/\[BLAST_RADIUS:([^\]]+)\]/);
+                if (blastMatch) {
+                  const rawIds = blastMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
+                  if (rawIds.length > 0 && graph) {
+                    const matchedIds = new Set<string>();
+                    const graphNodeIds = graph.nodes.map(n => n.id);
+
+                    for (const rawId of rawIds) {
+                      if (graphNodeIds.includes(rawId)) {
+                        matchedIds.add(rawId);
+                      } else {
+                        const found = graphNodeIds.find(gid =>
+                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
+                        );
+                        if (found) {
+                          matchedIds.add(found);
+                        }
+                      }
+                    }
+
+                    if (matchedIds.size > 0) {
+                      setBlastRadiusNodeIds(matchedIds);
+                    }
+                  } else if (rawIds.length > 0) {
+                    setBlastRadiusNodeIds(new Set(rawIds));
+                  }
+                }
               }
             }
             break;
@@ -908,9 +944,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
+    blastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
     clearAIToolHighlights,
+    clearBlastRadius,
     queryResult,
     setQueryResult,
     clearQueryHighlights,
