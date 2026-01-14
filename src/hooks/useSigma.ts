@@ -53,6 +53,7 @@ interface UseSigmaOptions {
   onNodeHover?: (nodeId: string | null) => void;
   onStageClick?: () => void;
   highlightedNodeIds?: Set<string>;
+  blastRadiusNodeIds?: Set<string>;
 }
 
 interface UseSigmaReturn {
@@ -126,14 +127,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const layoutRef = useRef<FA2Layout | null>(null);
   const selectedNodeRef = useRef<string | null>(null);
   const highlightedRef = useRef<Set<string>>(new Set());
+  const blastRadiusRef = useRef<Set<string>>(new Set());
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
   useEffect(() => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
+    blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     sigmaRef.current?.refresh();
-  }, [options.highlightedNodeIds]);
+  }, [options.highlightedNodeIds, options.blastRadiusNodeIds]);
 
   const setSelectedNode = useCallback((nodeId: string | null) => {
     selectedNodeRef.current = nodeId;
@@ -242,8 +245,32 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
+        const blastRadius = blastRadiusRef.current;
         const hasHighlights = highlighted.size > 0;
+        const hasBlastRadius = blastRadius.size > 0;
         const isQueryHighlighted = highlighted.has(node);
+        const isBlastRadiusNode = blastRadius.has(node);
+        
+        // Blast radius takes priority (red highlighting)
+        if (hasBlastRadius && !currentSelected) {
+          if (isBlastRadiusNode) {
+            res.color = '#ef4444'; // Red for blast radius
+            res.size = (data.size || 8) * 1.8;
+            res.zIndex = 3;
+            res.highlighted = true;
+          } else if (isQueryHighlighted) {
+            // Regular cyan highlight for non-blast-radius nodes
+            res.color = '#06b6d4';
+            res.size = (data.size || 8) * 1.4;
+            res.zIndex = 2;
+            res.highlighted = true;
+          } else {
+            res.color = dimColor(data.color, 0.15);
+            res.size = (data.size || 8) * 0.4;
+            res.zIndex = 0;
+          }
+          return res;
+        }
         
         if (hasHighlights && !currentSelected) {
           if (isQueryHighlighted) {
