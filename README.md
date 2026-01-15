@@ -271,7 +271,7 @@ For exact strings, error codes, TODOs:
 
 ```mermaid
 flowchart LR
-    PAT[Pattern: TODO|FIXME] --> REGEX[Compile Regex]
+    PAT["Pattern: TODO|FIXME"] --> REGEX[Compile Regex]
     REGEX --> SCAN[Scan all files]
     SCAN --> MATCH[Match per line]
     MATCH --> RES["file:line: content"]
