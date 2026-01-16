@@ -10,6 +10,7 @@ import { SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools } from './tools';
 import type { 
@@ -18,6 +19,7 @@ import type {
   AzureOpenAIConfig, 
   GeminiConfig,
   AnthropicConfig,
+  OllamaConfig,
   AgentStreamChunk,
 } from './types';
 import { 
@@ -160,6 +162,21 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
       });
     }
     
+    case 'ollama': {
+      const ollamaConfig = config as OllamaConfig;
+      return new ChatOllama({
+        baseUrl: ollamaConfig.baseUrl ?? 'http://localhost:11434',
+        model: ollamaConfig.model,
+        temperature: ollamaConfig.temperature ?? 0.1,
+        streaming: true,
+        // Allow longer responses (Ollama default is often 128-2048)
+        numPredict: 30000,
+        // Increase context window (Ollama default is only 2048!)
+        // This is critical for agentic workflows with tool calls
+        numCtx: 32768,
+      });
+    }
+    
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }
@@ -289,6 +306,13 @@ export async function* streamAgentResponse(
         data = event;
       }
       
+      // DEBUG: Enhanced logging
+      if (import.meta.env.DEV) {
+        const msgType = mode === 'messages' && data?.[0]?._getType?.() || 'n/a';
+        const hasContent = mode === 'messages' && data?.[0]?.content;
+        const hasToolCalls = mode === 'messages' && data?.[0]?.tool_calls?.length > 0;
+        console.log(`🔄 [${mode}] type:${msgType} content:${!!hasContent} tools:${hasToolCalls}`);
+      }
       // Handle 'messages' mode - token-by-token streaming
       if (mode === 'messages') {
         const [msg] = Array.isArray(data) ? data : [data];
@@ -298,11 +322,23 @@ export async function* streamAgentResponse(
         
         // AIMessageChunk - streaming text tokens
         if (msgType === 'ai' || msgType === 'AIMessage' || msgType === 'AIMessageChunk') {
-          const content = msg.content;
+          const rawContent = msg.content;
           const toolCalls = msg.tool_calls || [];
           
+          // Handle content that can be string or array of content blocks
+          let content: string = '';
+          if (typeof rawContent === 'string') {
+            content = rawContent;
+          } else if (Array.isArray(rawContent)) {
+            // Content blocks format: [{type: 'text', text: '...'}, ...]
+            content = rawContent
+              .filter((block: any) => block.type === 'text' || typeof block === 'string')
+              .map((block: any) => typeof block === 'string' ? block : block.text || '')
+              .join('');
+          }
+          
           // If chunk has content, stream it
-          if (content && typeof content === 'string' && content.length > 0) {
+          if (content && content.length > 0) {
             // Determine if this is reasoning/narration vs final answer content.
             // - Before the first tool call: treat as reasoning (narration)
             // - Between tool calls/results: treat as reasoning
@@ -416,9 +452,17 @@ export async function* streamAgentResponse(
       }
     }
     
+    // DEBUG: Stream completed normally
+    if (import.meta.env.DEV) {
+      console.log('✅ Stream completed normally, yielding done');
+    }
     yield { type: 'done' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // DEBUG: Stream error
+    if (import.meta.env.DEV) {
+      console.error('❌ Stream error:', message, error);
+    }
     yield { 
       type: 'error', 
       error: message,

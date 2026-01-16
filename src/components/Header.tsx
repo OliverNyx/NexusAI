@@ -1,8 +1,9 @@
 import { Search, Settings, HelpCircle, Sparkles, Github, Star } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
 import { EmbeddingStatus } from './EmbeddingStatus';
+import { MCPToggle } from './MCPToggle';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -22,7 +23,17 @@ interface HeaderProps {
 }
 
 export const Header = ({ onFocusNode }: HeaderProps) => {
-  const { projectName, graph, openChatPanel, isRightPanelOpen, rightPanelTab, setSettingsPanelOpen } = useAppState();
+  const {
+    projectName,
+    graph,
+    openChatPanel,
+    isRightPanelOpen,
+    rightPanelTab,
+    setSettingsPanelOpen,
+    runQuery,
+    semanticSearch,
+    setHighlightedNodeIds,
+  } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -205,6 +216,35 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
 
         {/* Embedding Status */}
         <EmbeddingStatus />
+
+        {/* MCP Toggle for external AI agents */}
+        <MCPToggle
+          showOnboardingTip={!!graph}
+          onSearch={async (query, limit = 10) => {
+            // Use semantic search from the app
+            const results = await semanticSearch(query, limit);
+            return results;
+          }}
+          onCypher={async (query) => {
+            // Execute Cypher query
+            const results = await runQuery(query);
+            return results;
+          }}
+          onBlastRadius={async (nodeId, hops = 2) => {
+            // Run blast radius query
+            const query = `
+              MATCH (start)-[*1..${hops}]-(connected)
+              WHERE start.id = '${nodeId}' OR start.name = '${nodeId}'
+              RETURN DISTINCT connected.id AS id, connected.name AS name, labels(connected) AS labels
+            `;
+            const results = await runQuery(query);
+            return results;
+          }}
+          onHighlight={(nodeIds) => {
+            // Highlight nodes in the graph
+            setHighlightedNodeIds(new Set(nodeIds));
+          }}
+        />
 
         {/* Icon buttons */}
         <button
