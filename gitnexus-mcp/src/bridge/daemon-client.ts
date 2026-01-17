@@ -16,6 +16,7 @@ export interface BridgeMessage {
   error?: { message: string };
   type?: string;
   context?: CodebaseContext;
+  agentName?: string;
 }
 
 /**
@@ -50,8 +51,20 @@ export class DaemonClient {
   private requestId = 0;
   private _context: CodebaseContext | null = null;
   private contextListeners: Set<(context: CodebaseContext | null) => void> = new Set();
+  private agentName: string;
   
-  constructor(private port: number = 54319) {}
+  constructor(private port: number = 54319, agentName?: string) {
+    // Detect agent from environment or use provided name
+    this.agentName = agentName || process.env.GITNEXUS_AGENT || this.detectAgent();
+  }
+  
+  private detectAgent(): string {
+    // Try to detect agent from environment clues
+    if (process.env.CURSOR_SESSION_ID) return 'Cursor';
+    if (process.env.CLAUDE_CODE) return 'Claude Code';
+    if (process.env.WINDSURF_SESSION) return 'Windsurf';
+    return 'Unknown';
+  }
   
   /**
    * Connect to the daemon
@@ -150,7 +163,7 @@ export class DaemonClient {
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
       
-      const msg: BridgeMessage = { id, method, params };
+      const msg: BridgeMessage = { id, method, params, agentName: this.agentName };
       this.ws!.send(JSON.stringify(msg));
       
       // Timeout after 30 seconds

@@ -85,6 +85,7 @@ export const DEFAULT_VISIBLE_EDGES: EdgeType[] = [
   'IMPORTS',
   'EXTENDS',
   'IMPLEMENTS',
+  'CALLS',
 ];
 
 // Edge display info for UI

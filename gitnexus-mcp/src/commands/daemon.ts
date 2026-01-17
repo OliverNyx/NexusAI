@@ -19,6 +19,7 @@ interface BridgeMessage {
   error?: { message: string };
   source?: 'browser' | 'mcp';
   type?: 'context' | 'tool_call' | 'tool_result';
+  agentName?: string;
 }
 
 /**
@@ -59,6 +60,15 @@ export async function daemonCommand(options: DaemonOptions) {
   let browserClient: WebSocket | null = null;
   const mcpClients: Set<WebSocket> = new Set();
   const pendingRequests: Map<string, WebSocket> = new Map(); // request ID → which MCP client sent it
+  
+  // Track agent sessions for multi-instance support
+  interface AgentSession {
+    agentType: string;  // e.g., "Cursor", "Claude"
+    instanceId: number; // e.g., 1, 2, 3 for multiple instances
+    sessionId: string;  // unique ID
+  }
+  const agentSessions: Map<WebSocket, AgentSession> = new Map();
+  const agentInstanceCounters: Map<string, number> = new Map(); // agentType → next instance number
   
   const wss = new WebSocketServer({ port });
   
@@ -149,9 +159,39 @@ export async function daemonCommand(options: DaemonOptions) {
           
           // Tool call request from MCP server - forward to browser
           if (msg.method && msg.id) {
+            // Handle session tracking
+            let session = agentSessions.get(ws);
+            const rawAgentName = msg.agentName || 'Unknown';
+            
+            if (!session) {
+              // First time seeing this connection - assign instance ID
+              const currentCount = agentInstanceCounters.get(rawAgentName) || 0;
+              const newCount = currentCount + 1;
+              agentInstanceCounters.set(rawAgentName, newCount);
+              
+              session = {
+                agentType: rawAgentName,
+                instanceId: newCount,
+                sessionId: `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+              };
+              agentSessions.set(ws, session);
+              console.log(`🆕 Registered ${rawAgentName} #${newCount}`);
+              
+              // Notify browser about new agent (optional, mainly for UI updates if needed later)
+              // browserClient?.send(JSON.stringify({ type: 'agent_info', ... }));
+            }
+            
+            // Construct display name (e.g., "Claude #1")
+            // If it's the first instance, maybe just keep "Claude" or do we always want numbers?
+            // User asked for tracking multiple, so "Claude #1" is clearer even for the first if we expect multiples.
+            // Let's use format "Name #N"
+            const uniqueAgentName = `${session.agentType} #${session.instanceId}`;
+
             if (browserClient && browserClient.readyState === WebSocket.OPEN) {
               pendingRequests.set(msg.id, ws);
-              browserClient.send(JSON.stringify(msg));
+              // Forward with unique name
+              const forwardMsg = { ...msg, agentName: uniqueAgentName };
+              browserClient.send(JSON.stringify(forwardMsg));
             } else {
               // No browser connected
               ws.send(JSON.stringify({
@@ -166,8 +206,13 @@ export async function daemonCommand(options: DaemonOptions) {
       });
       
       ws.on('close', () => {
+        const session = agentSessions.get(ws);
+        if (session) {
+          console.log(`❌ ${session.agentType} #${session.instanceId} disconnected`);
+          agentSessions.delete(ws);
+        }
         mcpClients.delete(ws);
-        console.log(`❌ MCP client disconnected (remaining: ${mcpClients.size})`);
+        console.log(`Remaining clients: ${mcpClients.size}`);
       });
     }
     
