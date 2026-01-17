@@ -72,89 +72,96 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         // External links open in new tab (default behavior)
     };
 
-    const formattedContent = formatMarkdownForDisplay(content);
+    const formattedContent = React.useMemo(() => formatMarkdownForDisplay(content), [content]);
+
+    const markdownComponents = React.useMemo(() => ({
+        a: ({ href, children, ...props }: any) => {
+            const hrefStr = href || '';
+
+            // Grounding links (Code refs & Node refs)
+            if (hrefStr.startsWith('code-ref:') || hrefStr.startsWith('node-ref:')) {
+                const isNodeRef = hrefStr.startsWith('node-ref:');
+                const inner = decodeURIComponent(hrefStr.slice(isNodeRef ? 9 : 9)); // length is same? wait.. code-ref: (9), node-ref: (9). Yes.
+
+                // Styles
+                const baseParams = "code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md font-mono text-[12px] !no-underline hover:!no-underline transition-colors";
+                const colorParams = isNodeRef
+                    ? "border border-amber-300/55 bg-amber-400/10 !text-amber-200 visited:!text-amber-200 hover:bg-amber-400/15 hover:border-amber-200/70"
+                    : "border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 hover:bg-cyan-400/15 hover:border-cyan-200/70";
+
+                return (
+                    <a
+                        href={hrefStr}
+                        onClick={(e) => handleLinkClick(e, hrefStr)}
+                        className={`${baseParams} ${colorParams}`}
+                        title={isNodeRef ? `View ${inner} in Code panel` : `Open in Code panel • ${inner}`}
+                        {...props}
+                    >
+                        <span className="text-inherit">{children}</span>
+                    </a>
+                );
+            }
+
+            // External links
+            return (
+                <a
+                    href={hrefStr}
+                    className="text-accent underline underline-offset-2 hover:text-purple-300"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    {...props}
+                >
+                    {children}
+                </a>
+            );
+        },
+        code: ({ className, children, ...props }: any) => {
+            const match = /language-(\w+)/.exec(className || '');
+            const isInline = !className && !match;
+            const codeContent = String(children).replace(/\n$/, '');
+
+            if (isInline) {
+                return <code {...props}>{children}</code>;
+            }
+
+            const language = match ? match[1] : 'text';
+
+            // Render Mermaid diagrams
+            if (language === 'mermaid') {
+                return <MermaidDiagram code={codeContent} />;
+            }
+
+            return (
+                <SyntaxHighlighter
+                    style={customTheme}
+                    language={language}
+                    PreTag="div"
+                    customStyle={{
+                        margin: 0,
+                        padding: '14px 16px',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        background: '#0a0a10',
+                        border: '1px solid #1e1e2a',
+                    }}
+                >
+                    {codeContent}
+                </SyntaxHighlighter>
+            );
+        },
+        pre: ({ children }: any) => <>{children}</>,
+    }), [onLinkClick]); // Removed handleLinkClick dependency as it is defined inside component but depends on onLinkClick
 
     return (
         <div className="text-text-primary text-sm">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
-                components={{
-                    a: ({ href, children, ...props }) => {
-                        const hrefStr = href || '';
-
-                        // Grounding links (Code refs & Node refs)
-                        if (hrefStr.startsWith('code-ref:') || hrefStr.startsWith('node-ref:')) {
-                            const isNodeRef = hrefStr.startsWith('node-ref:');
-                            const inner = decodeURIComponent(hrefStr.slice(isNodeRef ? 9 : 9)); // length is same? wait.. code-ref: (9), node-ref: (9). Yes.
-
-                            // Styles
-                            const baseParams = "code-ref-btn inline-flex items-center px-2 py-0.5 rounded-md font-mono text-[12px] !no-underline hover:!no-underline transition-colors";
-                            const colorParams = isNodeRef
-                                ? "border border-amber-300/55 bg-amber-400/10 !text-amber-200 visited:!text-amber-200 hover:bg-amber-400/15 hover:border-amber-200/70"
-                                : "border border-cyan-300/55 bg-cyan-400/10 !text-cyan-200 visited:!text-cyan-200 hover:bg-cyan-400/15 hover:border-cyan-200/70";
-
-                            return (
-                                <a
-                                    href={hrefStr}
-                                    onClick={(e) => handleLinkClick(e, hrefStr)}
-                                    className={`${baseParams} ${colorParams}`}
-                                    title={isNodeRef ? `View ${inner} in Code panel` : `Open in Code panel • ${inner}`}
-                                    {...props}
-                                >
-                                    <span className="text-inherit">{children}</span>
-                                </a>
-                            );
-                        }
-
-                        // External links
-                        return (
-                            <a
-                                href={hrefStr}
-                                className="text-accent underline underline-offset-2 hover:text-purple-300"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                {...props}
-                            >
-                                {children}
-                            </a>
-                        );
-                    },
-                    code: ({ className, children, ...props }) => {
-                        const match = /language-(\w+)/.exec(className || '');
-                        const isInline = !className && !match;
-                        const codeContent = String(children).replace(/\n$/, '');
-
-                        if (isInline) {
-                            return <code {...props}>{children}</code>;
-                        }
-
-                        const language = match ? match[1] : 'text';
-
-                        // Render Mermaid diagrams
-                        if (language === 'mermaid') {
-                            return <MermaidDiagram code={codeContent} />;
-                        }
-
-                        return (
-                            <SyntaxHighlighter
-                                style={customTheme}
-                                language={language}
-                                PreTag="div"
-                                customStyle={{
-                                    margin: 0,
-                                    padding: '14px 16px',
-                                    borderRadius: '8px',
-                                    fontSize: '13px',
-                                    background: '#0a0a10',
-                                    border: '1px solid #1e1e2a',
-                                }}
-                            >
-                                {codeContent}
-                            </SyntaxHighlighter>
-                        );
-                    },
-                    pre: ({ children }) => <>{children}</>,
+                urlTransform={(url) => {
+                    if (url.startsWith('code-ref:') || url.startsWith('node-ref:')) return url;
+                    // Default behavior for http/https/etc
+                    return url;
                 }}
+                components={markdownComponents}
             >
                 {formattedContent}
             </ReactMarkdown>
@@ -170,3 +177,5 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         </div>
     );
 };
+
+

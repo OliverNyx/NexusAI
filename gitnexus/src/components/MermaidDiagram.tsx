@@ -36,7 +36,13 @@ mermaid.initialize({
   },
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   fontSize: 13,
+  suppressErrorRendering: true, // Prevent default error div appending
 });
+
+// Override the default error handler to prevent it from logging to UI
+mermaid.parseError = (_err) => {
+  // Silent catch
+};
 
 interface MermaidDiagramProps {
   code: string;
@@ -55,19 +61,27 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
       try {
         // Generate unique ID for this diagram
         const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        
+
         // Render the diagram
         const { svg: renderedSvg } = await mermaid.render(id, code.trim());
         setSvg(renderedSvg);
         setError(null);
       } catch (err) {
-        console.error('Mermaid render error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to render diagram');
-        setSvg('');
+        // Silent catch for streaming: 
+        // If render fails (common during partial streaming), we:
+        // 1. Log to console for debugging
+        // 2. Do NOT set error state (avoids flashing red box)
+        // 3. Do NOT clear existing SVG (keeps last valid state visible)
+        console.debug('Mermaid render skipped (incomplete):', err);
       }
     };
 
-    renderDiagram();
+    // Debounce rendering to prevent "jerking" during high-speed streaming
+    const timeoutId = setTimeout(() => {
+      renderDiagram();
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
   }, [code]);
 
   if (error) {
@@ -94,12 +108,12 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
     <div className={`my-3 relative group ${isExpanded ? 'fixed inset-4 z-50' : ''}`}>
       {/* Backdrop for expanded view */}
       {isExpanded && (
-        <div 
+        <div
           className="absolute inset-0 -m-4 bg-deep/95 backdrop-blur-sm"
           onClick={() => setIsExpanded(false)}
         />
       )}
-      
+
       <div className={`
         relative bg-gradient-to-b from-surface to-elevated 
         border border-border-subtle rounded-xl overflow-hidden
@@ -122,9 +136,9 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
             )}
           </button>
         </div>
-        
+
         {/* Diagram container */}
-        <div 
+        <div
           ref={containerRef}
           className={`
             flex items-center justify-center p-4 overflow-auto
