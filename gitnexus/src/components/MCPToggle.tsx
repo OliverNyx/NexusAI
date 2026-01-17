@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Copy, Check, AlertCircle, X, Sparkles } from 'lucide-react';
-import { getMCPClient } from '../core/mcp/mcp-client';
+import { getMCPClient, type CodebaseContext } from '../core/mcp/mcp-client';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -20,8 +20,14 @@ interface MCPToggleProps {
     onBlastRadius?: (nodeId: string, hops?: number) => Promise<any>;
     /** Handler for highlight tool calls from external agents */
     onHighlight?: (nodeIds: string[], color?: string) => void;
+    /** Handler for grep tool calls from external agents */
+    onGrep?: (pattern: string, caseSensitive?: boolean, maxResults?: number) => Promise<any>;
+    /** Handler for read tool calls from external agents */
+    onRead?: (filePath: string, startLine?: number, endLine?: number) => Promise<any>;
     /** Whether to show the onboarding tip */
     showOnboardingTip?: boolean;
+    /** Callback to get codebase context for external agents */
+    getContext?: () => Promise<CodebaseContext | null>;
 }
 
 const MCP_TIP_DISMISSED_KEY = 'gitnexus-mcp-tip-dismissed';
@@ -31,7 +37,10 @@ export function MCPToggle({
     onCypher,
     onBlastRadius,
     onHighlight,
+    onGrep,
+    onRead,
     showOnboardingTip = false,
+    getContext,
 }: MCPToggleProps = {}) {
     const [status, setStatus] = useState<ConnectionState>('disconnected');
     const [copied, setCopied] = useState(false);
@@ -92,14 +101,48 @@ export function MCPToggle({
                 });
             }
 
+            // Register context tool handler
+            if (getContext) {
+                client.registerHandler('context', async () => {
+                    const context = await getContext();
+                    return context;
+                });
+            }
+
+            // Register grep tool handler
+            if (onGrep) {
+                client.registerHandler('grep', async (params) => {
+                    return await onGrep(params.pattern, params.caseSensitive, params.maxResults);
+                });
+            }
+
+            // Register read tool handler
+            if (onRead) {
+                client.registerHandler('read', async (params) => {
+                    return await onRead(params.filePath, params.startLine, params.endLine);
+                });
+            }
+
             setStatus('connected');
             setShowSetup(false);
             localStorage.setItem(MCP_TIP_DISMISSED_KEY, 'true');
+
+            // Send codebase context after connecting
+            if (getContext) {
+                try {
+                    const context = await getContext();
+                    if (context) {
+                        client.sendContext(context);
+                    }
+                } catch (e) {
+                    console.error('[MCP] Failed to send context:', e);
+                }
+            }
         } catch {
             setStatus('error');
             setShowSetup(true);
         }
-    }, [onSearch, onCypher, onBlastRadius, onHighlight]);
+    }, [onSearch, onCypher, onBlastRadius, onHighlight, onGrep, onRead, getContext]);
 
     const disconnect = useCallback(() => {
         const client = getMCPClient();

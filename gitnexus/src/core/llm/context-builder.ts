@@ -145,6 +145,7 @@ export async function getHotspots(
 
 /**
  * Build folder tree structure from file paths
+ * Returns TOON format for token efficiency (~50% reduction vs ASCII tree)
  */
 export async function getFolderTree(
   executeQuery: (cypher: string) => Promise<any[]>,
@@ -162,13 +163,85 @@ export async function getFolderTree(
 
     if (paths.length === 0) return '';
 
-    // Build tree structure from paths
-    const tree = buildTreeFromPaths(paths, maxDepth);
-    return formatTreeAsAscii(tree, '');
+    // Use TOON format for token efficiency
+    return formatPathsAsTOON(paths, maxDepth);
   } catch (error) {
     console.error('Failed to get folder tree:', error);
     return '';
   }
+}
+
+/**
+ * Format paths as TOON (Token-Oriented Object Notation)
+ * Much more token-efficient than ASCII trees
+ * 
+ * Example output:
+ * folders:5
+ *   src,src/cli,src/core,src/utils,test
+ * files:8
+ *   path
+ *   src/index.ts
+ *   src/cli/main.ts
+ *   ...
+ */
+function formatPathsAsTOON(paths: string[], maxDepth: number): string {
+  const folders = new Set<string>();
+  const files: string[] = [];
+  
+  for (const path of paths) {
+    // Normalize path
+    const normalized = path.replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+    
+    // Add file (truncate to maxDepth)
+    if (parts.length <= maxDepth + 1) {
+      files.push(normalized);
+    } else {
+      // Show truncated path for deep files
+      files.push(parts.slice(0, maxDepth + 1).join('/') + '/...');
+    }
+    
+    // Add folders
+    for (let i = 0; i < Math.min(parts.length - 1, maxDepth); i++) {
+      const folderPath = parts.slice(0, i + 1).join('/');
+      folders.add(folderPath);
+    }
+  }
+  
+  // Sort folders and files
+  const sortedFolders = Array.from(folders).sort();
+  const sortedFiles = [...new Set(files)].sort();
+  
+  // Build TOON output
+  const lines: string[] = [];
+  
+  // Folders section
+  lines.push(`folders:${sortedFolders.length}`);
+  if (sortedFolders.length > 0) {
+    // Compact comma-separated for small lists
+    if (sortedFolders.length <= 10) {
+      lines.push(`  ${sortedFolders.join(',')}`);
+    } else {
+      // Chunked for larger lists
+      for (let i = 0; i < sortedFolders.length; i += 8) {
+        lines.push(`  ${sortedFolders.slice(i, i + 8).join(',')}`);
+      }
+    }
+  }
+  
+  // Files section
+  lines.push(`files:${sortedFiles.length}`);
+  lines.push('  path');
+  // Show first 30 files, then summarize
+  const maxFiles = 30;
+  for (let i = 0; i < Math.min(sortedFiles.length, maxFiles); i++) {
+    lines.push(`  ${sortedFiles[i]}`);
+  }
+  if (sortedFiles.length > maxFiles) {
+    lines.push(`  ...(${sortedFiles.length - maxFiles} more)`);
+  }
+  
+  return lines.join('\n');
 }
 
 /**

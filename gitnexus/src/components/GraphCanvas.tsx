@@ -16,6 +16,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     setSelectedNode,
     selectedNode: appSelectedNode,
     visibleLabels,
+    visibleEdgeTypes,
     openCodePanel,
     depthFilter,
     highlightedNodeIds,
@@ -24,6 +25,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     blastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
+    animatedNodes,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -41,6 +43,12 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     if (!isAIHighlightsEnabled) return new Set<string>();
     return blastRadiusNodeIds;
   }, [blastRadiusNodeIds, isAIHighlightsEnabled]);
+
+  // Animated nodes (only when AI highlights enabled)
+  const effectiveAnimatedNodes = useMemo(() => {
+    if (!isAIHighlightsEnabled) return new Map();
+    return animatedNodes;
+  }, [animatedNodes, isAIHighlightsEnabled]);
 
   const handleNodeClick = useCallback((nodeId: string) => {
     if (!graph) return;
@@ -85,6 +93,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onStageClick: handleStageClick,
     highlightedNodeIds: effectiveHighlightedNodeIds,
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
+    animatedNodes: effectiveAnimatedNodes,
+    visibleEdgeTypes,
   });
 
   // Expose focusNode to parent via ref

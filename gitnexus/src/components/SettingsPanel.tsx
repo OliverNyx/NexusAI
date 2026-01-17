@@ -205,7 +205,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                 <label className="text-sm font-medium text-text-secondary">Model</label>
                 <input
                   type="text"
-                  value={settings.openai?.model ?? 'gpt-4o'}
+                  value={settings.openai?.model ?? 'gpt-5.2-chat'}
                   onChange={e => setSettings(prev => ({
                     ...prev,
                     openai: { ...prev.openai!, model: e.target.value }

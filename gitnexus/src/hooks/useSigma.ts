@@ -6,7 +6,8 @@ import forceAtlas2 from 'graphology-layout-forceatlas2';
 import noverlap from 'graphology-layout-noverlap';
 import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
-
+import type { NodeAnimation } from './useAppState';
+import type { EdgeType } from '../lib/constants';
 // Helper: Parse hex color to RGB
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -54,6 +55,8 @@ interface UseSigmaOptions {
   onStageClick?: () => void;
   highlightedNodeIds?: Set<string>;
   blastRadiusNodeIds?: Set<string>;
+  animatedNodes?: Map<string, NodeAnimation>;
+  visibleEdgeTypes?: EdgeType[];
 }
 
 interface UseSigmaReturn {
@@ -128,15 +131,45 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const selectedNodeRef = useRef<string | null>(null);
   const highlightedRef = useRef<Set<string>>(new Set());
   const blastRadiusRef = useRef<Set<string>>(new Set());
+  const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
+  const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
   useEffect(() => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
+    animatedNodesRef.current = options.animatedNodes || new Map();
+    visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
     sigmaRef.current?.refresh();
-  }, [options.highlightedNodeIds, options.blastRadiusNodeIds]);
+  }, [options.highlightedNodeIds, options.blastRadiusNodeIds, options.animatedNodes, options.visibleEdgeTypes]);
+
+  // Animation loop for node effects
+  useEffect(() => {
+    if (!options.animatedNodes || options.animatedNodes.size === 0) {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      return;
+    }
+
+    const animate = () => {
+      sigmaRef.current?.refresh();
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+  }, [options.animatedNodes]);
 
   const setSelectedNode = useCallback((nodeId: string | null) => {
     selectedNodeRef.current = nodeId;
@@ -246,10 +279,47 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
+        const animatedNodes = animatedNodesRef.current;
         const hasHighlights = highlighted.size > 0;
         const hasBlastRadius = blastRadius.size > 0;
         const isQueryHighlighted = highlighted.has(node);
         const isBlastRadiusNode = blastRadius.has(node);
+        
+        // Apply animation effects FIRST (before other highlighting)
+        const animation = animatedNodes.get(node);
+        if (animation) {
+          const now = Date.now();
+          const elapsed = now - animation.startTime;
+          const progress = Math.min(elapsed / animation.duration, 1);
+          
+          // Calculate animation phase (0-1-0-1... oscillation)
+          const phase = (Math.sin(progress * Math.PI * 4) + 1) / 2;
+          
+          if (animation.type === 'pulse') {
+            // Cyan pulse for search results
+            const sizeMultiplier = 1.5 + phase * 0.8;
+            res.size = (data.size || 8) * sizeMultiplier;
+            res.color = phase > 0.5 ? '#06b6d4' : brightenColor('#06b6d4', 1.3);
+            res.zIndex = 5;
+            res.highlighted = true;
+          } else if (animation.type === 'ripple') {
+            // Red ripple for blast radius
+            const sizeMultiplier = 1.3 + phase * 1.2;
+            res.size = (data.size || 8) * sizeMultiplier;
+            res.color = phase > 0.5 ? '#ef4444' : '#f87171';
+            res.zIndex = 5;
+            res.highlighted = true;
+          } else if (animation.type === 'glow') {
+            // Purple glow for highlight
+            const sizeMultiplier = 1.4 + phase * 0.6;
+            res.size = (data.size || 8) * sizeMultiplier;
+            res.color = phase > 0.5 ? '#a855f7' : '#c084fc';
+            res.zIndex = 5;
+            res.highlighted = true;
+          }
+          
+          return res;
+        }
         
         // Blast radius takes priority (red highlighting)
         if (hasBlastRadius && !currentSelected) {
@@ -314,6 +384,15 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       
       edgeReducer: (edge, data) => {
         const res = { ...data };
+        
+        // Check edge type visibility first
+        const visibleTypes = visibleEdgeTypesRef.current;
+        if (visibleTypes && data.relationType) {
+          if (!visibleTypes.includes(data.relationType as EdgeType)) {
+            res.hidden = true;
+            return res;
+          }
+        }
         
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;

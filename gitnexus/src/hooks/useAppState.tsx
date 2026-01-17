@@ -10,6 +10,7 @@ import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings
 import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
+import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -19,6 +20,15 @@ export interface QueryResult {
   rows: Record<string, any>[];
   nodeIds: string[];
   executionTime: number;
+}
+
+// Animation types for graph nodes
+export type AnimationType = 'pulse' | 'ripple' | 'glow';
+
+export interface NodeAnimation {
+  type: AnimationType;
+  startTime: number;
+  duration: number;
 }
 
 // Code reference from AI grounding or user selection
@@ -66,6 +76,8 @@ interface AppState {
   // Filters
   visibleLabels: NodeLabel[];
   toggleLabelVisibility: (label: NodeLabel) => void;
+  visibleEdgeTypes: EdgeType[];
+  toggleEdgeVisibility: (edgeType: EdgeType) => void;
 
   // Depth filter (N hops from selection)
   depthFilter: number | null;
@@ -85,6 +97,11 @@ interface AppState {
   queryResult: QueryResult | null;
   setQueryResult: (result: QueryResult | null) => void;
   clearQueryHighlights: () => void;
+
+  // Node animations (for MCP tool visual feedback)
+  animatedNodes: Map<string, NodeAnimation>;
+  triggerNodeAnimation: (nodeIds: string[], type: AnimationType) => void;
+  clearAnimations: () => void;
 
   // Progress
   progress: PipelineProgress | null;
@@ -174,6 +191,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   // Filters
   const [visibleLabels, setVisibleLabels] = useState<NodeLabel[]>(DEFAULT_VISIBLE_LABELS);
+  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<EdgeType[]>(DEFAULT_VISIBLE_EDGES);
 
   // Depth filter
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
@@ -203,6 +221,45 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const clearQueryHighlights = useCallback(() => {
     setHighlightedNodeIds(new Set());
     setQueryResult(null);
+  }, []);
+
+  // Node animations (for MCP tool visual feedback)
+  const [animatedNodes, setAnimatedNodes] = useState<Map<string, NodeAnimation>>(new Map());
+  const animationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const triggerNodeAnimation = useCallback((nodeIds: string[], type: AnimationType) => {
+    const now = Date.now();
+    const duration = type === 'pulse' ? 2000 : type === 'ripple' ? 3000 : 4000;
+
+    setAnimatedNodes(prev => {
+      const next = new Map(prev);
+      for (const id of nodeIds) {
+        next.set(id, { type, startTime: now, duration });
+      }
+      return next;
+    });
+
+    // Auto-cleanup after duration
+    setTimeout(() => {
+      setAnimatedNodes(prev => {
+        const next = new Map(prev);
+        for (const id of nodeIds) {
+          const anim = next.get(id);
+          if (anim && anim.startTime === now) {
+            next.delete(id);
+          }
+        }
+        return next;
+      });
+    }, duration + 100);
+  }, []);
+
+  const clearAnimations = useCallback(() => {
+    setAnimatedNodes(new Map());
+    if (animationTimerRef.current) {
+      clearInterval(animationTimerRef.current);
+      animationTimerRef.current = null;
+    }
   }, []);
 
   // Progress
@@ -921,6 +978,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  const toggleEdgeVisibility = useCallback((edgeType: EdgeType) => {
+    setVisibleEdgeTypes(prev => {
+      if (prev.includes(edgeType)) {
+        return prev.filter(t => t !== edgeType);
+      } else {
+        return [...prev, edgeType];
+      }
+    });
+  }, []);
+
   const value: AppState = {
     viewMode,
     setViewMode,
@@ -938,6 +1005,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     openChatPanel,
     visibleLabels,
     toggleLabelVisibility,
+    visibleEdgeTypes,
+    toggleEdgeVisibility,
     depthFilter,
     setDepthFilter,
     highlightedNodeIds,
@@ -952,6 +1021,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     queryResult,
     setQueryResult,
     clearQueryHighlights,
+    // Node animations
+    animatedNodes,
+    triggerNodeAnimation,
+    clearAnimations,
     progress,
     setProgress,
     projectName,

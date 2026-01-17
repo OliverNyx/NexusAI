@@ -239,14 +239,8 @@ export const knowledgeGraphToGraphology = (
     CALLS: { color: '#7c3aed', sizeMultiplier: 0.8 },       // Violet - function calls
     
     // TYPE RELATIONSHIPS - Warm colors (OOP)
-    INHERITS: { color: '#b45309', sizeMultiplier: 1.0 },    // Amber - class inheritance
     EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 },     // Orange - extension
     IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 },  // Pink - interface implementation
-    
-    // OTHER
-    USES: { color: '#4338ca', sizeMultiplier: 0.7 },        // Indigo - general usage
-    OVERRIDES: { color: '#b91c1c', sizeMultiplier: 0.8 },   // Red - method override
-    DECORATES: { color: '#a16207', sizeMultiplier: 0.6 },   // Yellow/gold - decorators
   };
   
   knowledgeGraph.relationships.forEach((rel) => {

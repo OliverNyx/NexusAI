@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { 
-  ChevronRight, 
-  ChevronDown, 
-  Folder, 
+import {
+  ChevronRight,
+  ChevronDown,
+  Folder,
   FolderOpen,
   FileCode,
   Search,
@@ -16,7 +16,7 @@ import {
   Target,
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
-import { FILTERABLE_LABELS, NODE_COLORS } from '../lib/constants';
+import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO, type EdgeType } from '../lib/constants';
 import { GraphNode, NodeLabel } from '../core/graph/types';
 
 // Tree node structure
@@ -36,7 +36,7 @@ const buildFileTree = (nodes: GraphNode[]): TreeNode[] => {
 
   // Filter to only folders and files
   const fileNodes = nodes.filter(n => n.label === 'Folder' || n.label === 'File');
-  
+
   // Sort by path to ensure parents come before children
   fileNodes.sort((a, b) => a.properties.filePath.localeCompare(b.properties.filePath));
 
@@ -47,13 +47,13 @@ const buildFileTree = (nodes: GraphNode[]): TreeNode[] => {
 
     parts.forEach((part, index) => {
       currentPath = currentPath ? `${currentPath}/${part}` : part;
-      
+
       let existing = pathMap.get(currentPath);
-      
+
       if (!existing) {
         const isLastPart = index === parts.length - 1;
         const isFile = isLastPart && node.label === 'File';
-        
+
         existing = {
           id: isLastPart ? node.id : currentPath,
           name: part,
@@ -62,11 +62,11 @@ const buildFileTree = (nodes: GraphNode[]): TreeNode[] => {
           children: [],
           graphNode: isLastPart ? node : undefined,
         };
-        
+
         pathMap.set(currentPath, existing);
         currentLevel.push(existing);
       }
-      
+
       currentLevel = existing.children;
     });
   });
@@ -85,23 +85,23 @@ interface TreeItemProps {
   selectedPath: string | null;
 }
 
-const TreeItem = ({ 
-  node, 
-  depth, 
-  searchQuery, 
-  onNodeClick, 
-  expandedPaths, 
+const TreeItem = ({
+  node,
+  depth,
+  searchQuery,
+  onNodeClick,
+  expandedPaths,
   toggleExpanded,
   selectedPath,
 }: TreeItemProps) => {
   const isExpanded = expandedPaths.has(node.path);
   const isSelected = selectedPath === node.path;
   const hasChildren = node.children.length > 0;
-  
+
   // Filter children based on search
   const filteredChildren = useMemo(() => {
     if (!searchQuery) return node.children;
-    return node.children.filter(child => 
+    return node.children.filter(child =>
       child.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       child.children.some(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
     );
@@ -139,7 +139,7 @@ const TreeItem = ({
         ) : (
           <span className="w-3.5" />
         )}
-        
+
         {/* Node icon */}
         {node.type === 'folder' ? (
           isExpanded ? (
@@ -150,11 +150,11 @@ const TreeItem = ({
         ) : (
           <FileCode className="w-4 h-4 shrink-0" style={{ color: NODE_COLORS.File }} />
         )}
-        
+
         {/* Name */}
         <span className="truncate font-mono text-xs">{node.name}</span>
       </button>
-      
+
       {/* Children */}
       {isExpanded && filteredChildren.length > 0 && (
         <div>
@@ -195,8 +195,8 @@ interface FileTreePanelProps {
 }
 
 export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
-  const { graph, visibleLabels, toggleLabelVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppState();
-  
+  const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppState();
+
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -220,18 +220,18 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
   useEffect(() => {
     const path = selectedNode?.properties?.filePath;
     if (!path) return;
-    
+
     // Expand all parent folders leading to this file
     const parts = path.split('/').filter(Boolean);
     const pathsToExpand: string[] = [];
     let currentPath = '';
-    
+
     // Build all parent paths (exclude the last part if it's a file)
     for (let i = 0; i < parts.length - 1; i++) {
       currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
       pathsToExpand.push(currentPath);
     }
-    
+
     if (pathsToExpand.length > 0) {
       setExpandedPaths(prev => {
         const next = new Set(prev);
@@ -303,21 +303,19 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('files')}
-            className={`px-2 py-1 text-xs rounded transition-colors ${
-              activeTab === 'files' 
-                ? 'bg-accent/20 text-accent' 
-                : 'text-text-secondary hover:text-text-primary hover:bg-hover'
-            }`}
+            className={`px-2 py-1 text-xs rounded transition-colors ${activeTab === 'files'
+              ? 'bg-accent/20 text-accent'
+              : 'text-text-secondary hover:text-text-primary hover:bg-hover'
+              }`}
           >
             Explorer
           </button>
           <button
             onClick={() => setActiveTab('filters')}
-            className={`px-2 py-1 text-xs rounded transition-colors ${
-              activeTab === 'filters' 
-                ? 'bg-accent/20 text-accent' 
-                : 'text-text-secondary hover:text-text-primary hover:bg-hover'
-            }`}
+            className={`px-2 py-1 text-xs rounded transition-colors ${activeTab === 'filters'
+              ? 'bg-accent/20 text-accent'
+              : 'text-text-secondary hover:text-text-primary hover:bg-hover'
+              }`}
           >
             Filters
           </button>
@@ -381,37 +379,77 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
               Toggle visibility of node types in the graph
             </p>
           </div>
-          
+
           <div className="flex flex-col gap-1">
             {FILTERABLE_LABELS.map((label) => {
               const Icon = getNodeTypeIcon(label);
               const isVisible = visibleLabels.includes(label);
-              
+
               return (
                 <button
                   key={label}
                   onClick={() => toggleLabelVisibility(label)}
                   className={`
                     flex items-center gap-2.5 px-2 py-1.5 rounded text-left transition-colors
-                    ${isVisible 
-                      ? 'bg-elevated text-text-primary' 
+                    ${isVisible
+                      ? 'bg-elevated text-text-primary'
                       : 'text-text-muted hover:bg-hover hover:text-text-secondary'
                     }
                   `}
                 >
-                  <div 
+                  <div
                     className={`w-5 h-5 rounded flex items-center justify-center ${isVisible ? '' : 'opacity-40'}`}
                     style={{ backgroundColor: `${NODE_COLORS[label]}20` }}
                   >
                     <Icon className="w-3 h-3" style={{ color: NODE_COLORS[label] }} />
                   </div>
                   <span className="text-xs flex-1">{label}</span>
-                  <div 
+                  <div
                     className={`w-2 h-2 rounded-full transition-colors ${isVisible ? 'bg-accent' : 'bg-border-subtle'}`}
                   />
                 </button>
               );
             })}
+          </div>
+
+          {/* Edge Type Toggles */}
+          <div className="mt-6 pt-4 border-t border-border-subtle">
+            <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
+              Edge Types
+            </h3>
+            <p className="text-[11px] text-text-muted mb-3">
+              Toggle visibility of relationship types
+            </p>
+
+            <div className="flex flex-col gap-1">
+              {ALL_EDGE_TYPES.map((edgeType) => {
+                const info = EDGE_INFO[edgeType];
+                const isVisible = visibleEdgeTypes.includes(edgeType);
+
+                return (
+                  <button
+                    key={edgeType}
+                    onClick={() => toggleEdgeVisibility(edgeType)}
+                    className={`
+                      flex items-center gap-2.5 px-2 py-1.5 rounded text-left transition-colors
+                      ${isVisible
+                        ? 'bg-elevated text-text-primary'
+                        : 'text-text-muted hover:bg-hover hover:text-text-secondary'
+                      }
+                    `}
+                  >
+                    <div
+                      className={`w-6 h-1.5 rounded-full ${isVisible ? '' : 'opacity-40'}`}
+                      style={{ backgroundColor: info.color }}
+                    />
+                    <span className="text-xs flex-1">{info.label}</span>
+                    <div
+                      className={`w-2 h-2 rounded-full transition-colors ${isVisible ? 'bg-accent' : 'bg-border-subtle'}`}
+                    />
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Depth Filter */}
@@ -423,7 +461,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             <p className="text-[11px] text-text-muted mb-3">
               Show nodes within N hops of selection
             </p>
-            
+
             <div className="flex flex-wrap gap-1.5">
               {[
                 { value: null, label: 'All' },
@@ -447,7 +485,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                 </button>
               ))}
             </div>
-            
+
             {depthFilter !== null && !selectedNode && (
               <p className="mt-2 text-[10px] text-amber-400">
                 Select a node to apply depth filter
@@ -463,7 +501,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             <div className="grid grid-cols-2 gap-2">
               {(['Folder', 'File', 'Class', 'Function', 'Interface', 'Method'] as NodeLabel[]).map(label => (
                 <div key={label} className="flex items-center gap-1.5">
-                  <div 
+                  <div
                     className="w-2.5 h-2.5 rounded-full"
                     style={{ backgroundColor: NODE_COLORS[label] }}
                   />

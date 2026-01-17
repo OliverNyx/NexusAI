@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
 import { EmbeddingStatus } from './EmbeddingStatus';
 import { MCPToggle } from './MCPToggle';
+import { buildCodebaseContext } from '../core/llm/context-builder';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -33,6 +34,8 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
     runQuery,
     semanticSearch,
     setHighlightedNodeIds,
+    fileContents,
+    triggerNodeAnimation,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -223,6 +226,11 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
           onSearch={async (query, limit = 10) => {
             // Use semantic search from the app
             const results = await semanticSearch(query, limit);
+            // Trigger pulse animation on search results
+            const nodeIds = results.map((r: any) => r.id).filter(Boolean);
+            if (nodeIds.length > 0) {
+              triggerNodeAnimation(nodeIds, 'pulse');
+            }
             return results;
           }}
           onCypher={async (query) => {
@@ -238,11 +246,101 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
               RETURN DISTINCT connected.id AS id, connected.name AS name, labels(connected) AS labels
             `;
             const results = await runQuery(query);
+            // Trigger ripple animation on blast radius results
+            const nodeIds = results.map((r: any) => r.id).filter(Boolean);
+            if (nodeIds.length > 0) {
+              triggerNodeAnimation(nodeIds, 'ripple');
+            }
             return results;
           }}
           onHighlight={(nodeIds) => {
             // Highlight nodes in the graph
             setHighlightedNodeIds(new Set(nodeIds));
+            // Trigger glow animation on highlighted nodes
+            if (nodeIds.length > 0) {
+              triggerNodeAnimation(nodeIds, 'glow');
+            }
+          }}
+          getContext={async () => {
+            // Build codebase context for external AI agents
+            if (!projectName) return null;
+            const context = await buildCodebaseContext(runQuery, projectName);
+            // Reshape to match MCP CodebaseContext format
+            return {
+              projectName: context.stats.projectName,
+              stats: {
+                fileCount: context.stats.fileCount,
+                functionCount: context.stats.functionCount,
+                classCount: context.stats.classCount,
+                interfaceCount: context.stats.interfaceCount,
+                methodCount: context.stats.methodCount,
+              },
+              hotspots: context.hotspots,
+              folderTree: context.folderTree,
+            };
+          }}
+          onGrep={async (pattern, caseSensitive = false, maxResults = 50) => {
+            // Grep across file contents
+            const results: Array<{ filePath: string; line: string; lineNumber: number; match: string }> = [];
+            const regex = new RegExp(pattern, caseSensitive ? 'g' : 'gi');
+
+            for (const [filePath, content] of fileContents.entries()) {
+              const lines = content.split('\n');
+              for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+                const line = lines[i];
+                const match = line.match(regex);
+                if (match) {
+                  results.push({
+                    filePath,
+                    line: line.trim(),
+                    lineNumber: i + 1,
+                    match: match[0],
+                  });
+                }
+              }
+              if (results.length >= maxResults) break;
+            }
+            return results;
+          }}
+          onRead={async (filePath, startLine, endLine) => {
+            // Read file content
+            let content = fileContents.get(filePath);
+
+            // Try normalized path if not found
+            if (!content) {
+              const normalizedPath = filePath.replace(/\\/g, '/');
+              for (const [path, c] of fileContents.entries()) {
+                if (path.endsWith(normalizedPath) || normalizedPath.endsWith(path)) {
+                  content = c;
+                  break;
+                }
+              }
+            }
+
+            if (!content) {
+              return { error: `File not found: ${filePath}` };
+            }
+
+            const lines = content.split('\n');
+            const language = filePath.split('.').pop() || 'text';
+
+            // If line range specified, return only those lines
+            if (startLine !== undefined && endLine !== undefined) {
+              const slice = lines.slice(startLine - 1, endLine);
+              return {
+                filePath,
+                content: slice.join('\n'),
+                language,
+                lines: slice.length,
+              };
+            }
+
+            return {
+              filePath,
+              content,
+              language,
+              lines: lines.length,
+            };
           }}
         />
 

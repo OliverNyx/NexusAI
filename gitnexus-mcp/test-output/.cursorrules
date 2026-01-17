@@ -1,0 +1,69 @@
+# GitNexus Code Intelligence
+
+This project uses GitNexus MCP for code understanding. When working with this codebase, you have access to powerful code intelligence tools.
+
+## Available MCP Tools
+
+### search
+Semantic search across code. Returns functions, classes, files matching meaning.
+- Use for: Finding code by description, not exact text
+- Example queries: "authentication logic", "database connection handling", "error middleware"
+
+### cypher
+Direct KuzuDB graph queries for precise relationship traversal.
+- Use for: Finding call chains, imports, inheritance
+- Pattern: `MATCH (f:Function)-[:CodeRelation {type:'CALLS'}]->(g:Function) RETURN f.name, g.name`
+- Node types: File, Folder, Function, Class, Interface, Method, CodeElement
+- Relation types: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS
+
+### blastRadius
+Find all code affected by changing a node. Returns N-hop connections.
+- Use for: Before refactoring, understanding impact of changes
+- Returns: List of connected nodes with their types
+
+### highlight
+Highlight nodes in the graph visualization.
+- Use for: Showing the user what you're looking at
+
+### context
+Get project overview: stats, hotspots, folder tree.
+- Use for: Understanding project structure, finding important files
+- Returns: File counts, hotspots (most connected files), directory tree
+
+### grep
+Regex pattern search across file contents.
+- Use for: Finding exact patterns, TODOs, specific strings
+- Faster than search for literal text
+
+### read
+Read file content by path. Supports line ranges.
+- Use for: Reading actual code after finding via search/grep
+
+## Best Practices
+
+1. **Start with context** - Run `context` first to understand project structure
+2. **Use search for discovery** - Find relevant code by meaning, not keywords
+3. **Use cypher for relationships** - When you need call chains, imports, inheritance
+4. **Check blast radius before refactoring** - Understand impact before making changes
+5. **Read to confirm** - After finding code via search, read it to see full context
+
+## Cypher Query Examples
+
+```cypher
+# Find all functions that call a specific function
+MATCH (caller:Function)-[:CodeRelation {type:'CALLS'}]->(target:Function {name: 'authenticate'})
+RETURN caller.name, caller.filePath
+
+# Find class inheritance chain
+MATCH (child:Class)-[:CodeRelation {type:'EXTENDS'}]->(parent:Class)
+RETURN child.name, parent.name
+
+# Find all imports in a file
+MATCH (f:File {name: 'api.ts'})-[:CodeRelation {type:'IMPORTS'}]->(imported:File)
+RETURN imported.name, imported.filePath
+
+# Find hotspots (most connected nodes)
+MATCH (n)-[r:CodeRelation]-()
+RETURN n.name, labels(n), count(r) as connections
+ORDER BY connections DESC LIMIT 10
+```

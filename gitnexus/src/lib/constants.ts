@@ -65,3 +65,34 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Interface',
   'Import',
 ];
+
+// Edge/Relation types
+export type EdgeType = 'CONTAINS' | 'DEFINES' | 'IMPORTS' | 'CALLS' | 'EXTENDS' | 'IMPLEMENTS';
+
+export const ALL_EDGE_TYPES: EdgeType[] = [
+  'CONTAINS',
+  'DEFINES',
+  'IMPORTS',
+  'CALLS',
+  'EXTENDS',
+  'IMPLEMENTS',
+];
+
+// Default visible edges (CALLS hidden by default to reduce clutter)
+export const DEFAULT_VISIBLE_EDGES: EdgeType[] = [
+  'CONTAINS',
+  'DEFINES',
+  'IMPORTS',
+  'EXTENDS',
+  'IMPLEMENTS',
+];
+
+// Edge display info for UI
+export const EDGE_INFO: Record<EdgeType, { color: string; label: string }> = {
+  CONTAINS: { color: '#2d5a3d', label: 'Contains' },
+  DEFINES: { color: '#0e7490', label: 'Defines' },
+  IMPORTS: { color: '#1d4ed8', label: 'Imports' },
+  CALLS: { color: '#7c3aed', label: 'Calls' },
+  EXTENDS: { color: '#c2410c', label: 'Extends' },
+  IMPLEMENTS: { color: '#be185d', label: 'Implements' },
+};
