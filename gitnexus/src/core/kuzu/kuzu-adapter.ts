@@ -113,35 +113,56 @@ export const loadGraphToKuzu = async (
     }
     
     // 5. INSERT relations one by one (COPY doesn't work with multi-pair REL tables)
-    // Parse CSV format: "from","to","type"
+    // Parse CSV format: "from","to","type",confidence,"reason"
     let insertedRels = 0;
+    let skippedRels = 0;
+    const skippedRelStats = new Map<string, number>();
     for (const line of relLines) {
       try {
-        // Parse CSV - handle quoted fields
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)"/);
+        // Parse CSV - handle quoted fields and numeric confidence
+        // Format: "from","to","type",confidence,"reason"
+        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
         if (!match) continue;
         
-        const [, fromId, toId, relType] = match;
+        const [, fromId, toId, relType, confidenceStr, reason] = match;
+        const confidence = parseFloat(confidenceStr) || 1.0;
         
         // Extract labels from node IDs (format: Label:path:name)
         const fromLabel = fromId.split(':')[0];
         const toLabel = toId.split(':')[0];
         
-        // INSERT with explicit node matching
+        // INSERT with explicit node matching (including confidence and reason)
         const insertQuery = `
           MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'})
           MATCH (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
-          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}'}]->(b)
+          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}'}]->(b)
         `;
         await conn.query(insertQuery);
         insertedRels++;
       } catch {
-        // Skip failed insertions (nodes might not exist)
+        // Skip failed insertions (nodes might not exist, or relation pair not allowed by schema)
+        skippedRels++;
+        if (import.meta.env.DEV) {
+          const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
+          if (match) {
+            const [, fromId, toId, relType] = match;
+            const fromLabel = fromId.split(':')[0];
+            const toLabel = toId.split(':')[0];
+            const key = `${relType}:${fromLabel}->${toLabel}`;
+            skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
+          }
+        }
       }
     }
     
     if (import.meta.env.DEV) {
       console.log(`KuzuDB: Inserted ${insertedRels}/${relCount} relations`);
+      if (skippedRels > 0) {
+        const topSkipped = Array.from(skippedRelStats.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10);
+        console.warn(`KuzuDB: Skipped ${skippedRels}/${relCount} relations (top by kind/pair):`, topSkipped);
+      }
     }
     
     // 6. Verify results
@@ -189,6 +210,7 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
 
 /**
  * Execute a Cypher query against the database
+ * Returns results as named objects (not tuples) for better usability
  */
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   if (!conn) {
@@ -198,11 +220,45 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
   try {
     const result = await conn.query(cypher);
     
+    // Extract column names from RETURN clause
+    const returnMatch = cypher.match(/RETURN\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+SKIP|\s*$)/is);
+    let columnNames: string[] = [];
+    if (returnMatch) {
+      // Parse RETURN clause to get column names/aliases
+      // Handles: "a.name, b.filePath AS path, count(x) AS cnt"
+      const returnClause = returnMatch[1];
+      columnNames = returnClause.split(',').map(col => {
+        col = col.trim();
+        // Check for AS alias
+        const asMatch = col.match(/\s+AS\s+(\w+)\s*$/i);
+        if (asMatch) return asMatch[1];
+        // Check for property access like n.name
+        const propMatch = col.match(/\.(\w+)\s*$/);
+        if (propMatch) return propMatch[1];
+        // Check for function call like count(x)
+        const funcMatch = col.match(/^(\w+)\s*\(/);
+        if (funcMatch) return funcMatch[1];
+        // Just use as-is if simple identifier
+        return col.replace(/[^a-zA-Z0-9_]/g, '_');
+      });
+    }
+    
     // Collect all rows
     const rows: any[] = [];
     while (await result.hasNext()) {
       const row = await result.getNext();
-      rows.push(row);
+      
+      // Convert tuple to named object if we have column names and row is array
+      if (Array.isArray(row) && columnNames.length === row.length) {
+        const namedRow: Record<string, any> = {};
+        for (let i = 0; i < row.length; i++) {
+          namedRow[columnNames[i]] = row[i];
+        }
+        rows.push(namedRow);
+      } else {
+        // Already an object or column count doesn't match
+        rows.push(row);
+      }
     }
     
     return rows;

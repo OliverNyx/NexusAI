@@ -84,7 +84,9 @@ export const processHeritage = async (
             id: relId,
             sourceId: childId,
             targetId: parentId,
-            type: 'EXTENDS'
+            type: 'EXTENDS',
+            confidence: 1.0,
+            reason: '',
           });
         }
       }
@@ -109,7 +111,9 @@ export const processHeritage = async (
             id: relId,
             sourceId: classId,
             targetId: interfaceId,
-            type: 'IMPLEMENTS'
+            type: 'IMPLEMENTS',
+            confidence: 1.0,
+            reason: '',
           });
         }
       }

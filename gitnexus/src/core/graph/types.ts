@@ -48,6 +48,10 @@ export interface GraphRelationship {
   sourceId: string,
   targetId: string,
   type: RelationshipType,
+  /** Confidence score 0-1 (1.0 = certain, lower = uncertain resolution) */
+  confidence: number,
+  /** Resolution reason: 'import-resolved', 'same-file', 'fuzzy-global', or empty for non-CALLS */
+  reason: string,
 }
 
 export interface KnowledgeGraph {

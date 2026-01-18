@@ -5,7 +5,7 @@
  * Shows connection status and setup instructions if bridge not found.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Copy, Check, AlertCircle, X, Sparkles } from 'lucide-react';
 import { getMCPClient, type CodebaseContext } from '../core/mcp/mcp-client';
 
@@ -45,6 +45,8 @@ export function MCPToggle({
     const [status, setStatus] = useState<ConnectionState>('disconnected');
     const [copied, setCopied] = useState(false);
     const [showSetup, setShowSetup] = useState(false);
+    const [hasConnectionError, setHasConnectionError] = useState(false);
+    const setupPopupRef = useRef<HTMLDivElement | null>(null);
     const [showTip, setShowTip] = useState(false);
 
     const isConnected = status === 'connected';
@@ -62,6 +64,21 @@ export function MCPToggle({
         }
     }, [showOnboardingTip]);
 
+    // Close setup popup when clicking outside
+    useEffect(() => {
+        if (!showSetup) return;
+
+        const handleClickOutside = (event: MouseEvent) => {
+            if (!setupPopupRef.current) return;
+            if (!setupPopupRef.current.contains(event.target as Node)) {
+                setShowSetup(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showSetup]);
+
     const dismissTip = () => {
         setShowTip(false);
         localStorage.setItem(MCP_TIP_DISMISSED_KEY, 'true');
@@ -71,6 +88,7 @@ export function MCPToggle({
         const client = getMCPClient();
         setStatus('connecting');
         setShowTip(false);
+        setHasConnectionError(false);
 
         try {
             await client.connect();
@@ -125,6 +143,7 @@ export function MCPToggle({
 
             setStatus('connected');
             setShowSetup(false);
+            setHasConnectionError(false);
             localStorage.setItem(MCP_TIP_DISMISSED_KEY, 'true');
 
             // Send codebase context after connecting
@@ -141,6 +160,7 @@ export function MCPToggle({
         } catch {
             setStatus('error');
             setShowSetup(true);
+            setHasConnectionError(true);
         }
     }, [onSearch, onCypher, onBlastRadius, onHighlight, onGrep, onRead, getContext]);
 
@@ -148,6 +168,7 @@ export function MCPToggle({
         const client = getMCPClient();
         client.disconnect();
         setStatus('disconnected');
+        setHasConnectionError(false);
     }, []);
 
     const toggle = useCallback(() => {
@@ -158,8 +179,8 @@ export function MCPToggle({
         }
     }, [isConnected, isConnecting, connect, disconnect]);
 
-    const copyCommand = () => {
-        navigator.clipboard.writeText('npx gitnexus-mcp setup');
+    const copyCommand = (command: string) => {
+        navigator.clipboard.writeText(command);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };
@@ -168,13 +189,19 @@ export function MCPToggle({
     useEffect(() => {
         const client = getMCPClient();
         const unsubscribe = client.onConnectionChange((connected) => {
-            setStatus(connected ? 'connected' : 'disconnected');
+            if (connected) {
+                setStatus('connected');
+                setShowSetup(false);
+                setHasConnectionError(false);
+            } else {
+                setStatus('disconnected');
+            }
         });
         return () => { unsubscribe(); };
     }, []);
 
     // Error state - show setup popup
-    if (status === 'error' && showSetup) {
+    if (hasConnectionError && showSetup) {
         return (
             <div className="relative flex items-center gap-2">
                 <span className="text-xs text-text-primary font-medium">MCP</span>
@@ -183,30 +210,74 @@ export function MCPToggle({
                     className="flex items-center gap-1.5 px-2 py-1 text-xs text-amber-400 hover:bg-amber-400/10 rounded transition-colors"
                 >
                     <AlertCircle className="w-3.5 h-3.5" />
-                    <span>Setup</span>
+                    <span>Daemon</span>
                 </button>
 
-                <div className="absolute top-full right-0 mt-2 p-4 bg-surface border border-border rounded-lg shadow-xl z-50 w-80">
-                    <p className="text-sm text-text-secondary mb-3">
-                        Run this command to enable external AI agents:
+                <div
+                    ref={setupPopupRef}
+                    className="absolute top-full right-0 mt-2 p-5 bg-surface border border-border rounded-lg shadow-xl z-50 w-[28rem]"
+                >
+                    <p className="text-sm text-text-primary mb-4">
+                        MCP daemon isn't running. Follow the steps below:
                     </p>
-                    <div className="flex items-center gap-2 bg-background p-2 rounded font-mono text-sm">
-                        <code className="flex-1 text-green-400">npx gitnexus-mcp setup</code>
-                        <button
-                            onClick={copyCommand}
-                            className="p-1 hover:bg-surface-hover rounded"
-                            title="Copy command"
-                        >
-                            {copied ? (
-                                <Check className="w-4 h-4 text-green-400" />
-                            ) : (
-                                <Copy className="w-4 h-4 text-text-secondary" />
-                            )}
-                        </button>
+
+                    <div className="mb-3">
+                        <p className="text-sm text-text-secondary mb-2">1) Install/configure your IDE:</p>
+                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
+                            <code className="flex-1 text-text-primary">npx gitnexus-mcp setup</code>
+                            <button
+                                onClick={() => copyCommand('npx gitnexus-mcp setup')}
+                                className="p-1.5 hover:bg-surface-hover rounded"
+                                title="Copy command"
+                            >
+                                {copied ? (
+                                    <Check className="w-4 h-4 text-green-400" />
+                                ) : (
+                                    <Copy className="w-4 h-4 text-text-secondary" />
+                                )}
+                            </button>
+                        </div>
                     </div>
+
+                    <div className="mb-3">
+                        <p className="text-sm text-text-secondary mb-2">2) Start the daemon (recommended):</p>
+                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
+                            <code className="flex-1 text-text-primary">npx gitnexus-mcp daemon</code>
+                            <button
+                                onClick={() => copyCommand('npx gitnexus-mcp daemon')}
+                                className="p-1.5 hover:bg-surface-hover rounded"
+                                title="Copy command"
+                            >
+                                {copied ? (
+                                    <Check className="w-4 h-4 text-green-400" />
+                                ) : (
+                                    <Copy className="w-4 h-4 text-text-secondary" />
+                                )}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="mb-3">
+                        <p className="text-sm text-text-secondary mb-2">Dev mode (from `gitnexus-mcp` dir):</p>
+                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
+                            <code className="flex-1 text-text-primary">npm run build &amp;&amp; node dist/cli.js daemon</code>
+                            <button
+                                onClick={() => copyCommand('npm run build && node dist/cli.js daemon')}
+                                className="p-1.5 hover:bg-surface-hover rounded"
+                                title="Copy command"
+                            >
+                                {copied ? (
+                                    <Check className="w-4 h-4 text-green-400" />
+                                ) : (
+                                    <Copy className="w-4 h-4 text-text-secondary" />
+                                )}
+                            </button>
+                        </div>
+                    </div>
+
                     <button
                         onClick={() => { setShowSetup(false); connect(); }}
-                        className="mt-3 w-full px-3 py-1.5 text-sm bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
+                        className="mt-2 w-full px-3 py-1.5 text-sm bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
                     >
                         Retry Connection
                     </button>
@@ -282,7 +353,7 @@ export function MCPToggle({
                         <div className="flex items-center gap-2 bg-background p-2 rounded font-mono text-sm">
                             <code className="flex-1 text-green-400">npx gitnexus-mcp setup</code>
                             <button
-                                onClick={copyCommand}
+                        onClick={() => copyCommand('npx gitnexus-mcp setup')}
                                 className="p-1 hover:bg-surface-hover rounded"
                                 title="Copy command"
                             >

@@ -232,6 +232,11 @@ export const createGraphRAGAgent = (
     ? buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, codebaseContext)
     : BASE_SYSTEM_PROMPT;
   
+  // Log the full prompt for debugging
+  if (import.meta.env.DEV) {
+    console.log('🤖 AGENT SYSTEM PROMPT:\n', systemPrompt);
+  }
+  
   const agent = createReactAgent({
     llm: model as any,
     tools: tools as any,

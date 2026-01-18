@@ -396,17 +396,28 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
-        const hasHighlights = highlighted.size > 0;
+        const blastRadius = blastRadiusRef.current;
+        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0; // Check BOTH sets
         
         if (hasHighlights && !currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const [source, target] = graph.extremities(edge);
-            const bothHighlighted = highlighted.has(source) && highlighted.has(target);
-            const oneHighlighted = highlighted.has(source) || highlighted.has(target);
+            
+            // Check if nodes are in EITHER set
+            const isSourceActive = highlighted.has(source) || blastRadius.has(source);
+            const isTargetActive = highlighted.has(target) || blastRadius.has(target);
+            
+            const bothHighlighted = isSourceActive && isTargetActive;
+            const oneHighlighted = isSourceActive || isTargetActive;
             
             if (bothHighlighted) {
-              res.color = '#06b6d4';
+              // If both nodes are in blast radius, use red edge
+              if (blastRadius.has(source) && blastRadius.has(target)) {
+                res.color = '#ef4444';
+              } else {
+                res.color = '#06b6d4';
+              }
               res.size = Math.max(2, (data.size || 1) * 3);
               res.zIndex = 2;
             } else if (oneHighlighted) {

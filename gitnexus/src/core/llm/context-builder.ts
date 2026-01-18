@@ -145,11 +145,11 @@ export async function getHotspots(
 
 /**
  * Build folder tree structure from file paths
- * Returns TOON format for token efficiency (~50% reduction vs ASCII tree)
+ * Returns ASCII tree format with smart truncation for readability
  */
 export async function getFolderTree(
   executeQuery: (cypher: string) => Promise<any[]>,
-  maxDepth: number = 3
+  maxDepth: number = 10
 ): Promise<string> {
   try {
     // Get all file paths
@@ -163,8 +163,8 @@ export async function getFolderTree(
 
     if (paths.length === 0) return '';
 
-    // Use TOON format for token efficiency
-    return formatPathsAsTOON(paths, maxDepth);
+    // Use hybrid ASCII format: clear hierarchy with smart truncation
+    return formatAsHybridAscii(paths, maxDepth);
   } catch (error) {
     console.error('Failed to get folder tree:', error);
     return '';
@@ -172,74 +172,87 @@ export async function getFolderTree(
 }
 
 /**
- * Format paths as TOON (Token-Oriented Object Notation)
- * Much more token-efficient than ASCII trees
+ * Format paths as indented tree (TOON-style, no ASCII box chars)
+ * Uses indentation only for hierarchy - more token efficient than ASCII tree
+ * Shows complete structure with no truncation
  * 
  * Example output:
- * folders:5
- *   src,src/cli,src/core,src/utils,test
- * files:8
- *   path
- *   src/index.ts
- *   src/cli/main.ts
- *   ...
+ * src/
+ *   components/ (45 files)
+ *   hooks/
+ *     useAppState.tsx
+ *     useSigma.ts
+ *   core/ (15 files)
+ * test/ (12 files)
  */
-function formatPathsAsTOON(paths: string[], maxDepth: number): string {
-  const folders = new Set<string>();
-  const files: string[] = [];
+function formatAsHybridAscii(paths: string[], maxDepth: number): string {
+  // Build tree structure
+  interface TreeNode {
+    isFile: boolean;
+    children: Map<string, TreeNode>;
+    fileCount: number;
+  }
+  
+  const root: TreeNode = { isFile: false, children: new Map(), fileCount: 0 };
   
   for (const path of paths) {
-    // Normalize path
     const normalized = path.replace(/\\/g, '/');
     const parts = normalized.split('/').filter(Boolean);
     
-    // Add file (truncate to maxDepth)
-    if (parts.length <= maxDepth + 1) {
-      files.push(normalized);
-    } else {
-      // Show truncated path for deep files
-      files.push(parts.slice(0, maxDepth + 1).join('/') + '/...');
-    }
-    
-    // Add folders
-    for (let i = 0; i < Math.min(parts.length - 1, maxDepth); i++) {
-      const folderPath = parts.slice(0, i + 1).join('/');
-      folders.add(folderPath);
-    }
-  }
-  
-  // Sort folders and files
-  const sortedFolders = Array.from(folders).sort();
-  const sortedFiles = [...new Set(files)].sort();
-  
-  // Build TOON output
-  const lines: string[] = [];
-  
-  // Folders section
-  lines.push(`folders:${sortedFolders.length}`);
-  if (sortedFolders.length > 0) {
-    // Compact comma-separated for small lists
-    if (sortedFolders.length <= 10) {
-      lines.push(`  ${sortedFolders.join(',')}`);
-    } else {
-      // Chunked for larger lists
-      for (let i = 0; i < sortedFolders.length; i += 8) {
-        lines.push(`  ${sortedFolders.slice(i, i + 8).join(',')}`);
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isFile = i === parts.length - 1;
+      
+      if (!current.children.has(part)) {
+        current.children.set(part, { isFile, children: new Map(), fileCount: 0 });
+      }
+      
+      current = current.children.get(part)!;
+      if (isFile) {
+        // Count files in parent directories
+        let parent = root;
+        for (let j = 0; j < i; j++) {
+          parent = parent.children.get(parts[j])!;
+          parent.fileCount++;
+        }
       }
     }
   }
   
-  // Files section
-  lines.push(`files:${sortedFiles.length}`);
-  lines.push('  path');
-  // Show first 30 files, then summarize
-  const maxFiles = 30;
-  for (let i = 0; i < Math.min(sortedFiles.length, maxFiles); i++) {
-    lines.push(`  ${sortedFiles[i]}`);
+  // Render tree with indentation only (no ASCII box chars)
+  const lines: string[] = [];
+  
+  function renderNode(node: TreeNode, indent: string, depth: number): void {
+    const entries = [...node.children.entries()];
+    // Sort: folders first (by file count desc), then files alphabetically
+    entries.sort(([aName, aNode], [bName, bNode]) => {
+      if (aNode.isFile !== bNode.isFile) return aNode.isFile ? 1 : -1;
+      if (!aNode.isFile && !bNode.isFile) return bNode.fileCount - aNode.fileCount;
+      return aName.localeCompare(bName);
+    });
+    
+    for (const [name, childNode] of entries) {
+      if (childNode.isFile) {
+        // File
+        lines.push(`${indent}${name}`);
+      } else {
+        // Directory
+        const childCount = childNode.children.size;
+        const fileCount = childNode.fileCount;
+        
+        // Only collapse if beyond maxDepth
+        if (depth >= maxDepth) {
+          lines.push(`${indent}${name}/ (${fileCount} files)`);
+        } else {
+          lines.push(`${indent}${name}/`);
+          renderNode(childNode, indent + '  ', depth + 1);
+        }
+      }
+    }
   }
-  if (sortedFiles.length > maxFiles) {
-    lines.push(`  ...(${sortedFiles.length - maxFiles} more)`);
-  }
+  
+  renderNode(root, '', 0);
   
   return lines.join('\n');
 }

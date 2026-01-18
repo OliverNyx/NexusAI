@@ -123,11 +123,17 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Folder TO File,
   FROM Function TO Function,
   FROM Function TO Method,
+  FROM Function TO Class,
   FROM Class TO Method,
   FROM Class TO Function,
   FROM Class TO Class,
   FROM Class TO Interface,
-  type STRING
+  FROM Method TO Function,
+  FROM Method TO Method,
+  FROM Method TO Class,
+  type STRING,
+  confidence DOUBLE,
+  reason STRING
 )`;
 
 // ============================================================================

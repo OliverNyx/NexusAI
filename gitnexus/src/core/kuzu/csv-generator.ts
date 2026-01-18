@@ -119,7 +119,7 @@ const extractContent = (
 
 export interface CSVData {
   nodes: Map<NodeTableName, string>;
-  relCSV: string;  // Single relation CSV with from,to,type columns
+  relCSV: string;  // Single relation CSV with from,to,type,confidence,reason columns
 }
 
 // ============================================================================
@@ -202,10 +202,13 @@ const generateCodeElementCSV = (
 
 /**
  * Generate CSV for the single CodeRelation table
- * Headers: from,to,type
+ * Headers: from,to,type,confidence,reason
+ * 
+ * confidence: 0-1 score for CALLS edges (how sure are we about the target?)
+ * reason: 'import-resolved' | 'same-file' | 'fuzzy-global' (or empty for non-CALLS)
  */
 const generateRelationCSV = (graph: KnowledgeGraph): string => {
-  const headers = ['from', 'to', 'type'];
+  const headers = ['from', 'to', 'type', 'confidence', 'reason'];
   const rows: string[] = [headers.join(',')];
   
   for (const rel of graph.relationships) {
@@ -213,6 +216,8 @@ const generateRelationCSV = (graph: KnowledgeGraph): string => {
       escapeCSVField(rel.sourceId),
       escapeCSVField(rel.targetId),
       escapeCSVField(rel.type),
+      escapeCSVNumber(rel.confidence, 1.0),
+      escapeCSVField(rel.reason),
     ].join(','));
   }
   

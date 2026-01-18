@@ -71,7 +71,8 @@ const findEnclosingFunction = (
         if (nodeId) return nodeId;
         
         // Fallback: generate ID based on name and file
-        return generateId('Function', `${filePath}:${funcName}`);
+        const fallbackLabel = current.type === 'method_definition' ? 'Method' : 'Function';
+        return generateId(fallbackLabel, `${filePath}:${funcName}`);
       }
       
       // Couldn't determine function name - try parent (might be nested)
@@ -143,15 +144,15 @@ export const processCalls = async (
       // Skip common built-ins and noise
       if (isBuiltInOrNoise(calledName)) return;
 
-      // 4. Resolve the target using priority strategy
-      const targetNodeId = resolveCallTarget(
+      // 4. Resolve the target using priority strategy (returns confidence)
+      const resolved = resolveCallTarget(
         calledName,
         file.path,
         symbolTable,
         importMap
       );
 
-      if (!targetNodeId) return;
+      if (!resolved) return;
 
       // 5. Find the enclosing function (caller)
       const callNode = captureMap['call'];
@@ -160,13 +161,15 @@ export const processCalls = async (
       // Use enclosing function as source, fallback to file for top-level calls
       const sourceId = enclosingFuncId || generateId('File', file.path);
       
-      const relId = generateId('CALLS', `${sourceId}:${calledName}->${targetNodeId}`);
+      const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
 
       graph.addRelationship({
         id: relId,
         sourceId,
-        targetId: targetNodeId,
-        type: 'CALLS'
+        targetId: resolved.nodeId,
+        type: 'CALLS',
+        confidence: resolved.confidence,
+        reason: resolved.reason,
       });
     });
 
@@ -178,34 +181,51 @@ export const processCalls = async (
 };
 
 /**
+ * Resolution result with confidence scoring
+ */
+interface ResolveResult {
+  nodeId: string;
+  confidence: number;  // 0-1: how sure are we?
+  reason: string;      // 'import-resolved' | 'same-file' | 'fuzzy-global'
+}
+
+/**
  * Resolve a function call to its target node ID using priority strategy:
  * A. Check imported files first (highest confidence)
  * B. Check local file definitions
  * C. Fuzzy global search (lowest confidence)
+ * 
+ * Returns confidence score so agents know what to trust.
  */
 const resolveCallTarget = (
   calledName: string,
   currentFile: string,
   symbolTable: SymbolTable,
   importMap: ImportMap
-): string | null => {
-  // Strategy A: Check imported files
+): ResolveResult | null => {
+  // Strategy A: Check imported files (HIGH confidence - we know the import chain)
   const importedFiles = importMap.get(currentFile);
   if (importedFiles) {
     for (const importedFile of importedFiles) {
       const nodeId = symbolTable.lookupExact(importedFile, calledName);
-      if (nodeId) return nodeId;
+      if (nodeId) {
+        return { nodeId, confidence: 0.9, reason: 'import-resolved' };
+      }
     }
   }
 
-  // Strategy B: Check local file (same file definition)
+  // Strategy B: Check local file (HIGH confidence - same file definition)
   const localNodeId = symbolTable.lookupExact(currentFile, calledName);
-  if (localNodeId) return localNodeId;
+  if (localNodeId) {
+    return { nodeId: localNodeId, confidence: 0.85, reason: 'same-file' };
+  }
 
-  // Strategy C: Fuzzy global search (pick first match)
+  // Strategy C: Fuzzy global search (LOW confidence - just matching by name)
   const fuzzyMatches = symbolTable.lookupFuzzy(calledName);
   if (fuzzyMatches.length > 0) {
-    return fuzzyMatches[0].nodeId;
+    // Lower confidence if multiple matches exist (more ambiguous)
+    const confidence = fuzzyMatches.length === 1 ? 0.5 : 0.3;
+    return { nodeId: fuzzyMatches[0].nodeId, confidence, reason: 'fuzzy-global' };
   }
 
   return null;

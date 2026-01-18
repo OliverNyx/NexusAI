@@ -113,7 +113,9 @@ export const processParsing = async (
         id: relId,
         sourceId: fileId,
         targetId: nodeId,
-        type: 'DEFINES'
+        type: 'DEFINES',
+        confidence: 1.0,
+        reason: '',
       };
 
       graph.addRelationship(relationship);

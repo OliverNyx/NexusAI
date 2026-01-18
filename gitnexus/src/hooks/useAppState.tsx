@@ -145,7 +145,7 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: () => Promise<void>;
+  initializeAgent: (overrideProjectName?: string) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   clearChat: () => void;
 
@@ -540,7 +540,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setLLMSettings(loadSettings());
   }, []);
 
-  const initializeAgent = useCallback(async (): Promise<void> => {
+  const initializeAgent = useCallback(async (overrideProjectName?: string): Promise<void> => {
     const api = apiRef.current;
     if (!api) {
       setAgentError('Worker not initialized');
@@ -557,7 +557,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
 
     try {
-      const result = await api.initializeAgent(config);
+      // Use override if provided (for fresh loads), fallback to state (for re-init)
+      const effectiveProjectName = overrideProjectName || projectName || 'project';
+      const result = await api.initializeAgent(config, effectiveProjectName);
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -575,7 +577,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, []);
+  }, [projectName]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;

@@ -32,7 +32,9 @@ export const processStructure = ( graph: KnowledgeGraph, paths: string[])=>{
                     id: relId,
                     type: 'CONTAINS',
                     sourceId: parentId,
-                    targetId: nodeId
+                    targetId: nodeId,
+                    confidence: 1.0,
+                    reason: '',
                 }
 
                 graph.addRelationship(relationship)

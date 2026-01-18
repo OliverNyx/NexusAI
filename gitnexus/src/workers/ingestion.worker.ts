@@ -382,8 +382,9 @@ const workerApi = {
    * Initialize the Graph RAG agent with a provider configuration
    * Must be called before using chat methods
    * @param config - Provider configuration (Azure OpenAI or Gemini)
+   * @param projectName - Name of the loaded project/repository
    */
-  async initializeAgent(config: ProviderConfig): Promise<{ success: boolean; error?: string }> {
+  async initializeAgent(config: ProviderConfig, projectName?: string): Promise<{ success: boolean; error?: string }> {
     try {
       const kuzu = await getKuzuAdapter();
       if (!kuzu.isKuzuReady()) {
@@ -424,14 +425,15 @@ const workerApi = {
         return mergeWithRRF(bm25Results, semanticResults, k ?? 10);
       };
 
-      // Build codebase context for dynamic prompt injection
-      // Extract project name from first file path
-      const firstPath = storedFileContents.keys().next().value || '';
-      const projectName = firstPath.split('/')[0] || firstPath.split('\\')[0] || 'project';
+      // Use provided projectName, or fallback to 'project' if not provided
+      const resolvedProjectName = projectName || 'project';
+      if (import.meta.env.DEV) {
+        console.log('📛 Project name received:', { provided: projectName, resolved: resolvedProjectName });
+      }
       
       let codebaseContext;
       try {
-        codebaseContext = await buildCodebaseContext(kuzu.executeQuery, projectName);
+        codebaseContext = await buildCodebaseContext(kuzu.executeQuery, resolvedProjectName);
         if (import.meta.env.DEV) {
           console.log('📊 Codebase context built:', {
             files: codebaseContext.stats.fileCount,

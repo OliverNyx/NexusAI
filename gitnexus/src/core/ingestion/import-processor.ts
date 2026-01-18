@@ -125,7 +125,9 @@ export const processImports = async (
             id: relId,
             sourceId,
             targetId,
-            type: 'IMPORTS'
+            type: 'IMPORTS',
+            confidence: 1.0,
+            reason: '',
           });
 
           // B. Update Import Map (For Pass 4)

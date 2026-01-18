@@ -41,12 +41,12 @@ const AppContent = () => {
     const projectName = file.name.replace('.zip', '');
     setProjectName(projectName);
     setViewMode('loading');
-    
+
     try {
       const result = await runPipeline(file, (progress) => {
         setProgress(progress);
       });
-      
+
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
@@ -54,9 +54,9 @@ const AppContent = () => {
       // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
       // the current codebase context (file contents + graph tools) in the worker.
       if (getActiveProviderConfig()) {
-        initializeAgent();
+        initializeAgent(projectName);
       }
-      
+
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
       startEmbeddings().catch((err) => {
@@ -86,15 +86,15 @@ const AppContent = () => {
     // Extract project name from first file path (e.g., "owner-repo-123/src/..." -> "owner-repo")
     const firstPath = files[0]?.path || 'repository';
     const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
-    
+
     setProjectName(projectName);
     setViewMode('loading');
-    
+
     try {
       const result = await runPipelineFromFiles(files, (progress) => {
         setProgress(progress);
       });
-      
+
       setGraph(result.graph);
       setFileContents(result.fileContents);
       setViewMode('exploring');
@@ -102,9 +102,9 @@ const AppContent = () => {
       // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
       // the current codebase context (file contents + graph tools) in the worker.
       if (getActiveProviderConfig()) {
-        initializeAgent();
+        initializeAgent(projectName);
       }
-      
+
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
       startEmbeddings().catch((err) => {
@@ -154,11 +154,11 @@ const AppContent = () => {
   return (
     <div className="flex flex-col h-screen bg-void overflow-hidden">
       <Header onFocusNode={handleFocusNode} />
-      
+
       <main className="flex-1 flex min-h-0">
         {/* Left Panel - File Tree */}
         <FileTreePanel onFocusNode={handleFocusNode} />
-        
+
         {/* Graph area - takes remaining space */}
         <div className="flex-1 relative min-w-0">
           <GraphCanvas ref={graphCanvasRef} />
@@ -170,13 +170,13 @@ const AppContent = () => {
             </div>
           )}
         </div>
-        
+
         {/* Right Panel - Code & Chat (tabbed) */}
         {isRightPanelOpen && <RightPanel />}
       </main>
-      
+
       <StatusBar />
-      
+
       {/* Settings Panel (modal) */}
       <SettingsPanel
         isOpen={isSettingsPanelOpen}

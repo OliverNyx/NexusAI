@@ -85,8 +85,8 @@ export const createGraphRAGTools = (
               OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
               OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
               RETURN 
-                collect(DISTINCT {name: dst.name, type: r1.type}) AS outgoing,
-                collect(DISTINCT {name: src.name, type: r2.type}) AS incoming
+                collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
+                collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
               LIMIT 1
             `;
             const connRes = await executeQuery(connectionsQuery);
@@ -97,8 +97,16 @@ export const createGraphRAGTools = (
               const rawIncoming = Array.isArray(row) ? row[1] : (row.incoming || []);
               const outgoing = (rawOutgoing || []).filter((c: any) => c && c.name).slice(0, 3);
               const incoming = (rawIncoming || []).filter((c: any) => c && c.name).slice(0, 3);
-              const outList = outgoing.map((c: any) => `-[${c.type}]-> ${c.name}`);
-              const inList = incoming.map((c: any) => `<-[${c.type}]- ${c.name}`);
+              
+              const fmt = (c: any, dir: 'out' | 'in') => {
+                const conf = c.confidence ? Math.round(c.confidence * 100) : 100;
+                return dir === 'out' 
+                  ? `-[${c.type} ${conf}%]-> ${c.name}`
+                  : `<-[${c.type} ${conf}%]- ${c.name}`;
+              };
+              
+              const outList = outgoing.map((c: any) => fmt(c, 'out'));
+              const inList = incoming.map((c: any) => fmt(c, 'in'));
               if (outList.length || inList.length) {
                 connections = `\n    Connections: ${[...outList, ...inList].join(', ')}`;
               }
@@ -168,18 +176,39 @@ export const createGraphRAGTools = (
           return 'Query returned no results.';
         }
         
-        // Format results
+        // Get column names from first result (now objects from executeQuery)
+        const firstRow = results[0];
+        const columnNames = typeof firstRow === 'object' && !Array.isArray(firstRow)
+          ? Object.keys(firstRow)
+          : [];
+        
+        // Format as markdown table (more token efficient than JSON per row)
+        if (columnNames.length > 0) {
+          const header = `| ${columnNames.join(' | ')} |`;
+          const separator = `|${columnNames.map(() => '---').join('|')}|`;
+          
+          const rows = results.slice(0, 50).map(row => {
+            const values = columnNames.map(col => {
+              const val = row[col];
+              if (val === null || val === undefined) return '';
+              if (typeof val === 'object') return JSON.stringify(val);
+              // Truncate long values and escape pipe characters
+              const str = String(val).replace(/\|/g, '\\|');
+              return str.length > 60 ? str.slice(0, 57) + '...' : str;
+            });
+            return `| ${values.join(' | ')} |`;
+          }).join('\n');
+          
+          const truncated = results.length > 50 ? `\n\n_(${results.length - 50} more rows)_` : '';
+          return `**${results.length} results:**\n\n${header}\n${separator}\n${rows}${truncated}`;
+        }
+        
+        // Fallback for non-object results
         const formatted = results.slice(0, 50).map((row, i) => {
-          if (Array.isArray(row)) {
-            return `[${i + 1}] ${row.join(', ')}`;
-          }
           return `[${i + 1}] ${JSON.stringify(row)}`;
         });
-        
-        const resultText = formatted.join('\n');
-        const truncated = results.length > 50 ? `\n... (${results.length - 50} more results)` : '';
-        
-        return `Query returned ${results.length} results:\n${resultText}${truncated}`;
+        const truncated = results.length > 50 ? `\n... (${results.length - 50} more)` : '';
+        return `${results.length} results:\n${formatted.join('\n')}${truncated}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation: CodeRelation with type property (CONTAINS, DEFINES, IMPORTS, CALLS). Example: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f, g`;
@@ -197,7 +226,8 @@ Example queries:
 - Class inheritance: MATCH (child:Class)-[:CodeRelation {type: 'EXTENDS'}]->(parent:Class) RETURN child.name, parent.name
 - Classes implementing interface: MATCH (c:Class)-[:CodeRelation {type: 'IMPLEMENTS'}]->(i:Interface) RETURN c.name, i.name
 - Files importing a file: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(target:File) WHERE target.name = 'utils.ts' RETURN f.name
-- All connections: MATCH (n)-[r:CodeRelation]-(m) WHERE n.name = 'MyClass' RETURN m.name, r.type
+- All connections (with confidence): MATCH (n)-[r:CodeRelation]-(m) WHERE n.name = 'MyClass' AND r.confidence > 0.8 RETURN m.name, r.type, r.confidence
+- Find fuzzy matches: MATCH (n)-[r:CodeRelation]-(m) WHERE r.confidence < 0.8 RETURN n.name, r.reason
 
 For semantic+graph queries, include {{QUERY_VECTOR}} placeholder and provide a 'query' parameter:
 CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', {{QUERY_VECTOR}}, 10) YIELD node AS emb, distance
@@ -388,23 +418,43 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
   // ============================================================================
   
   const blastRadiusTool = tool(
-    async ({ target, direction, maxDepth }: { 
+    async ({ target, direction, maxDepth, relationTypes, includeTests, minConfidence }: { 
       target: string; 
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
+      relationTypes?: string[];
+      includeTests?: boolean;
+      minConfidence?: number;
     }) => {
       const depth = Math.min(maxDepth ?? 3, 10);
+      const showTests = includeTests ?? false; // Default: exclude test files
+      const minConf = minConfidence ?? 0.7; // Default: exclude fuzzy matches (<70% confidence)
       
-      // Determine the traversal direction
-      const directionArrow = direction === 'upstream' ? '<-' : '->';
+      // Test file patterns
+      const isTestFile = (path: string): boolean => {
+        if (!path) return false;
+        const p = path.toLowerCase();
+        return p.includes('.test.') || p.includes('.spec.') || 
+               p.includes('__tests__') || p.includes('__mocks__') ||
+               p.endsWith('.test.ts') || p.endsWith('.test.tsx') ||
+               p.endsWith('.spec.ts') || p.endsWith('.spec.tsx');
+      };
+      
+      // Default to usage-based relation types (exclude CONTAINS, DEFINES for impact analysis)
+      const defaultRelTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+      const activeRelTypes = relationTypes && relationTypes.length > 0 
+        ? relationTypes 
+        : defaultRelTypes;
+      const relTypeFilter = activeRelTypes.map(t => `'${t}'`).join(', ');
+      
       const directionLabel = direction === 'upstream' 
-        ? 'what depends on this (callers, importers, child classes)'
-        : 'what this depends on (callees, imports, parent classes)';
+        ? 'Files that DEPEND ON this (breakage risk)'
+        : 'Dependencies this RELIES ON';
       
       // Try to find the target node first
       const findTargetQuery = `
         MATCH (n) 
-        WHERE n.name = '${target.replace(/'/g, "''")}' 
+        WHERE n.name = '${target.replace(/'/g, "''")}'
         RETURN n.id AS id, label(n) AS nodeType, n.filePath AS filePath
         LIMIT 5
       `;
@@ -424,34 +474,214 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const targetNode = targetResults[0];
       const targetId = Array.isArray(targetNode) ? targetNode[0] : targetNode.id;
       const targetType = Array.isArray(targetNode) ? targetNode[1] : targetNode.nodeType;
+      const targetFilePath = Array.isArray(targetNode) ? targetNode[2] : targetNode.filePath;
       
-      // Note: KuzuDB doesn't support [r IN relationships(path) | r.type] list comprehension
-      // So we query each depth level separately for accurate depth tracking
+      // For File targets, find what calls code INSIDE the file (by filePath)
+      // For code elements (Function, Class, etc.), use the direct id
+      const isFileTarget = targetType === 'File';
       
-      // Get depth info with separate simpler queries for each depth level
+      // Query each depth level separately (KuzuDB doesn't support list comprehensions on paths)
+      // For depth 1: direct connections only
+      // For depth 2+: chain multiple single-hop queries
       const depthQueries: Promise<any[]>[] = [];
-      for (let d = 1; d <= Math.min(depth, 3); d++) {
-        const dQuery = direction === 'upstream'
+      
+      // Depth 1 query - direct connections with edge metadata
+      // For File targets: find callers of any code element with matching filePath
+      const d1Query = direction === 'upstream'
+        ? isFileTarget
           ? `
-            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
-            MATCH (affected)-[:CodeRelation*${d}]->(target)
-            RETURN DISTINCT affected.id AS id, affected.name AS name, label(affected) AS nodeType, affected.filePath AS filePath, ${d} AS depth
+            MATCH (affected)-[r:CodeRelation]->(callee)
+            WHERE callee.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
+              AND r.type IN [${relTypeFilter}]
+              AND affected.filePath <> callee.filePath
+              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              1 AS depth,
+              r.type AS edgeType,
+              r.confidence AS confidence,
+              r.reason AS reason
             LIMIT 100
           `
           : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
-            MATCH (target)-[:CodeRelation*${d}]->(affected)
-            RETURN DISTINCT affected.id AS id, affected.name AS name, label(affected) AS nodeType, affected.filePath AS filePath, ${d} AS depth
+            MATCH (affected)-[r:CodeRelation]->(target)
+            WHERE r.type IN [${relTypeFilter}]
+              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              1 AS depth,
+              r.type AS edgeType,
+              r.confidence AS confidence,
+              r.reason AS reason
+            LIMIT 100
+          `
+        : isFileTarget
+          ? `
+            MATCH (caller)-[r:CodeRelation]->(affected)
+            WHERE caller.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
+              AND r.type IN [${relTypeFilter}]
+              AND caller.filePath <> affected.filePath
+              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              1 AS depth,
+              r.type AS edgeType,
+              r.confidence AS confidence,
+              r.reason AS reason
+            LIMIT 100
+          `
+          : `
+            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
+            MATCH (target)-[r:CodeRelation]->(affected)
+            WHERE r.type IN [${relTypeFilter}]
+              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              1 AS depth,
+              r.type AS edgeType,
+              r.confidence AS confidence,
+              r.reason AS reason
             LIMIT 100
           `;
-        depthQueries.push(executeQuery(dQuery).catch(() => []));
+      depthQueries.push(executeQuery(d1Query).catch(err => {
+        if (import.meta.env.DEV) console.warn('Blast radius d=1 query failed:', err);
+        return [];
+      }));
+      
+      // Depth 2 query - 2 hops
+      if (depth >= 2) {
+        const d2Query = direction === 'upstream'
+          ? `
+            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
+            MATCH (a)-[r1:CodeRelation]->(target)
+            MATCH (affected)-[r2:CodeRelation]->(a)
+            WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
+              AND affected.id <> target.id
+              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
+              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              2 AS depth,
+              r2.type AS edgeType,
+              r2.confidence AS confidence,
+              r2.reason AS reason
+            LIMIT 100
+          `
+          : `
+            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
+            MATCH (target)-[r1:CodeRelation]->(a)
+            MATCH (a)-[r2:CodeRelation]->(affected)
+            WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
+              AND affected.id <> target.id
+              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
+              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              2 AS depth,
+              r2.type AS edgeType,
+              r2.confidence AS confidence,
+              r2.reason AS reason
+            LIMIT 100
+          `;
+        depthQueries.push(executeQuery(d2Query).catch(err => {
+          if (import.meta.env.DEV) console.warn('Blast radius d=2 query failed:', err);
+          return [];
+        }));
+      }
+      
+      // Depth 3 query - 3 hops
+      if (depth >= 3) {
+        const d3Query = direction === 'upstream'
+          ? `
+            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
+            MATCH (a)-[r1:CodeRelation]->(target)
+            MATCH (b)-[r2:CodeRelation]->(a)
+            MATCH (affected)-[r3:CodeRelation]->(b)
+            WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
+              AND affected.id <> target.id AND affected.id <> a.id
+              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
+              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              3 AS depth,
+              r3.type AS edgeType,
+              r3.confidence AS confidence,
+              r3.reason AS reason
+            LIMIT 50
+          `
+          : `
+            MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
+            MATCH (target)-[r1:CodeRelation]->(a)
+            MATCH (a)-[r2:CodeRelation]->(b)
+            MATCH (b)-[r3:CodeRelation]->(affected)
+            WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
+              AND affected.id <> target.id AND affected.id <> a.id
+              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
+              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+            RETURN DISTINCT 
+              affected.id AS id, 
+              affected.name AS name, 
+              label(affected) AS nodeType, 
+              affected.filePath AS filePath,
+              affected.startLine AS startLine,
+              3 AS depth,
+              r3.type AS edgeType,
+              r3.confidence AS confidence,
+              r3.reason AS reason
+            LIMIT 50
+          `;
+        depthQueries.push(executeQuery(d3Query).catch(err => {
+          if (import.meta.env.DEV) console.warn('Blast radius d=3 query failed:', err);
+          return [];
+        }));
       }
       
       // Wait for all depth queries
       const depthResults = await Promise.all(depthQueries);
       
       // Combine results by depth
-      const byDepth: Map<number, any[]> = new Map();
+      interface NodeInfo {
+        id: string;
+        name: string;
+        nodeType: string;
+        filePath: string;
+        startLine?: number;
+        edgeType: string;
+        confidence: number;
+        reason: string;
+      }
+      const byDepth: Map<number, NodeInfo[]> = new Map();
       const allNodeIds: string[] = [];
       const seenIds = new Set<string>();
       
@@ -459,11 +689,27 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const d = idx + 1;
         results.forEach((row: any) => {
           const nodeId = Array.isArray(row) ? row[0] : row.id;
+          const filePath = Array.isArray(row) ? row[3] : row.filePath;
+          
+          // Skip test files if includeTests is false
+          if (!showTests && isTestFile(filePath)) return;
+          
           // Avoid duplicates (a node might appear at multiple depths)
           if (nodeId && !seenIds.has(nodeId)) {
             seenIds.add(nodeId);
             if (!byDepth.has(d)) byDepth.set(d, []);
-            byDepth.get(d)!.push(row);
+            
+            const info: NodeInfo = {
+              id: nodeId,
+              name: Array.isArray(row) ? row[1] : row.name,
+              nodeType: Array.isArray(row) ? row[2] : row.nodeType,
+              filePath: filePath,
+              startLine: Array.isArray(row) ? row[4] : row.startLine,
+              edgeType: Array.isArray(row) ? row[5] : row.edgeType || 'CALLS',
+              confidence: Array.isArray(row) ? row[6] : row.confidence ?? 1.0,
+              reason: Array.isArray(row) ? row[7] : row.reason || '',
+            };
+            byDepth.get(d)!.push(info);
             allNodeIds.push(nodeId);
           }
         });
@@ -472,83 +718,97 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const totalAffected = allNodeIds.length;
       
       if (totalAffected === 0) {
-        return `No ${direction} dependencies found for "${target}". This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.`;
+        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.`;
       }
       
-      // Build tiered output
+      // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
-        `🔴 BLAST RADIUS: ${target}`,
-        ``,
-        `Direction: ${direction} (${directionLabel})`,
-        `Total affected: ${totalAffected} components`,
+        `🔴 BLAST RADIUS: ${target} | ${direction} | ${totalAffected} affected`,
         ``,
       ];
       
-      // Depth 1 - Critical
+      // Format helper: Type|Name|File:Line|EdgeType|Confidence
+      const formatNode = (n: NodeInfo): string => {
+        const fileName = n.filePath?.split('/').pop() || '';
+        const loc = n.startLine ? `${fileName}:${n.startLine}` : fileName;
+        const confPct = Math.round((n.confidence ?? 1) * 100);
+        const fuzzyMarker = confPct < 80 ? '[fuzzy]' : '';
+        return `  ${n.nodeType}|${n.name}|${loc}|${n.edgeType}|${confPct}%${fuzzyMarker}`;
+      };
+      
+      // Helper to get code snippet for a node (call site context)
+      const getCallSiteSnippet = (n: NodeInfo): string | null => {
+        if (!n.filePath || !n.startLine) return null;
+        
+        // Find the file in fileContents (try multiple path formats)
+        let content: string | undefined;
+        const normalizedPath = n.filePath.replace(/\\/g, '/');
+        
+        for (const [path, c] of fileContents.entries()) {
+          const normalizedKey = path.replace(/\\/g, '/');
+          if (normalizedKey === normalizedPath || 
+              normalizedKey.endsWith(normalizedPath) || 
+              normalizedPath.endsWith(normalizedKey)) {
+            content = c;
+            break;
+          }
+        }
+        
+        if (!content) return null;
+        
+        const lines = content.split('\n');
+        const lineIdx = n.startLine - 1;
+        if (lineIdx < 0 || lineIdx >= lines.length) return null;
+        
+        // Get the line and trim it, max 80 chars
+        let snippet = lines[lineIdx].trim();
+        if (snippet.length > 80) snippet = snippet.slice(0, 77) + '...';
+        return snippet;
+      };
+      
+      // Depth 1 - Critical (with call site snippets)
       const depth1 = byDepth.get(1) || [];
       if (depth1.length > 0) {
-        lines.push(`═══════════════════════════════════════════════`);
-        lines.push(`DEPTH 1 — WILL BREAK (${depth1.length} components):`);
-        lines.push(`═══════════════════════════════════════════════`);
-        depth1.slice(0, 20).forEach((r: any) => {
-          const name = Array.isArray(r) ? r[1] : r.name;
-          const nodeType = Array.isArray(r) ? r[2] : r.nodeType;
-          const filePath = Array.isArray(r) ? r[3] : r.filePath;
-          const fileName = filePath?.split('/').pop() || '';
-          lines.push(`• ${name} (${nodeType}) at ${fileName}`);
+        const header = direction === 'upstream'
+          ? `d=1 (Directly DEPEND ON ${target}):`
+          : `d=1 (${target} USES these):`;
+        lines.push(header);
+        depth1.slice(0, 15).forEach(n => {
+          lines.push(formatNode(n));
+          // Add call site snippet for d=1 results
+          const snippet = getCallSiteSnippet(n);
+          if (snippet) {
+            lines.push(`    ↳ "${snippet}"`);
+          }
         });
-        if (depth1.length > 20) lines.push(`  ... and ${depth1.length - 20} more`);
+        if (depth1.length > 15) lines.push(`  ... +${depth1.length - 15} more`);
         lines.push(``);
       }
       
       // Depth 2 - High impact
       const depth2 = byDepth.get(2) || [];
       if (depth2.length > 0) {
-        lines.push(`═══════════════════════════════════════════════`);
-        lines.push(`DEPTH 2 — LIKELY AFFECTED (${depth2.length} components):`);
-        lines.push(`═══════════════════════════════════════════════`);
-        depth2.slice(0, 15).forEach((r: any) => {
-          const name = Array.isArray(r) ? r[1] : r.name;
-          const nodeType = Array.isArray(r) ? r[2] : r.nodeType;
-          const filePath = Array.isArray(r) ? r[3] : r.filePath;
-          const fileName = filePath?.split('/').pop() || '';
-          lines.push(`• ${name} (${nodeType}) at ${fileName}`);
-        });
-        if (depth2.length > 15) lines.push(`  ... and ${depth2.length - 15} more`);
+        const header = direction === 'upstream'
+          ? `d=2 (Indirectly DEPEND ON ${target}):`
+          : `d=2 (${target} USES these indirectly):`;
+        lines.push(header);
+        depth2.slice(0, 15).forEach(n => lines.push(formatNode(n)));
+        if (depth2.length > 15) lines.push(`  ... +${depth2.length - 15} more`);
         lines.push(``);
       }
       
       // Depth 3 - Transitive
       const depth3 = byDepth.get(3) || [];
       if (depth3.length > 0) {
-        lines.push(`═══════════════════════════════════════════════`);
-        lines.push(`DEPTH 3 — MAY NEED TESTING (${depth3.length} components):`);
-        lines.push(`═══════════════════════════════════════════════`);
-        depth3.slice(0, 5).forEach((r: any) => {
-          const name = Array.isArray(r) ? r[1] : r.name;
-          const nodeType = Array.isArray(r) ? r[2] : r.nodeType;
-          lines.push(`• ${name} (${nodeType})`);
-        });
-        if (depth3.length > 5) lines.push(`  ... and ${depth3.length - 5} more`);
+        lines.push(`d=3 (Deep impact/dependency):`);
+        depth3.slice(0, 5).forEach(n => lines.push(formatNode(n)));
+        if (depth3.length > 5) lines.push(`  ... +${depth3.length - 5} more`);
         lines.push(``);
       }
       
-      // Trusted analysis marker
-      lines.push(`═══════════════════════════════════════════════`);
+      // Compact footer
       lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
-      lines.push(`═══════════════════════════════════════════════`);
-      lines.push(`The above results are verified from code graph traversal.`);
-      lines.push(`No additional validation needed for static dependencies.`);
-      lines.push(``);
-      
-      // Optional dynamic detection
-      lines.push(`═══════════════════════════════════════════════`);
-      lines.push(`⚠️ OPTIONAL: Dynamic Pattern Check`);
-      lines.push(`═══════════════════════════════════════════════`);
-      lines.push(`The graph cannot track: event listeners, DI, dynamic imports.`);
-      lines.push(`If thoroughness is needed, run:`);
-      lines.push(`• grep({ pattern: "${target}", fileFilter: "*.ts" })`);
-      lines.push(`• grep({ pattern: "${target}", fileFilter: "*.json" })`);
+      lines.push(`⚠️ Optional: grep("${target}") for dynamic patterns`);
       lines.push(``);
       
       // Add the marker for UI highlighting
@@ -561,24 +821,31 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       name: 'blastRadius',
       description: `Analyze the blast radius (impact) of changing a function, class, or file.
 
-Use this when users ask:
+Use when users ask:
 - "What would break if I changed X?"
 - "What depends on X?"
 - "Impact analysis for X"
-- "Blast radius of X"
 
 Direction:
 - upstream: Find what CALLS/IMPORTS/EXTENDS this target (what would break)
 - downstream: Find what this target CALLS/IMPORTS/EXTENDS (dependencies)
 
-Results are grouped by depth:
-- Depth 1: Direct dependencies (will definitely break)
-- Depth 2: Indirect (likely affected)
-- Depth 3+: Transitive (may need testing)`,
+Output format (compact tabular):
+  Type|Name|File:Line|EdgeType|Confidence%
+  
+EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS
+Confidence: 100% = certain, <80% = fuzzy match (may be false positive)
+
+relationTypes filter (optional):
+- Default: CALLS, IMPORTS, EXTENDS, IMPLEMENTS (usage-based)
+- Can add CONTAINS, DEFINES for structural analysis`,
       schema: z.object({
         target: z.string().describe('Name of the function, class, or file to analyze'),
         direction: z.enum(['upstream', 'downstream']).describe('upstream = what depends on this; downstream = what this depends on'),
         maxDepth: z.number().optional().nullable().describe('Max traversal depth (default: 3, max: 10)'),
+        relationTypes: z.array(z.string()).optional().nullable().describe('Filter by relation types: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES (default: usage-based)'),
+        includeTests: z.boolean().optional().nullable().describe('Include test files in results (default: false, excludes .test.ts, .spec.ts, __tests__)'),
+        minConfidence: z.number().optional().nullable().describe('Minimum edge confidence 0-1 (default: 0.7, excludes fuzzy/inferred matches)'),
       }),
     }
   );
