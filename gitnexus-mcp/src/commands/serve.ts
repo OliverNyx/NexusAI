@@ -3,11 +3,11 @@
  * 
  * Starts the MCP server that bridges external AI agents to GitNexus.
  * - Listens on stdio for MCP protocol (from AI tools)
- * - Connects to daemon via WebSocket (client mode)
+ * - Hosts a local WebSocket bridge for the GitNexus browser app
  */
 
 import { startMCPServer } from '../mcp/server.js';
-import { DaemonClient } from '../bridge/daemon-client.js';
+import { WebSocketBridge } from '../bridge/websocket-server.js';
 
 interface ServeOptions {
   port: string;
@@ -16,15 +16,13 @@ interface ServeOptions {
 export async function serveCommand(options: ServeOptions) {
   const port = parseInt(options.port, 10);
   
-  // Connect to daemon as a WebSocket client
-  const client = new DaemonClient(port);
-  
-  try {
-    await client.connect();
-  } catch (error) {
-    // Daemon not running - provide helpful error
-    console.error('Failed to connect to GitNexus daemon.');
-    console.error('Make sure the daemon is running: npx gitnexus-mcp daemon');
+  // Start local WebSocket bridge (browser connects to ws://localhost:<port>)
+  const client = new WebSocketBridge(port);
+  const started = await client.start();
+
+  if (!started) {
+    console.error(`Failed to start GitNexus browser bridge on port ${port}.`);
+    console.error('Another process is already using this port.');
     process.exit(1);
   }
   

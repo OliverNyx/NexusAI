@@ -14,6 +14,29 @@ export interface BridgeMessage {
   params?: any;
   result?: any;
   error?: { message: string };
+  type?: 'context' | string;
+  agentName?: string;
+}
+
+/**
+ * Codebase context sent from the GitNexus browser app
+ */
+export interface CodebaseContext {
+  projectName: string;
+  stats: {
+    fileCount: number;
+    functionCount: number;
+    classCount: number;
+    interfaceCount: number;
+    methodCount: number;
+  };
+  hotspots: Array<{
+    name: string;
+    type: string;
+    filePath: string;
+    connections: number;
+  }>;
+  folderTree: string;
 }
 
 type RequestResolver = {
@@ -42,8 +65,21 @@ export class WebSocketBridge {
   private pendingRequests: Map<string, RequestResolver> = new Map();
   private requestId = 0;
   private started = false;
+  private _context: CodebaseContext | null = null;
+  private contextListeners: Set<(context: CodebaseContext | null) => void> = new Set();
+  private agentName: string;
   
-  constructor(private port: number = 54319) {}
+  constructor(private port: number = 54319, agentName?: string) {
+    this.agentName = agentName || process.env.GITNEXUS_AGENT || this.detectAgent();
+  }
+
+  private detectAgent(): string {
+    // Try to detect agent from environment clues
+    if (process.env.CURSOR_SESSION_ID) return 'Cursor';
+    if (process.env.CLAUDE_CODE) return 'Claude Code';
+    if (process.env.WINDSURF_SESSION) return 'Windsurf';
+    return 'Unknown';
+  }
   
   /**
    * Start the WebSocket server (handles port-in-use gracefully)
@@ -67,6 +103,9 @@ export class WebSocketBridge {
           this.client.close();
         }
         this.client = ws;
+        // Clear context until browser sends an update
+        this._context = null;
+        this.notifyContextListeners();
         
         ws.on('message', (data) => {
           try {
@@ -80,6 +119,8 @@ export class WebSocketBridge {
         ws.on('close', () => {
           if (this.client === ws) {
             this.client = null;
+            this._context = null;
+            this.notifyContextListeners();
           }
         });
         
@@ -101,6 +142,13 @@ export class WebSocketBridge {
   }
   
   private handleMessage(msg: BridgeMessage) {
+    // Browser can proactively send codebase context
+    if (msg.type === 'context' && msg.params) {
+      this._context = msg.params as CodebaseContext;
+      this.notifyContextListeners();
+      return;
+    }
+
     // This is a response to a pending request
     if (msg.id && this.pendingRequests.has(msg.id)) {
       const { resolve, reject } = this.pendingRequests.get(msg.id)!;
@@ -122,6 +170,25 @@ export class WebSocketBridge {
   }
   
   /**
+   * Latest context received from browser (if any)
+   */
+  get context(): CodebaseContext | null {
+    return this._context;
+  }
+
+  /**
+   * Listen for context changes
+   */
+  onContextChange(listener: (context: CodebaseContext | null) => void) {
+    this.contextListeners.add(listener);
+    return () => this.contextListeners.delete(listener);
+  }
+
+  private notifyContextListeners() {
+    this.contextListeners.forEach((listener) => listener(this._context));
+  }
+
+  /**
    * Check if server started successfully
    */
   get isStarted(): boolean {
@@ -141,7 +208,7 @@ export class WebSocketBridge {
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
       
-      const msg: BridgeMessage = { id, method, params };
+      const msg: BridgeMessage = { id, method, params, agentName: this.agentName };
       this.client!.send(JSON.stringify(msg));
       
       // Timeout after 30 seconds
@@ -159,5 +226,12 @@ export class WebSocketBridge {
    */
   close() {
     this.wss?.close();
+  }
+
+  /**
+   * MCP server calls this on shutdown
+   */
+  disconnect() {
+    this.close();
   }
 }

@@ -135,24 +135,29 @@ RETURNS: {filePath, content, language, lines}`,
   {
     name: 'blastRadius',
     description: `Analyze the impact of changing a code element.
-Returns all nodes that would be affected by modifying the target.
+Returns all nodes affected by modifying the target, with distance, edge type, and confidence.
 
 USE BEFORE making changes to understand ripple effects.
-Shows direct and indirect dependencies up to N hops.
 
-RETURNS: {
-  target: {...},
-  affected: [{name, type, filePath, distance}...],
-  totalAffected: number,
-  riskLevel: "low" | "medium" | "high"
-}`,
+Output format (compact tabular):
+  Type|Name|File:Line|EdgeType|Confidence%
+
+EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS
+Confidence: 100% = certain, <80% = fuzzy match [fuzzy]
+
+Depth groups:
+- d=1: WILL BREAK (direct callers/importers)
+- d=2: LIKELY AFFECTED (indirect)
+- d=3: MAY NEED TESTING (transitive)`,
     inputSchema: {
       type: 'object',
       properties: {
-        nodeId: { type: 'string', description: 'Node ID or name to analyze' },
-        hops: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
+        target: { type: 'string', description: 'Name of function, class, or file to analyze' },
+        direction: { type: 'string', description: 'upstream (what depends on this) or downstream (what this depends on)' },
+        maxDepth: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
+        relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES (default: usage-based)' },
       },
-      required: ['nodeId'],
+      required: ['target', 'direction'],
     },
   },
   {

@@ -19,7 +19,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import type { DaemonClient, CodebaseContext } from '../bridge/daemon-client.js';
+import type { CodebaseContext } from '../bridge/websocket-server.js';
 
 // Interface for anything that can call tools (DaemonClient or WebSocketBridge)
 interface ToolCaller {

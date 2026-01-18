@@ -6,42 +6,55 @@
  * and GitNexus code intelligence running in the browser.
  */
 
-import { Command } from 'commander';
-import { setupCommand } from './commands/setup.js';
 import { serveCommand } from './commands/serve.js';
-import { daemonCommand } from './commands/daemon.js';
-import { generateGuidanceCommand } from './commands/generate-guidance.js';
+/**
+ * Minimal CLI:
+ * - Default: start MCP stdio server + local browser WebSocket bridge
+ * - Optional: `serve` alias, and `--port <port>`
+ *
+ * This is designed for MCP clients (Cursor/Claude/Windsurf) which spawn this
+ * process automatically; users should not need to run commands manually.
+ */
 
-const program = new Command();
+function parsePort(argv: string[]): string {
+  const portFlagIndex = argv.findIndex((a) => a === '--port' || a === '-p');
+  if (portFlagIndex !== -1) {
+    const value = argv[portFlagIndex + 1];
+    if (value) return value;
+  }
+  // Support `--port=54319`
+  const portEq = argv.find((a) => a.startsWith('--port='));
+  if (portEq) return portEq.split('=')[1] || '54319';
+  return '54319';
+}
 
-program
-  .name('gitnexus-mcp')
-  .description('MCP bridge for GitNexus code intelligence')
-  .version('0.1.0');
+async function main() {
+  const argv = process.argv.slice(2);
+  const first = argv[0];
+  const port = parsePort(argv);
 
-program
-  .command('setup')
-  .description('Detect AI tools and configure MCP settings')
-  .action(setupCommand);
+  // Allow `gitnexus-mcp serve` for compatibility, but default to serve anyway
+  if (!first || first === 'serve') {
+    await serveCommand({ port });
+    return;
+  }
 
-program
-  .command('daemon')
-  .description('Start the MCP daemon (run this once in background)')
-  .option('-p, --port <port>', 'WebSocket port', '54319')
-  .action(daemonCommand);
+  // Minimal help for unknown commands
+  if (first === '--help' || first === '-h') {
+    // eslint-disable-next-line no-console
+    console.log('gitnexus-mcp\n\nUsage:\n  gitnexus-mcp [serve] [--port <port>]\n');
+    process.exit(0);
+  }
 
-program
-  .command('serve')
-  .description('Start MCP server for an AI tool (connects to daemon)')
-  .option('-p, --port <port>', 'Daemon port to connect to', '54319')
-  .action(serveCommand);
+  // eslint-disable-next-line no-console
+  console.error(`Unknown command: ${first}`);
+  // eslint-disable-next-line no-console
+  console.error('Usage: gitnexus-mcp [serve] [--port <port>]');
+  process.exit(1);
+}
 
-program
-  .command('generate-guidance')
-  .description('Generate AI assistant guidance files (.cursorrules, AGENTS.md)')
-  .option('-o, --output <dir>', 'Output directory', '.')
-  .action(generateGuidanceCommand);
-
-program.parse();
-
-
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});
