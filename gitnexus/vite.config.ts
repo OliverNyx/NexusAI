@@ -25,6 +25,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Fix for Rollup failing to resolve this deep import from @langchain/anthropic
+      '@anthropic-ai/sdk/lib/transform-json-schema': path.resolve(__dirname, 'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs'),
     },
   },
   // Polyfill Buffer for isomorphic-git (Node.js API needed in browser)
