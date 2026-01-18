@@ -156,6 +156,8 @@ Depth groups:
         direction: { type: 'string', description: 'upstream (what depends on this) or downstream (what this depends on)' },
         maxDepth: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
         relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES (default: usage-based)' },
+        includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
+        minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
       },
       required: ['target', 'direction'],
     },
