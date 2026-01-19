@@ -1,36 +1,38 @@
 /**
  * MCP Toggle Component
  * 
- * Toggle switch for enabling/disabling MCP exposure to external AI agents.
- * Shows connection status and setup instructions if bridge not found.
+ * Toggle for enabling MCP exposure to external AI agents (Cursor, Claude, etc.)
+ * Shows MCP config for setup and connection status.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Copy, Check, AlertCircle, X, Sparkles } from 'lucide-react';
+import { Copy, Check, X, Sparkles, Zap, ExternalLink } from 'lucide-react';
 import { getMCPClient, type CodebaseContext } from '../core/mcp/mcp-client';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 interface MCPToggleProps {
-    /** Handler for search tool calls from external agents */
     onSearch?: (query: string, limit?: number) => Promise<any>;
-    /** Handler for cypher tool calls from external agents */
     onCypher?: (query: string) => Promise<any>;
-    /** Handler for blastRadius tool calls from external agents */
     onBlastRadius?: (nodeId: string, hops?: number) => Promise<any>;
-    /** Handler for highlight tool calls from external agents */
     onHighlight?: (nodeIds: string[], color?: string) => void;
-    /** Handler for grep tool calls from external agents */
     onGrep?: (pattern: string, caseSensitive?: boolean, maxResults?: number) => Promise<any>;
-    /** Handler for read tool calls from external agents */
     onRead?: (filePath: string, startLine?: number, endLine?: number) => Promise<any>;
-    /** Whether to show the onboarding tip */
     showOnboardingTip?: boolean;
-    /** Callback to get codebase context for external agents */
     getContext?: () => Promise<CodebaseContext | null>;
 }
 
 const MCP_TIP_DISMISSED_KEY = 'gitnexus-mcp-tip-dismissed';
+
+// MCP config that users copy to their AI agent
+const MCP_CONFIG = `{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus-mcp"]
+    }
+  }
+}`;
 
 export function MCPToggle({
     onSearch,
@@ -44,40 +46,35 @@ export function MCPToggle({
 }: MCPToggleProps = {}) {
     const [status, setStatus] = useState<ConnectionState>('disconnected');
     const [copied, setCopied] = useState(false);
-    const [showSetup, setShowSetup] = useState(false);
-    const [hasConnectionError, setHasConnectionError] = useState(false);
-    const setupPopupRef = useRef<HTMLDivElement | null>(null);
+    const [showPopup, setShowPopup] = useState(false);
+    const popupRef = useRef<HTMLDivElement | null>(null);
     const [showTip, setShowTip] = useState(false);
 
     const isConnected = status === 'connected';
     const isConnecting = status === 'connecting';
 
-    // Show tip when graph becomes ready (only once per session)
+    // Show tip when graph becomes ready
     useEffect(() => {
         if (showOnboardingTip) {
             const dismissed = localStorage.getItem(MCP_TIP_DISMISSED_KEY);
             if (!dismissed) {
-                // Small delay so it appears after graph loads
                 const timer = setTimeout(() => setShowTip(true), 1500);
                 return () => clearTimeout(timer);
             }
         }
     }, [showOnboardingTip]);
 
-    // Close setup popup when clicking outside
+    // Close popup when clicking outside
     useEffect(() => {
-        if (!showSetup) return;
-
+        if (!showPopup) return;
         const handleClickOutside = (event: MouseEvent) => {
-            if (!setupPopupRef.current) return;
-            if (!setupPopupRef.current.contains(event.target as Node)) {
-                setShowSetup(false);
+            if (popupRef.current && !popupRef.current.contains(event.target as Node)) {
+                setShowPopup(false);
             }
         };
-
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [showSetup]);
+    }, [showPopup]);
 
     const dismissTip = () => {
         setShowTip(false);
@@ -88,79 +85,34 @@ export function MCPToggle({
         const client = getMCPClient();
         setStatus('connecting');
         setShowTip(false);
-        setHasConnectionError(false);
 
         try {
             await client.connect();
 
-            // Register tool handlers if provided
-            if (onSearch) {
-                client.registerHandler('search', async (params) => {
-                    return await onSearch(params.query, params.limit);
-                });
-            }
-
-            if (onCypher) {
-                client.registerHandler('cypher', async (params) => {
-                    return await onCypher(params.query);
-                });
-            }
-
-            if (onBlastRadius) {
-                client.registerHandler('blastRadius', async (params) => {
-                    return await onBlastRadius(params.nodeId, params.hops);
-                });
-            }
-
-            if (onHighlight) {
-                client.registerHandler('highlight', async (params) => {
-                    onHighlight(params.nodeIds, params.color);
-                    return { highlighted: params.nodeIds.length };
-                });
-            }
-
-            // Register context tool handler
-            if (getContext) {
-                client.registerHandler('context', async () => {
-                    const context = await getContext();
-                    return context;
-                });
-            }
-
-            // Register grep tool handler
-            if (onGrep) {
-                client.registerHandler('grep', async (params) => {
-                    return await onGrep(params.pattern, params.caseSensitive, params.maxResults);
-                });
-            }
-
-            // Register read tool handler
-            if (onRead) {
-                client.registerHandler('read', async (params) => {
-                    return await onRead(params.filePath, params.startLine, params.endLine);
-                });
-            }
+            // Register tool handlers
+            if (onSearch) client.registerHandler('search', async (params) => onSearch(params.query, params.limit));
+            if (onCypher) client.registerHandler('cypher', async (params) => onCypher(params.query));
+            if (onBlastRadius) client.registerHandler('blastRadius', async (params) => onBlastRadius(params.nodeId, params.hops));
+            if (onHighlight) client.registerHandler('highlight', async (params) => { onHighlight(params.nodeIds, params.color); return { highlighted: params.nodeIds.length }; });
+            if (onGrep) client.registerHandler('grep', async (params) => onGrep(params.pattern, params.caseSensitive, params.maxResults));
+            if (onRead) client.registerHandler('read', async (params) => onRead(params.filePath, params.startLine, params.endLine));
+            if (getContext) client.registerHandler('context', async () => getContext());
 
             setStatus('connected');
-            setShowSetup(false);
-            setHasConnectionError(false);
+            setShowPopup(false);
             localStorage.setItem(MCP_TIP_DISMISSED_KEY, 'true');
 
-            // Send codebase context after connecting
+            // Send context after connecting
             if (getContext) {
                 try {
                     const context = await getContext();
-                    if (context) {
-                        client.sendContext(context);
-                    }
+                    if (context) client.sendContext(context);
                 } catch (e) {
                     console.error('[MCP] Failed to send context:', e);
                 }
             }
         } catch {
             setStatus('error');
-            setShowSetup(true);
-            setHasConnectionError(true);
         }
     }, [onSearch, onCypher, onBlastRadius, onHighlight, onGrep, onRead, getContext]);
 
@@ -168,7 +120,6 @@ export function MCPToggle({
         const client = getMCPClient();
         client.disconnect();
         setStatus('disconnected');
-        setHasConnectionError(false);
     }, []);
 
     const toggle = useCallback(() => {
@@ -179,8 +130,8 @@ export function MCPToggle({
         }
     }, [isConnected, isConnecting, connect, disconnect]);
 
-    const copyCommand = (command: string) => {
-        navigator.clipboard.writeText(command);
+    const copyConfig = () => {
+        navigator.clipboard.writeText(MCP_CONFIG);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };
@@ -189,189 +140,156 @@ export function MCPToggle({
     useEffect(() => {
         const client = getMCPClient();
         const unsubscribe = client.onConnectionChange((connected) => {
-            if (connected) {
-                setStatus('connected');
-                setShowSetup(false);
-                setHasConnectionError(false);
-            } else {
-                setStatus('disconnected');
-            }
+            setStatus(connected ? 'connected' : 'disconnected');
+            if (connected) setShowPopup(false);
         });
         return () => { unsubscribe(); };
     }, []);
 
-    // Error state - show setup popup
-    if (hasConnectionError && showSetup) {
-        return (
-            <div className="relative flex items-center gap-2">
-                <span className="text-xs text-text-primary font-medium">MCP</span>
-                <button
-                    onClick={() => setShowSetup(!showSetup)}
-                    className="flex items-center gap-1.5 px-2 py-1 text-xs text-amber-400 hover:bg-amber-400/10 rounded transition-colors"
-                >
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    <span>Daemon</span>
-                </button>
-
-                <div
-                    ref={setupPopupRef}
-                    className="absolute top-full right-0 mt-2 p-5 bg-surface border border-border rounded-lg shadow-xl z-50 w-[28rem]"
-                >
-                    <p className="text-sm text-text-primary mb-4">
-                        MCP daemon isn't running. Follow the steps below:
-                    </p>
-
-                    <div className="mb-3">
-                        <p className="text-sm text-text-secondary mb-2">1) Install/configure your IDE:</p>
-                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
-                            <code className="flex-1 text-text-primary">npx gitnexus-mcp setup</code>
-                            <button
-                                onClick={() => copyCommand('npx gitnexus-mcp setup')}
-                                className="p-1.5 hover:bg-surface-hover rounded"
-                                title="Copy command"
-                            >
-                                {copied ? (
-                                    <Check className="w-4 h-4 text-green-400" />
-                                ) : (
-                                    <Copy className="w-4 h-4 text-text-secondary" />
-                                )}
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="mb-3">
-                        <p className="text-sm text-text-secondary mb-2">2) Start the daemon (recommended):</p>
-                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
-                            <code className="flex-1 text-text-primary">npx gitnexus-mcp daemon</code>
-                            <button
-                                onClick={() => copyCommand('npx gitnexus-mcp daemon')}
-                                className="p-1.5 hover:bg-surface-hover rounded"
-                                title="Copy command"
-                            >
-                                {copied ? (
-                                    <Check className="w-4 h-4 text-green-400" />
-                                ) : (
-                                    <Copy className="w-4 h-4 text-text-secondary" />
-                                )}
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="mb-3">
-                        <p className="text-sm text-text-secondary mb-2">Dev mode (from `gitnexus-mcp` dir):</p>
-                        <div className="flex items-center gap-2 bg-background/60 border border-border/60 px-3 py-2 rounded font-mono text-sm">
-                            <code className="flex-1 text-text-primary">npm run build &amp;&amp; node dist/cli.js daemon</code>
-                            <button
-                                onClick={() => copyCommand('npm run build && node dist/cli.js daemon')}
-                                className="p-1.5 hover:bg-surface-hover rounded"
-                                title="Copy command"
-                            >
-                                {copied ? (
-                                    <Check className="w-4 h-4 text-green-400" />
-                                ) : (
-                                    <Copy className="w-4 h-4 text-text-secondary" />
-                                )}
-                            </button>
-                        </div>
-                    </div>
-
-                    <button
-                        onClick={() => { setShowSetup(false); connect(); }}
-                        className="mt-2 w-full px-3 py-1.5 text-sm bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
-                    >
-                        Retry Connection
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
-    // Toggle switch UI
     return (
         <div className="relative flex items-center gap-2">
-            <span className="text-xs text-text-primary font-medium">MCP</span>
+            {/* MCP Button */}
             <button
-                onClick={toggle}
-                disabled={isConnecting}
+                onClick={() => setShowPopup(!showPopup)}
                 className={`
-          relative w-10 h-5 rounded-full transition-colors duration-200 ease-in-out
-          focus:outline-none focus:ring-2 focus:ring-green-500/50 focus:ring-offset-2 focus:ring-offset-deep
+          flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium
+          transition-all duration-200
           ${isConnected
-                        ? 'bg-green-500'
-                        : isConnecting
-                            ? 'bg-surface-hover cursor-wait'
-                            : 'bg-surface-hover hover:bg-border'
+                        ? 'bg-green-500/15 text-green-400 border border-green-500/30 hover:bg-green-500/25'
+                        : 'bg-surface hover:bg-hover text-text-secondary hover:text-text-primary border border-border-subtle'
                     }
         `}
-                title={isConnected
-                    ? 'MCP Connected - Click to disconnect'
-                    : isConnecting
-                        ? 'Connecting...'
-                        : 'Connect to MCP bridge for external AI tools'
-                }
             >
-                {/* Toggle knob */}
-                <span
-                    className={`
-            absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm
-            transition-transform duration-200 ease-in-out
-            ${isConnected ? 'translate-x-5' : 'translate-x-0'}
-            ${isConnecting ? 'animate-pulse' : ''}
-          `}
-                />
+                <Zap className={`w-3.5 h-3.5 ${isConnected ? 'text-green-400' : ''}`} />
+                <span>MCP</span>
+                {isConnected && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
             </button>
-            {isConnected && (
-                <span className="text-xs text-green-400 font-medium hidden sm:inline">Connected</span>
+
+            {/* Popup */}
+            {showPopup && (
+                <div
+                    ref={popupRef}
+                    className="absolute top-full right-0 mt-2 w-[380px] bg-surface/95 backdrop-blur-xl border border-border-subtle rounded-xl shadow-2xl z-50 overflow-hidden"
+                >
+                    {/* Header */}
+                    <div className="px-4 py-3 bg-gradient-to-r from-accent/10 to-transparent border-b border-border-subtle">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-accent/20 rounded-lg">
+                                    <Sparkles className="w-4 h-4 text-accent" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-semibold text-text-primary">Connect AI Agents</h3>
+                                    <p className="text-[10px] text-text-muted">Cursor, Claude Code, Antigravity</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setShowPopup(false)}
+                                className="p-1 text-text-muted hover:text-text-primary rounded transition-colors"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Content */}
+                    <div className="p-4 space-y-4">
+                        {/* Step 1: Config */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold">1</span>
+                                <span className="text-xs text-text-secondary">Add to your AI agent's MCP config</span>
+                            </div>
+                            <div className="relative group">
+                                <pre className="p-3 bg-deep rounded-lg text-[11px] font-mono text-text-primary overflow-x-auto border border-border-subtle">
+                                    {MCP_CONFIG}
+                                </pre>
+                                <button
+                                    onClick={copyConfig}
+                                    className="absolute top-2 right-2 p-1.5 bg-surface/80 hover:bg-hover rounded-md transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Copy config"
+                                >
+                                    {copied ? (
+                                        <Check className="w-3.5 h-3.5 text-green-400" />
+                                    ) : (
+                                        <Copy className="w-3.5 h-3.5 text-text-muted" />
+                                    )}
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Step 2: Connect */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/20 text-accent text-[10px] font-bold">2</span>
+                                <span className="text-xs text-text-secondary">Connect browser to daemon</span>
+                            </div>
+                            <button
+                                onClick={toggle}
+                                disabled={isConnecting}
+                                className={`
+                  w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-200
+                  ${isConnected
+                                        ? 'bg-green-500/15 text-green-400 border border-green-500/30 hover:bg-green-500/25'
+                                        : isConnecting
+                                            ? 'bg-surface text-text-muted cursor-wait'
+                                            : 'bg-accent text-white hover:bg-accent-dim'
+                                    }
+                `}
+                            >
+                                {isConnected ? '✓ Connected' : isConnecting ? 'Connecting...' : 'Connect'}
+                            </button>
+                        </div>
+
+                        {/* Status message */}
+                        {status === 'error' && (
+                            <p className="text-[11px] text-amber-400 text-center">
+                                Daemon not running. Make sure your AI agent has started gitnexus-mcp.
+                            </p>
+                        )}
+
+                        {/* Help link */}
+                        <a
+                            href="https://github.com/abhigyanpatwari/GitNexus#mcp-integration"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center gap-1.5 text-[11px] text-text-muted hover:text-accent transition-colors"
+                        >
+                            <span>Learn more</span>
+                            <ExternalLink className="w-3 h-3" />
+                        </a>
+                    </div>
+                </div>
             )}
 
-            {/* Onboarding Tip Popup */}
-            {showTip && !isConnected && (
-                <div className="absolute top-full right-0 mt-3 w-80 p-4 bg-surface border border-green-500/30 rounded-lg shadow-xl z-50 animate-in fade-in slide-in-from-top-2 duration-300">
+            {/* Onboarding Tip */}
+            {showTip && !isConnected && !showPopup && (
+                <div className="absolute top-full right-0 mt-3 w-72 p-4 bg-surface/95 backdrop-blur-xl border border-accent/30 rounded-xl shadow-2xl z-50 animate-in fade-in slide-in-from-top-2">
                     <button
                         onClick={dismissTip}
                         className="absolute top-2 right-2 p-1 text-text-muted hover:text-text-primary rounded transition-colors"
                     >
-                        <X className="w-4 h-4" />
+                        <X className="w-3.5 h-3.5" />
                     </button>
-
-                    <div className="flex items-start gap-3 mb-3">
-                        <div className="p-2 bg-green-500/20 rounded-lg flex-shrink-0">
-                            <Sparkles className="w-5 h-5 text-green-400" />
+                    <div className="flex items-start gap-3">
+                        <div className="p-2 bg-accent/20 rounded-lg flex-shrink-0">
+                            <Sparkles className="w-4 h-4 text-accent" />
                         </div>
                         <div>
                             <h4 className="text-sm font-semibold text-text-primary mb-1">
-                                Connect your AI coding tool
+                                Connect your AI tools
                             </h4>
-                            <p className="text-xs text-text-secondary leading-relaxed">
-                                Let Cursor, Claude Code, or Antigravity use GitNexus for code intelligence.
+                            <p className="text-xs text-text-secondary leading-relaxed mb-3">
+                                Let Cursor or Claude access GitNexus code intelligence.
                             </p>
-                        </div>
-                    </div>
-
-                    <div className="mb-3">
-                        <p className="text-xs text-text-muted mb-2">Run this in your terminal:</p>
-                        <div className="flex items-center gap-2 bg-background p-2 rounded font-mono text-sm">
-                            <code className="flex-1 text-green-400">npx gitnexus-mcp setup</code>
                             <button
-                        onClick={() => copyCommand('npx gitnexus-mcp setup')}
-                                className="p-1 hover:bg-surface-hover rounded"
-                                title="Copy command"
+                                onClick={() => { dismissTip(); setShowPopup(true); }}
+                                className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors"
                             >
-                                {copied ? (
-                                    <Check className="w-4 h-4 text-green-400" />
-                                ) : (
-                                    <Copy className="w-4 h-4 text-text-secondary" />
-                                )}
+                                Set up MCP
                             </button>
                         </div>
                     </div>
-
-                    <button
-                        onClick={() => { dismissTip(); connect(); }}
-                        className="w-full px-3 py-2 text-sm font-medium bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                    >
-                        I've run setup — Connect Now
-                    </button>
                 </div>
             )}
         </div>
