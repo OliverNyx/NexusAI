@@ -84,61 +84,70 @@ export class WebSocketBridge {
   /**
    * Start the WebSocket server (handles port-in-use gracefully)
    */
+  /**
+   * Start the WebSocket server (handles port-in-use gracefully by scanning range)
+   */
   async start(): Promise<boolean> {
-    const available = await isPortAvailable(this.port);
+    const MAX_RETRIES = 10;
     
-    if (!available) {
-      // Port already in use - another instance is handling browser connections
-      // This is OK - we can still run MCP server for stdio communication
-      console.error(`Port ${this.port} in use. Browser bridge running elsewhere.`);
-      return false;
-    }
-    
-    return new Promise((resolve) => {
-      this.wss = new WebSocketServer({ port: this.port });
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+      const currentPort = this.port + i;
+      const available = await isPortAvailable(currentPort);
       
-      this.wss.on('connection', (ws) => {
-        // Only allow one browser connection at a time
-        if (this.client) {
-          this.client.close();
-        }
-        this.client = ws;
-        // Clear context until browser sends an update
-        this._context = null;
-        this.notifyContextListeners();
-        
-        ws.on('message', (data) => {
-          try {
-            const msg: BridgeMessage = JSON.parse(data.toString());
-            this.handleMessage(msg);
-          } catch (error) {
-            console.error('Failed to parse message:', error);
-          }
-        });
-        
-        ws.on('close', () => {
-          if (this.client === ws) {
-            this.client = null;
+      if (available) {
+        return new Promise((resolve) => {
+          this.wss = new WebSocketServer({ port: currentPort });
+          
+          this.wss.on('connection', (ws) => {
+            // Only allow one browser connection at a time
+            if (this.client) {
+              this.client.close();
+            }
+            this.client = ws;
+            // Clear context until browser sends an update
             this._context = null;
             this.notifyContextListeners();
-          }
+            
+            ws.on('message', (data) => {
+              try {
+                const msg: BridgeMessage = JSON.parse(data.toString());
+                this.handleMessage(msg);
+              } catch (error) {
+                console.error('Failed to parse message:', error);
+              }
+            });
+            
+            ws.on('close', () => {
+              if (this.client === ws) {
+                this.client = null;
+                this._context = null;
+                this.notifyContextListeners();
+              }
+            });
+            
+            ws.on('error', (error) => {
+              console.error('WebSocket error:', error);
+            });
+          });
+          
+          this.wss.on('listening', () => {
+            this.started = true;
+            // Update the port property to reflect the actual bound port
+            this.port = currentPort;
+            console.error(`Browser bridge listening on port ${currentPort}`); // Use stderr to not interfere with MCP stdio
+            resolve(true);
+          });
+          
+          this.wss.on('error', (error) => {
+            console.error(`WebSocket server error on port ${currentPort}:`, error);
+            resolve(false);
+          });
         });
-        
-        ws.on('error', (error) => {
-          console.error('WebSocket error:', error);
-        });
-      });
-      
-      this.wss.on('listening', () => {
-        this.started = true;
-        resolve(true);
-      });
-      
-      this.wss.on('error', (error) => {
-        console.error('WebSocket server error:', error);
-        resolve(false);
-      });
-    });
+      }
+    }
+    
+    console.error(`Failed to find available port in range ${this.port}-${this.port + MAX_RETRIES}`);
+    return false;
   }
   
   private handleMessage(msg: BridgeMessage) {
