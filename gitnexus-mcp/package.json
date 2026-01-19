@@ -1,7 +1,22 @@
 {
     "name": "gitnexus-mcp",
     "version": "0.1.0",
-    "description": "MCP bridge for GitNexus code intelligence",
+    "description": "MCP server for GitNexus code intelligence - connect Cursor, Claude, and other AI agents to your codebase",
+    "author": "Abhigyan Patwari",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/abhigyanpatwari/GitNexus"
+    },
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "code-intelligence",
+        "cursor",
+        "claude",
+        "ai-agent",
+        "gitnexus"
+    ],
     "type": "module",
     "bin": {
         "gitnexus-mcp": "./dist/cli.js"
