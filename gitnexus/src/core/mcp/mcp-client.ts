@@ -85,115 +85,89 @@ type ToolHandler = (params: Record<string, any>) => Promise<any>;
 type ActivityListener = (event: ActivityEvent) => void;
 
 export class MCPBrowserClient {
-  private sockets: Map<number, WebSocket> = new Map();
+  private ws: WebSocket | null = null;
   private handlers: Map<string, ToolHandler> = new Map();
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
   private activityListeners: Set<ActivityListener> = new Set();
   private activityLog: ActivityEvent[] = [];
   private pendingContext: CodebaseContext | null = null;
-  private _connectedAgents: Map<number, ConnectedAgent> = new Map();
+  private _connectedAgent: ConnectedAgent | null = null;
   
-  constructor(private startPort = 54319, private endPort = 54329) {}
+  constructor(private port = 54319) {}
   
   /**
-   * Connect to all available MCP daemons in the port range
+   * Connect to the MCP daemon
    */
   async connect(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    
-    for (let port = this.startPort; port <= this.endPort; port++) {
-      promises.push(this.connectToPort(port));
-    }
-    
-    await Promise.all(promises);
-    
-    if (this.sockets.size === 0) {
-      throw new Error('Failed to connect to any MCP bridge');
-    }
-    
-    console.log(`[MCP] Connected to ${this.sockets.size} daemon(s)`);
-  }
-  
-  private connectToPort(port: number): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       try {
-        const ws = new WebSocket(`ws://localhost:${port}`);
+        this.ws = new WebSocket(`ws://localhost:${this.port}`);
         
-        ws.onopen = () => {
-          console.log(`[MCP] Connected to daemon on port ${port}`);
-          this.sockets.set(port, ws);
+        this.ws.onopen = () => {
+          console.log('[MCP] Connected to daemon');
           this.notifyConnectionListeners(true);
           
           // Send pending context if available
           if (this.pendingContext) {
-            this.sendContextToSocket(ws, this.pendingContext);
+            this.sendContext(this.pendingContext);
           }
           
           resolve();
         };
         
-        ws.onerror = () => {
-          // Just resolve on error to continue checking other ports
-          resolve();
+        this.ws.onerror = () => {
+          this.notifyConnectionListeners(false);
+          reject(new Error('Failed to connect to MCP bridge'));
         };
         
-        ws.onmessage = (event) => {
+        this.ws.onmessage = (event) => {
           try {
             const msg: MCPMessage = JSON.parse(event.data);
-            this.handleMessage(msg, port, ws);
+            this.handleMessage(msg);
           } catch (error) {
             console.error('[MCP] Failed to parse message:', error);
           }
         };
         
-        ws.onclose = () => {
-          this.sockets.delete(port);
-          this._connectedAgents.delete(port);
-          if (this.sockets.size === 0) {
-            this.notifyConnectionListeners(false);
-          }
+        this.ws.onclose = () => {
+          this.ws = null;
+          this.notifyConnectionListeners(false);
         };
       } catch (error) {
-        resolve();
+        reject(error);
       }
     });
   }
   
   /**
-   * Send codebase context to all connected daemons
+   * Send codebase context to daemon
    * Call this whenever context changes (new repo loaded, etc.)
    */
   sendContext(context: CodebaseContext) {
     this.pendingContext = context;
     
-    for (const ws of this.sockets.values()) {
-      this.sendContextToSocket(ws, context);
-    }
-    console.log(`[MCP] Sent context to ${this.sockets.size} daemon(s):`, context.projectName);
-  }
-  
-  private sendContextToSocket(ws: WebSocket, context: CodebaseContext) {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       const msg = {
         id: `ctx_${Date.now()}`,
         type: 'context',
         params: context,
       };
-      ws.send(JSON.stringify(msg));
+      this.ws.send(JSON.stringify(msg));
+      console.log('[MCP] Sent context:', context.projectName);
     }
   }
   
   /**
-   * Handle incoming messages from a daemon
+   * Handle incoming messages from daemon
    */
-  private async handleMessage(msg: MCPMessage, port: number, ws: WebSocket) {
+  private async handleMessage(msg: MCPMessage) {
     // Handle agent info updates
     if (msg.type === 'agent_info' && msg.agentName) {
-      this._connectedAgents.set(port, {
+      this._connectedAgent = {
         name: msg.agentName,
         color: getAgentColor(msg.agentName),
-      });
-      console.log(`[MCP] Agent connected on port ${port}:`, msg.agentName);
+      };
+      console.log('[MCP] Agent connected:', this._connectedAgent);
       return;
     }
     
@@ -202,9 +176,8 @@ export class MCPBrowserClient {
       const handler = this.handlers.get(msg.method);
       const startTime = Date.now();
       
-      // Get agent info from message or use connected agent for this port
-      const connectedAgent = this._connectedAgents.get(port);
-      const agentName = msg.agentName || connectedAgent?.name || 'Unknown';
+      // Get agent info from message or use connected agent
+      const agentName = msg.agentName || this._connectedAgent?.name || 'Unknown';
       const agentColor = getAgentColor(agentName);
       
       // Create activity event with agent info
@@ -222,7 +195,7 @@ export class MCPBrowserClient {
       if (handler) {
         try {
           const result = await handler(msg.params || {});
-          this.sendToSocket(ws, { id: msg.id, result });
+          this.send({ id: msg.id, result });
           
           // Update activity with success
           this.updateActivity(msg.id, {
@@ -232,7 +205,7 @@ export class MCPBrowserClient {
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          this.sendToSocket(ws, { id: msg.id, error: { message } });
+          this.send({ id: msg.id, error: { message } });
           
           // Update activity with error
           this.updateActivity(msg.id, {
@@ -242,7 +215,7 @@ export class MCPBrowserClient {
           });
         }
       } else {
-        this.sendToSocket(ws, { 
+        this.send({ 
           id: msg.id, 
           error: { message: `Unknown tool: ${msg.method}` } 
         });
@@ -281,11 +254,11 @@ export class MCPBrowserClient {
   }
   
   /**
-   * Send a message to a specific socket
+   * Send a message to the daemon
    */
-  private sendToSocket(ws: WebSocket, msg: MCPMessage) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+  private send(msg: MCPMessage) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
     }
   }
   
@@ -335,31 +308,25 @@ export class MCPBrowserClient {
   }
   
   /**
-   * Check if connected to at least one daemon
+   * Check if connected
    */
   get isConnected(): boolean {
-    return this.sockets.size > 0;
+    return this.ws?.readyState === WebSocket.OPEN;
   }
   
   /**
-   * Get the connected agent info (returns first available)
+   * Get the connected agent info
    */
   get connectedAgent(): ConnectedAgent | null {
-    if (this._connectedAgents.size > 0) {
-      return this._connectedAgents.values().next().value || null;
-    }
-    return null;
+    return this._connectedAgent;
   }
   
   /**
-   * Disconnect from all daemons
+   * Disconnect from daemon
    */
   disconnect() {
-    for (const ws of this.sockets.values()) {
-      ws.close();
-    }
-    this.sockets.clear();
-    this._connectedAgents.clear();
+    this.ws?.close();
+    this.ws = null;
   }
 }
 

@@ -4,28 +4,28 @@
  * JSON-RPC-like protocol for communication between bridge and browser.
  */
 
-export interface ToolCallRequest {
+export interface BridgeMessage {
   id: string;
-  method: string;
-  params: Record<string, any>;
-}
-
-export interface ToolCallResponse {
-  id: string;
+  type?: 'register_peer' | 'tool_call' | 'tool_result' | 'agent_info' | 'handshake' | 'handshake_ack' | 'context';
+  method?: string;
+  params?: any;
   result?: any;
   error?: {
     code?: number;
     message: string;
   };
+  agentName?: string;
+  peerId?: string;
 }
 
-export type BridgeMessage = ToolCallRequest | ToolCallResponse;
+export type ToolCallRequest = BridgeMessage & { method: string };
+export type ToolCallResponse = BridgeMessage & ({ result: any } | { error: any });
 
 /**
  * Check if message is a request (has method)
  */
 export function isRequest(msg: BridgeMessage): msg is ToolCallRequest {
-  return 'method' in msg;
+  return typeof msg.method === 'string';
 }
 
 /**
