@@ -27,6 +27,8 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       // Fix for Rollup failing to resolve this deep import from @langchain/anthropic
       '@anthropic-ai/sdk/lib/transform-json-schema': path.resolve(__dirname, 'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs'),
+      // Fix for mermaid d3-color prototype crash on Vercel (known issue with mermaid 10.9.0+ and Vite)
+      'mermaid': path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   // Polyfill Buffer for isomorphic-git (Node.js API needed in browser)
