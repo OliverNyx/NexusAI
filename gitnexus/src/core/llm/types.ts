@@ -87,6 +87,12 @@ export interface LLMSettings {
   gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
+
+  // Intelligent Clustering Settings
+  intelligentClustering: boolean;
+  hasSeenClusteringPrompt: boolean;
+  useSameModelForClustering: boolean;
+  clusteringProvider?: Partial<ProviderConfig>; // Optional specific config for clustering
 }
 
 /**
@@ -94,6 +100,9 @@ export interface LLMSettings {
  */
 export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   activeProvider: 'gemini',
+  intelligentClustering: false,
+  hasSeenClusteringPrompt: false,
+  useSameModelForClustering: true,
   openai: {
     apiKey: '',
     model: 'gpt-4o',

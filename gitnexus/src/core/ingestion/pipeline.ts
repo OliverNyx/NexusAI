@@ -5,6 +5,7 @@ import { processParsing } from './parsing-processor';
 import { processImports, createImportMap } from './import-processor';
 import { processCalls } from './call-processor';
 import { processHeritage } from './heritage-processor';
+import { processCommunities, CommunityDetectionResult } from './community-processor';
 import { createSymbolTable } from './symbol-table';
 import { createASTCache } from './ast-cache';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline';
@@ -150,7 +151,7 @@ export const runPipelineFromFiles = async (
   });
 
   await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
-    const heritageProgress = 92 + ((current / total) * 6);
+    const heritageProgress = 88 + ((current / total) * 4);
     onProgress({
       phase: 'heritage',
       percent: Math.round(heritageProgress),
@@ -159,12 +160,62 @@ export const runPipelineFromFiles = async (
     });
   });
 
+  // Phase 7: Community Detection (92-98%)
+  onProgress({
+    phase: 'communities',
+    percent: 92,
+    message: 'Detecting code communities...',
+    stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+  });
+
+  const communityResult = await processCommunities(graph, (message, progress) => {
+    const communityProgress = 92 + (progress * 0.06);
+    onProgress({
+      phase: 'communities',
+      percent: Math.round(communityProgress),
+      message,
+      stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+  });
+
+  // Log community detection results
+  if (import.meta.env.DEV) {
+    console.log(`🏘️ Community detection: ${communityResult.stats.totalCommunities} communities found (modularity: ${communityResult.stats.modularity.toFixed(3)})`);
+  }
+
+  // Add community nodes to the graph
+  communityResult.communities.forEach(comm => {
+    graph.addNode({
+      id: comm.id,
+      label: 'Community' as const,
+      properties: {
+        name: comm.label,
+        filePath: '',
+        heuristicLabel: comm.heuristicLabel,
+        cohesion: comm.cohesion,
+        symbolCount: comm.symbolCount,
+      }
+    });
+  });
+
+  // Add MEMBER_OF relationships
+  communityResult.memberships.forEach(membership => {
+    graph.addRelationship({
+      id: `${membership.nodeId}_member_of_${membership.communityId}`,
+      type: 'MEMBER_OF',
+      sourceId: membership.nodeId,
+      targetId: membership.communityId,
+      confidence: 1.0,
+      reason: 'leiden-algorithm',
+    });
+  });
+
   
-  // Phase 6: Complete (100%)
+  // Phase 8: Complete (100%)
   onProgress({
     phase: 'complete',
     percent: 100,
-    message: 'Graph generation complete!',
+    message: `Graph complete! ${communityResult.stats.totalCommunities} communities detected.`,
     stats: { 
       filesProcessed: files.length, 
       totalFiles: files.length, 
@@ -175,7 +226,7 @@ export const runPipelineFromFiles = async (
   // Cleanup WASM memory before returning
   astCache.clear();
   
-  return { graph, fileContents };
+  return { graph, fileContents, communityResult };
 
   } catch (error) {
     cleanup();

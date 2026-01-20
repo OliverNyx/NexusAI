@@ -12,7 +12,7 @@
 // ============================================================================
 // NODE TABLE NAMES
 // ============================================================================
-export const NODE_TABLES = ['File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement'] as const;
+export const NODE_TABLES = ['File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community'] as const;
 export type NodeTableName = typeof NODE_TABLES[number];
 
 // ============================================================================
@@ -21,7 +21,7 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -106,6 +106,23 @@ CREATE NODE TABLE CodeElement (
 )`;
 
 // ============================================================================
+// COMMUNITY NODE TABLE (for Leiden algorithm clusters)
+// ============================================================================
+
+export const COMMUNITY_SCHEMA = `
+CREATE NODE TABLE Community (
+  id STRING,
+  label STRING,
+  heuristicLabel STRING,
+  keywords STRING[],
+  description STRING,
+  enrichedBy STRING,
+  cohesion DOUBLE,
+  symbolCount INT32,
+  PRIMARY KEY (id)
+)`;
+
+// ============================================================================
 // RELATION TABLE SCHEMA
 // Single table with 'type' property - connects all node tables
 // ============================================================================
@@ -124,13 +141,18 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Function TO Function,
   FROM Function TO Method,
   FROM Function TO Class,
+  FROM Function TO Community,
   FROM Class TO Method,
   FROM Class TO Function,
   FROM Class TO Class,
   FROM Class TO Interface,
+  FROM Class TO Community,
   FROM Method TO Function,
   FROM Method TO Method,
   FROM Method TO Class,
+  FROM Method TO Community,
+  FROM CodeElement TO Community,
+  FROM Interface TO Community,
   type STRING,
   confidence DOUBLE,
   reason STRING
@@ -169,6 +191,7 @@ export const NODE_SCHEMA_QUERIES = [
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,
+  COMMUNITY_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

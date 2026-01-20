@@ -1,6 +1,7 @@
 import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types';
+import { CommunityDetectionResult } from '../core/ingestion/community-processor';
 
-export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'complete' | 'error';
+export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'enriching' | 'complete' | 'error';
 
 export interface PipelineProgress {
   phase: PipelinePhase;
@@ -18,6 +19,7 @@ export interface PipelineProgress {
 export interface PipelineResult {
   graph: KnowledgeGraph;
   fileContents: Map<string, string>;
+  communityResult?: CommunityDetectionResult;
 }
 
 // Serializable version for Web Worker communication

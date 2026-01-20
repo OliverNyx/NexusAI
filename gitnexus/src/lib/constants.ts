@@ -17,6 +17,7 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Import: '#475569',     // Slate darker - very muted
   Type: '#a78bfa',       // Violet light
   CodeElement: '#64748b', // Slate - muted
+  Community: '#818cf8',  // Indigo light - cluster indicator
 };
 
 // Node sizes by type - clear visual hierarchy with dramatic size differences
@@ -37,6 +38,27 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Import: 1.5,     // Very small - usually hidden anyway
   Type: 3,         // Type alias - small
   CodeElement: 2,  // Generic small
+  Community: 0,    // Hidden by default - metadata node
+};
+
+// Community color palette for cluster-based coloring
+export const COMMUNITY_COLORS = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#eab308', // yellow
+  '#22c55e', // green
+  '#06b6d4', // cyan
+  '#3b82f6', // blue
+  '#8b5cf6', // violet
+  '#d946ef', // fuchsia
+  '#ec4899', // pink
+  '#f43f5e', // rose
+  '#14b8a6', // teal
+  '#84cc16', // lime
+];
+
+export const getCommunityColor = (communityIndex: number): string => {
+  return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 
 // Labels to show by default (hide imports and variables by default as they clutter)

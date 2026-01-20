@@ -1,6 +1,6 @@
 import Graph from 'graphology';
 import { KnowledgeGraph, NodeLabel } from '../core/graph/types';
-import { NODE_COLORS, NODE_SIZES } from './constants';
+import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
 
 export interface SigmaNodeAttributes {
   x: number;
@@ -16,6 +16,8 @@ export interface SigmaNodeAttributes {
   zIndex?: number;
   highlighted?: boolean;
   mass?: number; // ForceAtlas2 mass - higher = more repulsion
+  community?: number; // Community index from Leiden algorithm
+  communityColor?: string; // Color assigned by community
 }
 
 export interface SigmaEdgeAttributes {
@@ -74,9 +76,13 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
 /**
  * Converts the KnowledgeGraph to a graphology Graph for Sigma.js
  * Folders are positioned in a wide spread, children positioned NEAR their parents
+ * 
+ * @param knowledgeGraph - The knowledge graph to convert
+ * @param communityMemberships - Optional map of nodeId -> communityIndex for community coloring
  */
 export const knowledgeGraphToGraphology = (
-  knowledgeGraph: KnowledgeGraph
+  knowledgeGraph: KnowledgeGraph,
+  communityMemberships?: Map<string, number>
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
@@ -116,6 +122,31 @@ export const knowledgeGraphToGraphology = (
   // Small jitter for children around their parent
   const childJitter = Math.sqrt(nodeCount) * 3;
 
+  // === CLUSTER-BASED POSITIONING ===
+  // Calculate cluster centers - each cluster gets a region of the graph
+  const clusterCenters = new Map<number, { x: number; y: number }>();
+  if (communityMemberships && communityMemberships.size > 0) {
+    // Find unique community IDs
+    const communities = new Set(communityMemberships.values());
+    const communityCount = communities.size;
+    const clusterSpread = structuralSpread * 0.8; // Clusters spread across 80% of graph
+    
+    // Position cluster centers using golden angle for even distribution
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    let idx = 0;
+    communities.forEach(communityId => {
+      const angle = idx * goldenAngle;
+      const radius = clusterSpread * Math.sqrt((idx + 1) / communityCount);
+      clusterCenters.set(communityId, {
+        x: radius * Math.cos(angle),
+        y: radius * Math.sin(angle),
+      });
+      idx++;
+    });
+  }
+  // Jitter within cluster (tighter than childJitter)
+  const clusterJitter = Math.sqrt(nodeCount) * 1.5;
+
   // Store positions for parent lookup
   const nodePositions = new Map<string, { x: number; y: number }>();
 
@@ -136,6 +167,7 @@ export const knowledgeGraphToGraphology = (
     const baseSize = NODE_SIZES[node.label] || 8;
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
     
+    // Structural nodes keep their type-based color
     graph.addNode(node.id, {
       x,
       y,
@@ -161,18 +193,28 @@ export const knowledgeGraphToGraphology = (
     
     let x: number, y: number;
     
-    // Find parent position (parent should already be positioned!)
-    const parentId = childToParent.get(nodeId);
-    const parentPos = parentId ? nodePositions.get(parentId) : null;
+    // Check if this is a symbol node with a community assignment
+    const communityIndex = communityMemberships?.get(nodeId);
+    const symbolTypes = new Set(['Function', 'Class', 'Method', 'Interface']);
+    const clusterCenter = communityIndex !== undefined ? clusterCenters.get(communityIndex) : null;
     
-    if (parentPos) {
-      // Position near parent with small random offset
-      x = parentPos.x + (Math.random() - 0.5) * childJitter;
-      y = parentPos.y + (Math.random() - 0.5) * childJitter;
+    if (clusterCenter && symbolTypes.has(node.label)) {
+      // CLUSTER-BASED POSITIONING: Position near cluster center with tight jitter
+      x = clusterCenter.x + (Math.random() - 0.5) * clusterJitter;
+      y = clusterCenter.y + (Math.random() - 0.5) * clusterJitter;
     } else {
-      // No parent found - position randomly but still spread out
-      x = (Math.random() - 0.5) * structuralSpread * 0.5;
-      y = (Math.random() - 0.5) * structuralSpread * 0.5;
+      // HIERARCHY-BASED POSITIONING: Position near parent
+      const parentId = childToParent.get(nodeId);
+      const parentPos = parentId ? nodePositions.get(parentId) : null;
+      
+      if (parentPos) {
+        x = parentPos.x + (Math.random() - 0.5) * childJitter;
+        y = parentPos.y + (Math.random() - 0.5) * childJitter;
+      } else {
+        // No parent found - position randomly but still spread out
+        x = (Math.random() - 0.5) * structuralSpread * 0.5;
+        y = (Math.random() - 0.5) * structuralSpread * 0.5;
+      }
     }
     
     nodePositions.set(nodeId, { x, y });
@@ -180,11 +222,20 @@ export const knowledgeGraphToGraphology = (
     const baseSize = NODE_SIZES[node.label] || 8;
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
     
+    // Check if this node has a community assignment (reuse communityIndex from above)
+    const hasCommunity = communityIndex !== undefined;
+    
+    // Symbol nodes get colored by community if available
+    const usesCommunityColor = hasCommunity && symbolTypes.has(node.label);
+    const nodeColor = usesCommunityColor 
+      ? getCommunityColor(communityIndex!)
+      : NODE_COLORS[node.label] || '#9ca3af';
+    
     graph.addNode(nodeId, {
       x,
       y,
       size: scaledSize,
-      color: NODE_COLORS[node.label] || '#9ca3af',
+      color: nodeColor,
       label: node.properties.name,
       nodeType: node.label,
       filePath: node.properties.filePath,
@@ -192,6 +243,8 @@ export const knowledgeGraphToGraphology = (
       endLine: node.properties.endLine,
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
+      community: communityIndex,
+      communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
     });
   };
   
