@@ -81,6 +81,8 @@ const AppContent = () => {
     console.log('📥 App.handleFileSelect - param received:', enableSmartClustering, 'provider exists:', !!getActiveProviderConfig());
     const projectName = file.name.replace('.zip', '');
     setProjectName(projectName);
+    // Set initial progress BEFORE entering loading mode to prevent black screen
+    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to extract files' });
     setViewMode('loading');
 
     try {
@@ -136,6 +138,8 @@ const AppContent = () => {
     const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
 
     setProjectName(projectName);
+    // Set initial progress BEFORE entering loading mode to prevent black screen
+    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to process files' });
     setViewMode('loading');
 
     try {

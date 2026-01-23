@@ -17,25 +17,22 @@ const initFS = () => {
   return fsName;
 };
 
-// Use public proxy in development, a custom proxy in production
-const USE_OWN_PROXY = !import.meta.env.DEV;
+// Hosted proxy URL - use this for localhost to avoid local proxy issues
+const HOSTED_PROXY_URL = 'https://gitnexus.vercel.app/api/proxy';
 
 /**
- * Custom HTTP client that uses a query-param based proxy in production
- * isomorphic-git's default corsProxy appends URL as path, which doesn't work
- * well with Vercel's file-based routing.
+ * Custom HTTP client that uses a query-param based proxy
+ * - In development (localhost): uses the hosted Vercel proxy for reliability
+ * - In production: uses the local /api/proxy endpoint
  */
 const createProxiedHttp = (): typeof http => {
-  if (!USE_OWN_PROXY) {
-    // In dev, use the public proxy via isomorphic-git's built-in corsProxy option
-    return http;
-  }
-
-  // In production, wrap the HTTP client to use the custom proxy
+  const isDev = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+  
   return {
     request: async (config) => {
-      // Rewrite the URL to go through the proxy
-      const proxyUrl = `/api/proxy?url=${encodeURIComponent(config.url)}`;
+      // Use hosted proxy for localhost, local proxy for production
+      const proxyBase = isDev ? HOSTED_PROXY_URL : '/api/proxy';
+      const proxyUrl = `${proxyBase}?url=${encodeURIComponent(config.url)}`;
       
       // Call the original http.request with the proxied URL
       return http.request({
@@ -100,9 +97,6 @@ export const cloneRepository = async (
       http: httpClient,
       dir,
       url: repoUrl,
-      // Only use corsProxy in dev mode (with public proxy)
-      ...(import.meta.env.DEV ? { corsProxy: 'https://cors.isomorphic-git.org' } : {}),
-      singleBranch: true,
       depth: 1,
       // Auth callback for private repos (PAT stays client-side)
       onAuth: token ? () => ({ username: token, password: 'x-oauth-basic' }) : undefined,

@@ -23,6 +23,17 @@ const FUNCTION_NODE_TYPES = new Set([
   // Common async variants
   'async_function_declaration',
   'async_arrow_function',
+  // Java
+  'method_declaration',
+  'constructor_declaration',
+  // C/C++
+  // 'function_definition' already included above
+  // Go
+  // 'method_declaration' already included from Java
+  // C#
+  'local_function_statement',
+  // Rust
+  'function_item',
 ]);
 
 /**

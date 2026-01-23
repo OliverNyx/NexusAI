@@ -25,10 +25,7 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
   useEffect(() => {
     const config = getActiveProviderConfig();
     setHasLLMProvider(!!config);
-    // Auto-enable if provider is available
-    if (config) {
-      setEnableSmartClustering(true);
-    }
+    // Keep smart clustering OFF by default, user must opt-in
   }, []);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {

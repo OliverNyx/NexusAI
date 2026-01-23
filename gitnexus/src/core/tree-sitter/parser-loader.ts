@@ -33,6 +33,12 @@ const getWasmPath = (language: SupportedLanguages, filePath?: string): string =>
         [SupportedLanguages.JavaScript]: '/wasm/javascript/tree-sitter-javascript.wasm',
         [SupportedLanguages.TypeScript]: '/wasm/typescript/tree-sitter-typescript.wasm',
         [SupportedLanguages.Python]: '/wasm/python/tree-sitter-python.wasm',
+        [SupportedLanguages.Java]: '/wasm/java/tree-sitter-java.wasm',
+        [SupportedLanguages.C]: '/wasm/c/tree-sitter-c.wasm',
+        [SupportedLanguages.CPlusPlus]: '/wasm/cpp/tree-sitter-cpp.wasm',
+        [SupportedLanguages.CSharp]: '/wasm/csharp/tree-sitter-csharp.wasm',
+        [SupportedLanguages.Go]: '/wasm/go/tree-sitter-go.wasm',
+        [SupportedLanguages.Rust]: '/wasm/rust/tree-sitter-rust.wasm',
     };
     
     return languageFileMap[language];
@@ -40,18 +46,27 @@ const getWasmPath = (language: SupportedLanguages, filePath?: string): string =>
 
 export const loadLanguage = async (language: SupportedLanguages, filePath?: string): Promise<void> => {
     if (!parser) await loadParser();
-
     const wasmPath = getWasmPath(language, filePath);
     
-    // Use wasmPath as cache key to differentiate ts vs tsx
     if (languageCache.has(wasmPath)) {
         parser!.setLanguage(languageCache.get(wasmPath)!);
         return;
     }
 
-    if (!wasmPath) throw new Error(`Unsupported language: ${language}`);
+    if (!wasmPath) {
+        console.error(`❌ [Parser] No WASM path configured for language: ${language}`);
+        throw new Error(`Unsupported language: ${language}`);
+    }
     
-    const loadedLanguage = await Parser.Language.load(wasmPath);    
-    languageCache.set(wasmPath, loadedLanguage);
-    parser!.setLanguage(loadedLanguage);
+    try {
+        const loadedLanguage = await Parser.Language.load(wasmPath);    
+        languageCache.set(wasmPath, loadedLanguage);
+        parser!.setLanguage(loadedLanguage);
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`❌ [Parser] Failed to load WASM grammar for ${language}`);
+        console.error(`   WASM Path: ${wasmPath}`);
+        console.error(`   Error: ${errorMessage}`);
+        throw new Error(`Failed to load grammar for ${language}: ${errorMessage}`);
+    }
 }
