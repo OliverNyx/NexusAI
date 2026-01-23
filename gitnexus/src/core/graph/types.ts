@@ -13,7 +13,8 @@ export type NodeLabel =
   | 'Decorator'
   | 'Import'
   | 'Type'
-  | 'CodeElement';
+  | 'CodeElement'
+  | 'Community';
 
 
 export type NodeProperties = {
@@ -23,6 +24,13 @@ export type NodeProperties = {
   endLine?: number,
   language?: string,
   isExported?: boolean,
+  // Community-specific properties
+  heuristicLabel?: string,
+  cohesion?: number,
+  symbolCount?: number,
+  keywords?: string[],
+  description?: string,
+  enrichedBy?: 'heuristic' | 'llm',
 }
 
 export type RelationshipType = 
@@ -36,6 +44,7 @@ export type RelationshipType =
   | 'DECORATES'
   | 'IMPLEMENTS'
   | 'EXTENDS'
+  | 'MEMBER_OF'
 
 export interface GraphNode {
   id:  string,

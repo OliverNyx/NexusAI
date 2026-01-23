@@ -1,11 +1,12 @@
-import { useState, useCallback, DragEvent } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff } from 'lucide-react';
+import { useState, useCallback, DragEvent, useEffect } from 'react';
+import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Sparkles } from 'lucide-react';
 import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
 import { FileEntry } from '../services/zip';
+import { getActiveProviderConfig } from '../core/llm/settings-service';
 
 interface DropZoneProps {
-  onFileSelect: (file: File) => void;
-  onGitClone?: (files: FileEntry[]) => void;
+  onFileSelect: (file: File, enableSmartClustering?: boolean) => void;
+  onGitClone?: (files: FileEntry[], enableSmartClustering?: boolean) => void;
 }
 
 export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
@@ -17,6 +18,15 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
   const [isCloning, setIsCloning] = useState(false);
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState<string | null>(null);
+  const [enableSmartClustering, setEnableSmartClustering] = useState(false);
+  const [hasLLMProvider, setHasLLMProvider] = useState(false);
+
+  // Check if LLM provider is configured
+  useEffect(() => {
+    const config = getActiveProviderConfig();
+    setHasLLMProvider(!!config);
+    // Keep smart clustering OFF by default, user must opt-in
+  }, []);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -39,24 +49,25 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
     if (files.length > 0) {
       const file = files[0];
       if (file.name.endsWith('.zip')) {
-        onFileSelect(file);
+        onFileSelect(file, enableSmartClustering);
       } else {
         setError('Please drop a .zip file');
       }
     }
-  }, [onFileSelect]);
+  }, [onFileSelect, enableSmartClustering]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
       const file = files[0];
       if (file.name.endsWith('.zip')) {
-        onFileSelect(file);
+        console.log('🎯 DropZone: Calling onFileSelect with enableSmartClustering:', enableSmartClustering);
+        onFileSelect(file, enableSmartClustering);
       } else {
         setError('Please select a .zip file');
       }
     }
-  }, [onFileSelect]);
+  }, [onFileSelect, enableSmartClustering]);
 
   const handleGitClone = async () => {
     if (!githubUrl.trim()) {
@@ -76,16 +87,16 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
 
     try {
       const files = await cloneRepository(
-        githubUrl, 
+        githubUrl,
         (phase, percent) => setCloneProgress({ phase, percent }),
         githubToken || undefined // Pass token if provided
       );
 
       // Clear token from memory after successful clone
       setGithubToken('');
-      
+
       if (onGitClone) {
-        onGitClone(files);
+        onGitClone(files, enableSmartClustering);
       }
     } catch (err) {
       console.error('Clone failed:', err);
@@ -123,8 +134,8 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'zip' 
-                ? 'bg-accent text-white shadow-md' 
+              ${activeTab === 'zip'
+                ? 'bg-accent text-white shadow-md'
                 : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
               }
             `}
@@ -137,8 +148,8 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'github' 
-                ? 'bg-accent text-white shadow-md' 
+              ${activeTab === 'github'
+                ? 'bg-accent text-white shadow-md'
                 : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
               }
             `}
@@ -157,60 +168,98 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
 
         {/* ZIP Upload Tab */}
         {activeTab === 'zip' && (
-          <div
-            className={`
-              relative p-16 
-              bg-surface border-2 border-dashed rounded-3xl
-              transition-all duration-300 cursor-pointer
-              ${isDragging 
-                ? 'border-accent bg-elevated scale-105 shadow-glow' 
-                : 'border-border-default hover:border-accent/50 hover:bg-elevated/50 animate-breathe'
-              }
-            `}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => document.getElementById('file-input')?.click()}
-          >
-            <input
-              id="file-input"
-              type="file"
-              accept=".zip"
-              className="hidden"
-              onChange={handleFileInput}
-            />
+          <>
+            <div
+              className={`
+                relative p-16 
+                bg-surface border-2 border-dashed rounded-3xl
+                transition-all duration-300 cursor-pointer
+                ${isDragging
+                  ? 'border-accent bg-elevated scale-105 shadow-glow'
+                  : 'border-border-default hover:border-accent/50 hover:bg-elevated/50 animate-breathe'
+                }
+              `}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => document.getElementById('file-input')?.click()}
+            >
+              <input
+                id="file-input"
+                type="file"
+                accept=".zip"
+                className="hidden"
+                onChange={handleFileInput}
+              />
 
-            {/* Icon */}
-            <div className={`
-              mx-auto w-20 h-20 mb-6
-              flex items-center justify-center
-              bg-gradient-to-br from-accent to-node-interface
-              rounded-2xl shadow-glow
-              transition-transform duration-300
-              ${isDragging ? 'scale-110' : ''}
-            `}>
-              {isDragging ? (
-                <Upload className="w-10 h-10 text-white" />
-              ) : (
-                <FileArchive className="w-10 h-10 text-white" />
-              )}
+              {/* Icon */}
+              <div className={`
+                mx-auto w-20 h-20 mb-6
+                flex items-center justify-center
+                bg-gradient-to-br from-accent to-node-interface
+                rounded-2xl shadow-glow
+                transition-transform duration-300
+                ${isDragging ? 'scale-110' : ''}
+              `}>
+                {isDragging ? (
+                  <Upload className="w-10 h-10 text-white" />
+                ) : (
+                  <FileArchive className="w-10 h-10 text-white" />
+                )}
+              </div>
+
+              {/* Text */}
+              <h2 className="text-xl font-semibold text-text-primary text-center mb-2">
+                {isDragging ? 'Drop it here!' : 'Drop your codebase'}
+              </h2>
+              <p className="text-sm text-text-secondary text-center mb-6">
+                Drag & drop a .zip file to generate a knowledge graph
+              </p>
+
+              {/* Hints */}
+              <div className="flex items-center justify-center gap-3 text-xs text-text-muted">
+                <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
+                  .zip
+                </span>
+              </div>
             </div>
 
-            {/* Text */}
-            <h2 className="text-xl font-semibold text-text-primary text-center mb-2">
-              {isDragging ? 'Drop it here!' : 'Drop your codebase'}
-            </h2>
-            <p className="text-sm text-text-secondary text-center mb-6">
-              Drag & drop a .zip file to generate a knowledge graph
-            </p>
-
-            {/* Hints */}
-            <div className="flex items-center justify-center gap-3 text-xs text-text-muted">
-              <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
-                .zip
-              </span>
+            {/* Smart Clustering Toggle - Below drop zone */}
+            <div className="mt-4 p-4 bg-surface/50 border border-border-subtle rounded-xl">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Sparkles className="w-4 h-4 text-accent" />
+                    <span className="text-sm font-medium text-text-primary">Enable Smart Clustering</span>
+                  </div>
+                  <p className="text-xs text-text-muted leading-relaxed">
+                    Uses LLM to label processes and clusters for better detection. Don't worry, it consumes very less tokens one time.
+                  </p>
+                  {!hasLLMProvider && (
+                    <p className="text-xs text-amber-400 mt-2">
+                      ⚠️ Setup LLM provider to enable smart clustering
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => hasLLMProvider && setEnableSmartClustering(!enableSmartClustering)}
+                  disabled={!hasLLMProvider}
+                  className={`
+                  relative inline-flex h-6 w-11 items-center rounded-full transition-colors ml-4
+                  ${enableSmartClustering && hasLLMProvider ? 'bg-accent' : 'bg-gray-700'}
+                  ${!hasLLMProvider ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                `}>
+                  <span
+                    className={`
+                    inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                    ${enableSmartClustering && hasLLMProvider ? 'translate-x-6' : 'translate-x-1'}
+                  `}
+                  />
+                </button>
+              </label>
             </div>
-          </div>
+          </>
         )}
 
         {/* GitHub URL Tab */}
@@ -302,11 +351,11 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
                 {isCloning ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    {cloneProgress.phase === 'cloning' 
+                    {cloneProgress.phase === 'cloning'
                       ? `Cloning... ${cloneProgress.percent}%`
                       : cloneProgress.phase === 'reading'
-                      ? 'Reading files...'
-                      : 'Starting...'
+                        ? 'Reading files...'
+                        : 'Starting...'
                     }
                   </>
                 ) : (
@@ -322,7 +371,7 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
             {isCloning && (
               <div className="mt-4">
                 <div className="h-2 bg-elevated rounded-full overflow-hidden">
-                  <div 
+                  <div
                     className="h-full bg-accent transition-all duration-300 ease-out"
                     style={{ width: `${cloneProgress.percent}%` }}
                   />

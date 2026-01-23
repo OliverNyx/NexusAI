@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import { AppStateProvider, useAppState } from './hooks/useAppState';
 import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
@@ -11,6 +11,8 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
+import { ProviderConfig } from './core/llm/types';
+import { IntelligentClusteringModal } from './components/IntelligentClusteringModal';
 
 const AppContent = () => {
   const {
@@ -29,23 +31,68 @@ const AppContent = () => {
     refreshLLMSettings,
     initializeAgent,
     startEmbeddings,
+    startBackgroundEnrichment,
     embeddingStatus,
     codeReferences,
     selectedNode,
     isCodePanelOpen,
+    llmSettings,
+    updateLLMSettings,
+    runClusterEnrichment,
   } = useAppState();
+
+  const [showClusteringModal, setShowClusteringModal] = useState(false);
+
+  // Trigger clustering modal after ingestion if not seen yet
+  // DISABLED: Clustering is now in the upload flow
+  /*
+  useEffect(() => {
+    if (viewMode === 'exploring' && !llmSettings.hasSeenClusteringPrompt && !llmSettings.intelligentClustering) {
+      const timer = setTimeout(() => setShowClusteringModal(true), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode, llmSettings.hasSeenClusteringPrompt, llmSettings.intelligentClustering]);
+  */
+
+  const handleEnableClustering = useCallback(() => {
+    updateLLMSettings({
+      intelligentClustering: true,
+      hasSeenClusteringPrompt: true,
+      useSameModelForClustering: true // Default to simple path
+    });
+    setShowClusteringModal(false);
+    runClusterEnrichment().catch(console.error);
+  }, [updateLLMSettings, runClusterEnrichment]);
+
+  const handleConfigureClustering = useCallback(() => {
+    updateLLMSettings({ hasSeenClusteringPrompt: true });
+    setShowClusteringModal(false);
+    setSettingsPanelOpen(true);
+  }, [updateLLMSettings, setSettingsPanelOpen]);
+
+  const handleSkipClustering = useCallback(() => {
+    updateLLMSettings({ hasSeenClusteringPrompt: true });
+    setShowClusteringModal(false);
+  }, [updateLLMSettings]);
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
-  const handleFileSelect = useCallback(async (file: File) => {
+  const handleFileSelect = useCallback(async (file: File, enableSmartClustering?: boolean) => {
+    console.log('📥 App.handleFileSelect - param received:', enableSmartClustering, 'provider exists:', !!getActiveProviderConfig());
     const projectName = file.name.replace('.zip', '');
     setProjectName(projectName);
+    // Set initial progress BEFORE entering loading mode to prevent black screen
+    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to extract files' });
     setViewMode('loading');
 
     try {
+      // Prepare LLM config if clustering is enabled
+      const clusteringConfig = enableSmartClustering ? getActiveProviderConfig() ?? undefined : undefined;
+      console.log('✅ clusteringConfig:', !!clusteringConfig, clusteringConfig?.provider);
+
       const result = await runPipeline(file, (progress) => {
         setProgress(progress);
-      });
+      }, clusteringConfig || undefined);
 
       setGraph(result.graph);
       setFileContents(result.fileContents);
@@ -67,6 +114,9 @@ const AppContent = () => {
           console.warn('Embeddings auto-start failed:', err);
         }
       });
+
+      // Start background cluster enrichment (if toggle was enabled)
+      startBackgroundEnrichment().catch(console.warn);
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -80,20 +130,25 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent, llmSettings]);
 
-  const handleGitClone = useCallback(async (files: FileEntry[]) => {
+  const handleGitClone = useCallback(async (files: FileEntry[], enableSmartClustering?: boolean) => {
     // Extract project name from first file path (e.g., "owner-repo-123/src/..." -> "owner-repo")
     const firstPath = files[0]?.path || 'repository';
     const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
 
     setProjectName(projectName);
+    // Set initial progress BEFORE entering loading mode to prevent black screen
+    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to process files' });
     setViewMode('loading');
 
     try {
+      // Prepare LLM config if clustering is enabled
+      const clusteringConfig = enableSmartClustering ? getActiveProviderConfig() ?? undefined : undefined;
+
       const result = await runPipelineFromFiles(files, (progress) => {
         setProgress(progress);
-      });
+      }, clusteringConfig || undefined);
 
       setGraph(result.graph);
       setFileContents(result.fileContents);
@@ -115,6 +170,9 @@ const AppContent = () => {
           console.warn('Embeddings auto-start failed:', err);
         }
       });
+
+      // Start background cluster enrichment (if toggle was enabled)
+      startBackgroundEnrichment().catch(console.warn);
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -128,7 +186,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent, runClusterEnrichment]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -182,6 +240,14 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
+      />
+
+      {/* Intelligent Clustering Modal */}
+      <IntelligentClusteringModal
+        isOpen={showClusteringModal}
+        onClose={handleSkipClustering}
+        onEnable={handleEnableClustering}
+        onConfigure={handleConfigureClustering}
       />
     </div>
   );

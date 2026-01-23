@@ -12,7 +12,12 @@
 // ============================================================================
 // NODE TABLE NAMES
 // ============================================================================
-export const NODE_TABLES = ['File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement'] as const;
+export const NODE_TABLES = [
+  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community',
+  // Multi-language support
+  'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
+  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
+] as const;
 export type NodeTableName = typeof NODE_TABLES[number];
 
 // ============================================================================
@@ -21,7 +26,7 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -106,6 +111,58 @@ CREATE NODE TABLE CodeElement (
 )`;
 
 // ============================================================================
+// COMMUNITY NODE TABLE (for Leiden algorithm clusters)
+// ============================================================================
+
+export const COMMUNITY_SCHEMA = `
+CREATE NODE TABLE Community (
+  id STRING,
+  label STRING,
+  heuristicLabel STRING,
+  keywords STRING[],
+  description STRING,
+  enrichedBy STRING,
+  cohesion DOUBLE,
+  symbolCount INT32,
+  PRIMARY KEY (id)
+)`;
+
+// ============================================================================
+// MULTI-LANGUAGE NODE TABLE SCHEMAS
+// ============================================================================
+
+// Generic code element with startLine/endLine for C, C++, Rust, Go, Java, C#
+const CODE_ELEMENT_BASE = (name: string) => `
+CREATE NODE TABLE \`${name}\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
+export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
+export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
+export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
+export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
+export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
+export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
+export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
+export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
+export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
+export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
+export const PROPERTY_SCHEMA = CODE_ELEMENT_BASE('Property');
+export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
+export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
+export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
+export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
+export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
+export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+
+// ============================================================================
 // RELATION TABLE SCHEMA
 // Single table with 'type' property - connects all node tables
 // ============================================================================
@@ -119,18 +176,79 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO Interface,
   FROM File TO Method,
   FROM File TO CodeElement,
+  FROM File TO \`Struct\`,
+  FROM File TO \`Enum\`,
+  FROM File TO \`Macro\`,
+  FROM File TO Typedef,
+  FROM File TO \`Union\`,
+  FROM File TO Namespace,
+  FROM File TO Trait,
+  FROM File TO Impl,
+  FROM File TO TypeAlias,
+  FROM File TO \`Const\`,
+  FROM File TO Static,
+  FROM File TO Property,
+  FROM File TO Record,
+  FROM File TO Delegate,
+  FROM File TO Annotation,
+  FROM File TO Constructor,
+  FROM File TO Template,
+  FROM File TO \`Module\`,
   FROM Folder TO Folder,
   FROM Folder TO File,
   FROM Function TO Function,
   FROM Function TO Method,
   FROM Function TO Class,
+  FROM Function TO Community,
+  FROM Function TO \`Macro\`,
+  FROM Function TO \`Struct\`,
+  FROM Function TO Template,
+  FROM Function TO \`Enum\`,
+  FROM Function TO Namespace,
+  FROM Function TO TypeAlias,
   FROM Class TO Method,
   FROM Class TO Function,
   FROM Class TO Class,
   FROM Class TO Interface,
+  FROM Class TO Community,
+  FROM Class TO Template,
   FROM Method TO Function,
   FROM Method TO Method,
   FROM Method TO Class,
+  FROM Method TO Community,
+  FROM Method TO Template,
+  FROM Method TO \`Struct\`,
+  FROM Template TO Template,
+  FROM Template TO Function,
+  FROM Template TO Method,
+  FROM Template TO Class,
+  FROM Template TO \`Struct\`,
+  FROM CodeElement TO Community,
+  FROM Interface TO Community,
+  FROM \`Struct\` TO Community,
+  FROM \`Struct\` TO Trait,
+  FROM \`Struct\` TO Function,
+  FROM \`Struct\` TO Method,
+  FROM \`Enum\` TO Community,
+  FROM \`Macro\` TO Community,
+  FROM Typedef TO Community,
+  FROM \`Union\` TO Community,
+  FROM Namespace TO Community,
+  FROM Trait TO Community,
+  FROM Impl TO Community,
+  FROM Impl TO Trait,
+  FROM TypeAlias TO Community,
+  FROM \`Const\` TO Community,
+  FROM Static TO Community,
+  FROM Property TO Community,
+  FROM Record TO Community,
+  FROM Delegate TO Community,
+  FROM Annotation TO Community,
+  FROM Constructor TO Community,
+  FROM Constructor TO Interface,
+  FROM Constructor TO Class,
+  FROM Template TO Community,
+  FROM \`Module\` TO Community,
   type STRING,
   confidence DOUBLE,
   reason STRING
@@ -169,6 +287,26 @@ export const NODE_SCHEMA_QUERIES = [
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,
+  COMMUNITY_SCHEMA,
+  // Multi-language support
+  STRUCT_SCHEMA,
+  ENUM_SCHEMA,
+  MACRO_SCHEMA,
+  TYPEDEF_SCHEMA,
+  UNION_SCHEMA,
+  NAMESPACE_SCHEMA,
+  TRAIT_SCHEMA,
+  IMPL_SCHEMA,
+  TYPE_ALIAS_SCHEMA,
+  CONST_SCHEMA,
+  STATIC_SCHEMA,
+  PROPERTY_SCHEMA,
+  RECORD_SCHEMA,
+  DELEGATE_SCHEMA,
+  ANNOTATION_SCHEMA,
+  CONSTRUCTOR_SCHEMA,
+  TEMPLATE_SCHEMA,
+  MODULE_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

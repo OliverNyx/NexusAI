@@ -1,151 +1,372 @@
-# GitNexus V2 Strategic Roadmap: The "Semantic Understanding" Upgrade
+# GitNexus V2: Semantic Code Intelligence Roadmap
 
-> **Context for Models:** This document contains a comprehensive analysis of a competitor tool ("Noodlbox") and a detailed roadmap for integrating its best features into GitNexus. GitNexus is a browser-native (WASM) code analysis tool using KuzuDB and Tree-sitter. This roadmap aims to elevate GitNexus from a "Code Graph" to a "Semantic Code Understanding" platform.
-
----
-
-## 1. Competitive Analysis: GitNexus vs. Noodlbox
-
-### Core Architecture
-| Feature | GitNexus (Current) | Noodlbox (Competitor) | Advantage |
-|---------|-------------------|-----------------------|-----------|
-| **Runtime** | **100% Browser (WASM)**. Zero setup. Privacy-first. | **CLI + Local Server**. Requires installation/daemon. | **GitNexus** (UX/Privacy) |
-| **Storage** | **KuzuDB (WASM)**. Graph + Vector. | **LanceDB**. Graph + Vector. | Tied (Both robust) |
-| **Extraction** | Tree-sitter (WASM). | Tree-sitter. | Tied |
-| **Integration** | Custom MCP Bridge (Browser ↔ Local). | Direct CLI MCP Server. | Noodlbox (Simpler setup) |
-
-### Conceptual Model (The Gap)
-| Feature | GitNexus | Noodlbox | Analysis |
-|---------|----------|----------|----------|
-| **Grouping** | File-based (Folders). | **Communities**. Algorithmic clustering of related code. | **Noodlbox**. Reveals logical architecture vs physical. |
-| **Flows** | Raw `CALLS` edges. | **Processes**. Named execution paths (Entry → End). | **Noodlbox**. "How it works" vs "What calls what". |
-| **Search** | Hybrid (BM25 + Vec). | Context Search. | Tied, but Noodlbox returns Processes. |
-| **Impact** | Node Blast Radius. | **Git Diff Impact**. Unstaged/Staged analysis. | **Noodlbox**. Much better DevEx. |
-| **UX** | Raw IDs/Filenames. | **Labels**. Human-readable names ("Auth System"). | **Noodlbox**. Cognitive load reduction. |
+> **Last Updated:** January 2026  
+> **Vision:** Transform GitNexus from a "Code Graph" into a "Semantic Code Understanding" platform that rivals and surpasses tools like Noodlbox and DeepWiki.
 
 ---
 
-## 2. Strategic Goal: "The Graph of Meaning"
-We need to move GitNexus beyond just mapping *files and functions* to mapping *concepts and flows*.
-**Shift:** `Files -> Communities`, `Functions -> Processes`, `Edges -> Flows`.
+## Executive Summary
+
+### Current State
+- ✅ Tree-sitter parsing → AST extraction
+- ✅ KuzuDB (WASM) → Graph + Vector storage
+- ✅ Hybrid search (BM25 + Semantic)
+- ✅ LangChain Agent with tools (search, cypher, grep, read, blastRadius, highlight)
+- ✅ MCP integration for external AI tools
+
+### Target State
+- 🎯 **Communities:** Auto-detected code clusters (Leiden algorithm)
+- 🎯 **Processes:** Named execution flows with ordered steps
+- 🎯 **Hierarchical Navigation:** Codebase → Community → Process → Symbol
+- 🎯 **Auto-Documentation:** Generate ARCHITECTURE/ docs from graph
+- 🎯 **Incremental Updates:** File watch + delta graph updates
+- 🎯 **Git Diff Impact:** Pre-commit blast radius on uncommitted changes
 
 ---
 
-## 3. Implementation Roadmap
+## Competitive Analysis
 
-### 🔥 PHASE 1: The Semantic Layer (High Priority)
-*Transform the raw KuzuDB graph into high-level concepts.*
+### vs Noodlbox
+| Feature | Noodlbox | GitNexus (Current) | GitNexus (Planned) |
+|---------|----------|-------------------|-------------------|
+| Runtime | CLI + Server | Browser (WASM) ✅ | Browser (WASM) ✅ |
+| Communities | Leiden clusters ✅ | ❌ | ✅ Planned |
+| Processes | Named flows ✅ | ❌ | ✅ Planned |
+| Git Diff Impact | ✅ | ❌ | ✅ Planned |
+| Privacy | Local server | 100% Browser ✅ | 100% Browser ✅ |
 
-#### 1.1 Communities (Code Clusters)
-**Concept:** Use modularity optimization to group tightly coupled symbols into "Communities" (e.g., "Auth System", "Payment Processing") regardless of folder structure.
-*   **Algorithm:** Implement **Leiden Algorithm** (superior to Louvain for refined clusters) or **Louvain** in WASM (or pure JS if graph small enough).
-*   **Trigger:** Run post-ingestion.
-*   **Schema Update:**
-    *   New Node: `Community { id, label, cohesionScore }`
-    *   New Edge: `MEMBER_OF` (Symbol -> Community)
-*   **Metrics:** Calculate **Cohesion Score** (internal edges / total edges) to rate cluster quality (0-1).
-*   **Key Symbols:** Identify diverse "Entry Points" (called from outside) and "Central Hubs" (high internal degree).
+### vs OpenDeepWiki
+| Feature | OpenDeepWiki | GitNexus (Planned) |
+|---------|--------------|-------------------|
+| Structure Discovery | LLM guesses from files | Leiden from actual relationships ✅ |
+| Process Understanding | None (file-by-file) | Static analysis traces ✅ |
+| Grounding | File references only | Graph edges + files ✅ |
+| "What breaks if X changes" | Cannot answer | blastRadius ✅ |
 
-#### 1.2 Processes (Execution Flows)
-**Concept:** Trace and name execution paths often hidden in call graphs.
-*   **Detection Heuristic:**
-    1.  Find **Entry Points**: Functions called by Frameworks (e.g., `handleRequest`) or with 0 internal callers.
-    2.  Trace forward `CALLS` edges (limit depth/branching).
-    3.  Group linear paths.
-*   **Schema Update:**
-    *   New Node: `Process { id, label, process_type: 'intra'|'cross' }`
-    *   New Edge: `STEP_IN_PROCESS { step_number }` (Symbol -> Process)
-*   **Process Labeling:** Heuristic naming (e.g., `[EntryFn]_[Action]`).
-
-#### 1.3 Git Diff Impact Detection
-**Concept:** Analyze *work-in-progress* code, not just the committed graph.
-*   **MCP Tool:** `detect_impact(scope: 'unstaged' | 'staged')`
-*   **Workflow:**
-    1.  MCP Client reads `git diff`.
-    2.  Parse diff to find changed symbols (e.g., `src/auth.ts: function login`).
-    3.  Query Graph for `potentially_affected` (Downstream callers).
-    4.  **Crucial:** Map affected symbols to **Processes** and **Communities**.
-    5.  Output: "Changing `login` affects 'Checkout Flow' and 'User Onboarding Process'".
+**Our Advantage:** Real graph-based understanding vs LLM inference.
 
 ---
 
-### 🟡 PHASE 2: Cognitive UX (Medium Priority)
-*Make the complex graph human-readable.*
-
-#### 2.1 Smart Labeling
-**Concept:** Replacing IDs with meaningful names.
-*   **Generator:** Simple LLM pass or rule-based heuristic.
-    *   Input: Top file paths in Community (e.g., `src/auth/*`, `src/login/*`).
-    *   Output: Label "Authentication".
-*   **Storage:** `.gitnexus/labels.json`.
-*   **Usage:** UI & MCP tools display "Auth System" instead of "Community #12".
-
-#### 2.2 Architecture Generation (`generate_map`)
-**Concept:** Auto-generated documentation that stays up to date.
-*   **MCP Tool:** `gitnexus_generate_architecture`
-*   **Output:** `ARCHITECTURE/` folder.
-    *   `README.md`: Mermaid Diagram of Communities + Cross-community data flow.
-    *   `{process_name}.md`: Sequence diagrams of key processes.
-*   **Value:** Instant "Onboarding Docs" for any repo.
-
-#### 2.3 Centrality & Importance
-**Concept:** Not all nodes are equal.
-*   **Algorithm:** **PageRank** or **Betweenness Centrality**.
-*   **Use Case:** Search results ranking. When searching "Auth", show the `AuthService` class before a random utility function used by it.
+## Phase-Wise Implementation Plan
 
 ---
 
-### 🟢 PHASE 3: Agentic Workflows (Low Priority)
-*Standardized "Thinking Patterns" for the LLM.*
+## PHASE 1: Community Detection (Leiden Algorithm)
+**Goal:** Group related code into named clusters.
 
-#### 3.1 "Skills" (Structured Prompts)
-Define rigid workflows for the Agent to prevent "wandering":
-*   **Exploration Skill:** `Read Map -> Pick Community -> List Key Processes -> Drill Down`.
-*   **Debugging Skill:** `Error Msg -> Search Context -> Trace Backwards (Callers) -> Check Recent Changes`.
-*   **Refactoring Skill:** `Select Symbol -> Blast Radius -> Dependencies (In/Out) -> Plan Split`.
+### 1.1 Research & Setup
+- [ ] Research JS/WASM implementations of Leiden algorithm
+  - Options: `graphology-communities-louvain`, custom WASM port
+  - Constraint: Must run in browser
+- [ ] Benchmark on sample codebases (100, 1K, 10K nodes)
 
-#### 3.2 Hooks
-*   **Session Hook:** auto-inject `database-schema` and high-level `codebase-map` at chat start.
-*   **Search Hook:** Intercept `grep` in IDE to attach semantic context ("This match is part of 'Payment Process'").
+### 1.2 Schema Updates
+- [ ] Add `Community` node table to KuzuDB schema:
+  ```typescript
+  interface Community {
+    id: string;           // "comm_a7f3x2"
+    label: string;        // "Authentication" (heuristic or LLM)
+    cohesion: number;     // 0.0 - 1.0
+    symbolCount: number;  // Count of symbols in community
+  }
+  ```
+- [ ] Add `MEMBER_OF` relationship type to `CodeRelation`:
+  ```typescript
+  // Symbol -> Community
+  { type: 'MEMBER_OF', source: symbolId, target: communityId }
+  ```
+
+### 1.3 Ingestion Pipeline Update
+- [ ] Create `community-processor.ts` in `src/core/ingestion/`
+- [ ] Add Phase 6 to pipeline (after heritage processing):
+  ```typescript
+  // pipeline.ts
+  await processCommunities(graph, onProgress);
+  ```
+- [ ] Implement Leiden on the CALLS + IMPORTS adjacency matrix
+- [ ] Generate heuristic labels (folder name majority)
+
+### 1.4 Agent Integration
+- [ ] Add `listCommunities` tool or resource
+- [ ] Update system prompt to teach agent about communities
+- [ ] Update `search` tool to return community context
+
+### 1.5 UI Updates
+- [ ] Color nodes by community in graph visualization
+- [ ] Add community filter/legend panel
+
+**Estimated Effort:** 2-3 weeks
 
 ---
 
-## 4. Technical Specs & Schema Changes
+## PHASE 2: Process Detection (Execution Flows)
+**Goal:** Trace and name execution paths.
 
-### Proposed KuzuDB Schema V2
+### 2.1 Schema Updates
+- [ ] Add `Process` node table to KuzuDB schema:
+  ```typescript
+  interface Process {
+    id: string;           // "proc_login_flow"
+    label: string;        // "User Login Flow"
+    type: 'intra_community' | 'cross_community';
+    stepCount: number;
+  }
+  ```
+- [ ] Add `STEP_IN_PROCESS` relationship type:
+  ```typescript
+  // Symbol -> Process (with step property)
+  { type: 'STEP_IN_PROCESS', source: symbolId, target: processId, step: number }
+  ```
 
+### 2.2 Process Detection Algorithm
+- [ ] Create `process-processor.ts` in `src/core/ingestion/`
+- [ ] Implement entry point detection:
+  ```typescript
+  // Functions with no internal callers
+  MATCH (f:Function) 
+  WHERE NOT (:Function)-[:CALLS]->(f) 
+  RETURN f
+  ```
+- [ ] Implement forward tracing (BFS/DFS from entry points)
+- [ ] Limit depth (e.g., 10) and branching (e.g., 3)
+- [ ] Deduplicate overlapping paths
+- [ ] Label processes (heuristic: `{entry}_to_{terminal}`)
+
+### 2.3 Community Integration
+- [ ] Track which communities each process touches
+- [ ] Mark `type` as `cross_community` if > 1 community
+
+### 2.4 Agent Integration
+- [ ] Add `listProcesses(communityId?)` tool
+- [ ] Add `traceProcess(processId)` tool
+- [ ] Update system prompt with process navigation
+
+### 2.5 UI Updates
+- [ ] Visualize processes as highlighted paths
+- [ ] Add process list panel
+- [ ] Click process → animate the flow
+
+**Estimated Effort:** 2 weeks
+
+---
+
+## PHASE 3: Smart Labeling (LLM Enhancement)
+**Goal:** Human-readable names for Communities and Processes.
+
+### 3.1 Heuristic Labeling (Default)
+- [ ] Community: Most common folder prefix
+- [ ] Process: `{entryFunction}_to_{terminalFunction}`
+
+### 3.2 LLM Labeling (Optional Enhancement)
+- [ ] Create `labeling-service.ts`
+- [ ] Batch communities/processes for LLM naming
+- [ ] Prompt template:
+  ```
+  Given these functions: login, validateToken, checkExpiry, refreshSession
+  All in folder: src/auth/
+  Generate a 2-3 word label for this code cluster.
+  ```
+- [ ] Store both `heuristicLabel` and `llmLabel`
+- [ ] Use `llmLabel` if available, else `heuristicLabel`
+
+### 3.3 Labels File Export
+- [ ] Generate `.gitnexus/labels.json` on demand
+- [ ] Format matching Noodlbox for familiarity
+
+**Estimated Effort:** 1 week
+
+---
+
+## PHASE 4: Architecture Documentation Generation
+**Goal:** Auto-generate project documentation from graph.
+
+### 4.1 Documentation Structure
+- [ ] Output: `ARCHITECTURE/` folder
+  ```
+  ARCHITECTURE/
+  ├── README.md              # Overview + Mermaid diagram
+  ├── communities/
+  │   ├── authentication.md  # Community detail
+  │   └── payments.md
+  └── processes/
+      ├── user-login-flow.md # Process trace
+      └── checkout-flow.md
+  ```
+
+### 4.2 Implementation
+- [ ] Create `generate-docs.ts` in `src/core/docs/`
+- [ ] README.md generation:
+  - Codebase stats (files, symbols, communities, processes)
+  - Mermaid diagram of community relationships
+  - List of key processes
+- [ ] Community doc generation:
+  - Key symbols (highest centrality)
+  - Entry points
+  - Processes in this community
+- [ ] Process doc generation:
+  - Ordered step list with file paths
+  - Mermaid sequence diagram
+  - Cross-community markers
+
+### 4.3 MCP Tool
+- [ ] Add `generateArchitecture` tool to MCP
+- [ ] Returns generated markdown (or writes to files)
+
+**Estimated Effort:** 2 weeks
+
+---
+
+## PHASE 5: Git Diff Impact Detection
+**Goal:** Pre-commit blast radius analysis.
+
+### 5.1 MCP Server Updates
+- [ ] Add `detectImpact` tool to `gitnexus-mcp`
+- [ ] Parameters:
+  ```typescript
+  interface DetectImpactParams {
+    scope: 'unstaged' | 'staged' | 'all' | 'compare';
+    baseRef?: string;  // For 'compare' scope
+  }
+  ```
+
+### 5.2 Implementation
+- [ ] Run `git diff` (MCP server side)
+- [ ] Parse diff to extract changed file paths + line ranges
+- [ ] Map changes to symbols in graph
+- [ ] Run `blastRadius` on each changed symbol
+- [ ] Aggregate results by:
+  - Changed symbols
+  - Impacted processes
+  - Affected communities
+  - Risk level (low/medium/high)
+
+### 5.3 Response Format
 ```typescript
-// Nodes
-interface Community {
-  id: string; // "comm_1"
-  label: string; // "Authentication"
-  cohesion: number; // 0.85
+interface ImpactResult {
+  changedSymbols: { name: string; file: string; changeType: 'added' | 'modified' | 'deleted' }[];
+  impactedProcesses: { id: string; label: string; affectedSteps: number[] }[];
+  affectedCommunities: string[];
+  riskLevel: 'low' | 'medium' | 'high';
 }
-
-interface Process {
-  id: string; // "proc_login_flow"
-  label: string; // "Login Flow"
-  type: 'intra_community' | 'cross_community';
-}
-
-// Relationships
-// MEMBER_OF: Symbol -> Community
-// STEP_IN_PROCESS: Symbol -> Process (property: step_index)
 ```
 
-### Algorithm Reference
-*   **Leiden Algorithm:**
-    *   *Input:* Adjacency matrix of `CALLS` + `EXTENDS` edges.
-    *   *Output:* Partition assignment (NodeID -> CommunityID).
-    *   *Constraint:* Must run fast in JS/WASM.
-*   **Reciprocal Rank Fusion (RRF):**
-    *   Already used for Search. Can be refined to weight "Key Symbols" (Centrality) higher.
+**Estimated Effort:** 1-2 weeks
 
 ---
 
-## 5. Summary of Work to Be Done
-1.  **Ingestion:** Add `CommunityDetection` and `ProcessTracing` post-processors.
-2.  **Schema:** Add `Community` and `Process` tables.
-3.  **MCP:** Add `detect_impact` tool accepting git diffs.
-4.  **UI:** Visualize Communities (colored clusters) and Processes (animated paths).
-5.  **Docs:** Implement `generate_map` to export findings to Markdown.
+## PHASE 6: Incremental Updates (File Watch)
+**Goal:** Real-time graph updates on file changes.
+
+### 6.1 File Watching
+- [ ] Integrate file system watcher in MCP server
+- [ ] Detect: added, modified, deleted files
+- [ ] Debounce rapid changes (e.g., 500ms)
+
+### 6.2 Incremental Parsing
+- [ ] Hash-based cache: file path → content hash → AST
+- [ ] On change: re-parse only changed file
+- [ ] Compute delta: added/removed nodes and edges
+
+### 6.3 Graph Patching
+- [ ] Add `patchGraph` method to KuzuDB adapter
+- [ ] Operations: ADD_NODE, REMOVE_NODE, ADD_EDGE, REMOVE_EDGE
+- [ ] Update affected communities (optional: re-run Leiden locally)
+- [ ] Update affected processes (re-trace from changed symbols)
+
+### 6.4 Re-embedding
+- [ ] Re-embed changed symbols
+- [ ] Re-embed 1-hop neighbors (context changed)
+
+**Estimated Effort:** 2-3 weeks
+
+---
+
+## PHASE 7: Agent Prompt Refinement
+**Goal:** Teach agent to use hierarchical navigation.
+
+### 7.1 System Prompt Updates
+- [ ] Add "Hierarchical Navigation Protocol":
+  ```
+  1. Query codebase map (communities overview)
+  2. Identify relevant community
+  3. List processes in that community
+  4. Trace specific process
+  5. Read code for specific steps
+  ```
+- [ ] Add tool descriptions for new tools
+
+### 7.2 Skills (Optional)
+- [ ] Create structured prompts for common tasks:
+  - Exploration: "How does X work?"
+  - Debugging: "Why is X failing?"
+  - Refactoring: "What breaks if I change X?"
+  - Documentation: "Generate docs for X"
+
+**Estimated Effort:** 1 week
+
+---
+
+## Implementation Priority Order
+
+| Phase | Name | Priority | Effort | Dependency |
+|-------|------|----------|--------|------------|
+| 1 | Communities (Leiden) | 🔴 Critical | 2-3 weeks | None |
+| 2 | Processes | 🔴 Critical | 2 weeks | Phase 1 |
+| 3 | Smart Labeling | 🟡 Medium | 1 week | Phase 1, 2 |
+| 4 | Documentation | 🟡 Medium | 2 weeks | Phase 1, 2 |
+| 5 | Git Diff Impact | 🟡 Medium | 1-2 weeks | None (uses existing blastRadius) |
+| 6 | Incremental Updates | 🟢 Nice-to-have | 2-3 weeks | None |
+| 7 | Agent Prompt | 🟡 Medium | 1 week | Phase 1, 2 |
+
+**Recommended order:** 1 → 2 → 7 → 3 → 4 → 5 → 6
+
+---
+
+## Technical Notes
+
+### Leiden Algorithm Options
+1. **graphology-communities-louvain** (JS, works in browser)
+2. **Custom WASM port** (if performance needed)
+3. **Simple Louvain** might be sufficient for V1
+
+### Schema Summary (New Additions)
+```
+NEW NODES:
+  - Community { id, label, cohesion, symbolCount }
+  - Process { id, label, type, stepCount }
+
+NEW RELATIONSHIPS (in CodeRelation):
+  - MEMBER_OF: Symbol → Community
+  - STEP_IN_PROCESS: Symbol → Process (with step property)
+```
+
+### Graph Visualization Color Scheme
+```
+Community colors (auto-assigned):
+  - Auth: Blue
+  - Data: Green
+  - API: Orange
+  - Payment: Purple
+  - ... (cyclic palette)
+```
+
+---
+
+## Success Metrics
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| Agent query accuracy | ~70% | 90%+ |
+| Context tokens per query | High (dump everything) | Low (hierarchical zoom) |
+| Documentation quality | N/A | Comparable to DeepWiki |
+| Update latency | Full re-ingest (minutes) | Incremental (seconds) |
+
+---
+
+## Next Steps
+
+1. **Immediate:** Research Leiden implementations for browser
+2. **Week 1-2:** Implement Phase 1 (Communities)
+3. **Week 3-4:** Implement Phase 2 (Processes)
+4. **Week 5:** Refine agent prompt (Phase 7)
+5. **Week 6+:** Documentation generation & polish

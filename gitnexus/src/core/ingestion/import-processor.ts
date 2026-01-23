@@ -35,8 +35,24 @@ const resolveImportPath = (
   
   const basePath = currentDir.join('/');
 
-  // 3. Try extensions (prioritize .tsx for React projects)
-  const extensions = ['', '.tsx', '.ts', '.jsx', '.js', '/index.tsx', '/index.ts', '/index.jsx', '/index.js'];
+  // 3. Try extensions for all supported languages
+  const extensions = [
+    '', 
+    // TypeScript/JavaScript
+    '.tsx', '.ts', '.jsx', '.js', '/index.tsx', '/index.ts', '/index.jsx', '/index.js',
+    // Python
+    '.py', '/__init__.py',
+    // Java
+    '.java',
+    // C/C++
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
+    // C#
+    '.cs',
+    // Go
+    '.go',
+    // Rust
+    '.rs', '/mod.rs'
+  ];
   
   for (const ext of extensions) {
     const candidate = basePath + ext;

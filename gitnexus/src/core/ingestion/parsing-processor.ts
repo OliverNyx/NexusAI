@@ -81,10 +81,37 @@ export const processParsing = async (
       
       let nodeLabel = 'CodeElement';
       
+      // Core types
       if (captureMap['definition.function']) nodeLabel = 'Function';
       else if (captureMap['definition.class']) nodeLabel = 'Class';
       else if (captureMap['definition.interface']) nodeLabel = 'Interface';
       else if (captureMap['definition.method']) nodeLabel = 'Method';
+      // Struct types (C, C++, Go, Rust, C#)
+      else if (captureMap['definition.struct']) nodeLabel = 'Struct';
+      // Enum types
+      else if (captureMap['definition.enum']) nodeLabel = 'Enum';
+      // Namespace/Module (C++, C#, Rust)
+      else if (captureMap['definition.namespace']) nodeLabel = 'Namespace';
+      else if (captureMap['definition.module']) nodeLabel = 'Module';
+      // Rust-specific
+      else if (captureMap['definition.trait']) nodeLabel = 'Trait';
+      else if (captureMap['definition.impl']) nodeLabel = 'Impl';
+      else if (captureMap['definition.type']) nodeLabel = 'TypeAlias';
+      else if (captureMap['definition.const']) nodeLabel = 'Const';
+      else if (captureMap['definition.static']) nodeLabel = 'Static';
+      // C-specific
+      else if (captureMap['definition.typedef']) nodeLabel = 'Typedef';
+      else if (captureMap['definition.macro']) nodeLabel = 'Macro';
+      else if (captureMap['definition.union']) nodeLabel = 'Union';
+      // C#-specific
+      else if (captureMap['definition.property']) nodeLabel = 'Property';
+      else if (captureMap['definition.record']) nodeLabel = 'Record';
+      else if (captureMap['definition.delegate']) nodeLabel = 'Delegate';
+      // Java-specific
+      else if (captureMap['definition.annotation']) nodeLabel = 'Annotation';
+      else if (captureMap['definition.constructor']) nodeLabel = 'Constructor';
+      // C++ template
+      else if (captureMap['definition.template']) nodeLabel = 'Template';
 
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
       

@@ -115,7 +115,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
     if (!graph) return;
-    const sigmaGraph = knowledgeGraphToGraphology(graph);
+
+    // Build communityMemberships map from MEMBER_OF relationships
+    // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
+    const communityMemberships = new Map<string, number>();
+    graph.relationships.forEach(rel => {
+      if (rel.type === 'MEMBER_OF') {
+        // Find the community node to get its index
+        const communityNode = graph.nodes.find(n => n.id === rel.targetId && n.label === 'Community');
+        if (communityNode) {
+          // Extract community index from id (e.g., "comm_5" -> 5)
+          const communityIdx = parseInt(rel.targetId.replace('comm_', ''), 10) || 0;
+          communityMemberships.set(rel.sourceId, communityIdx);
+        }
+      }
+    });
+
+    const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
     setSigmaGraph(sigmaGraph);
   }, [graph, setSigmaGraph]);
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { X, Key, Server, Brain, Check, AlertCircle, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { X, Key, Server, Brain, Check, AlertCircle, Eye, EyeOff, RefreshCw, Sparkles } from 'lucide-react';
 import {
   loadSettings,
   saveSettings,
@@ -533,6 +533,147 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
               </div>
             </div>
           )}
+
+
+          {/* Intelligent Clustering Settings */}
+          <div className="space-y-4 animate-fade-in pt-2 border-t border-border-subtle">
+            <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-accent" />
+              Intelligent Clustering (Beta)
+            </h3>
+
+            <div className="p-4 bg-elevated/50 border border-border-subtle rounded-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium text-text-primary">Enable AI Enrichment</label>
+                  <p className="text-xs text-text-muted">Generate semantic names and descriptions for code clusters</p>
+                </div>
+                <button
+                  onClick={() => setSettings(prev => ({ ...prev, intelligentClustering: !prev.intelligentClustering }))}
+                  className={`
+                    relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                    ${settings.intelligentClustering ? 'bg-accent' : 'bg-gray-700'}
+                  `}
+                >
+                  <span
+                    className={`
+                      inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                      ${settings.intelligentClustering ? 'translate-x-6' : 'translate-x-1'}
+                    `}
+                  />
+                </button>
+              </div>
+
+              {settings.intelligentClustering && (
+                <div className="space-y-4 animate-fade-in pl-1">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-sm font-medium text-text-secondary">Use Agent Model</label>
+                      <p className="text-xs text-text-muted">Use the same provider configured above</p>
+                    </div>
+                    <button
+                      onClick={() => setSettings(prev => ({ ...prev, useSameModelForClustering: !prev.useSameModelForClustering }))}
+                      className={`
+                        relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                        ${settings.useSameModelForClustering ? 'bg-accent/70' : 'bg-gray-700'}
+                      `}
+                    >
+                      <span
+                        className={`
+                          inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                          ${settings.useSameModelForClustering ? 'translate-x-6' : 'translate-x-1'}
+                        `}
+                      />
+                    </button>
+                  </div>
+
+                  {!settings.useSameModelForClustering && (
+                    <div className="space-y-3 pt-2 bg-black/20 p-3 rounded-lg">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="p-1 bg-amber-500/10 rounded text-amber-400">
+                          <Brain className="w-3 h-3" />
+                        </div>
+                        <p className="text-xs text-amber-300">
+                          <span className="font-semibold">Pro Tip:</span> Use a cheaper model like GPT-4o-mini or Gemini Flash for clustering!
+                        </p>
+                      </div>
+
+                      {/* Simplistic Clustering Provider Config - For now just a model name override for simplicity, 
+                          or we could duplicate the provider selector. 
+                          For key simplicity in this iteration, let's just let them override the MODEL name if using the SAME provider, 
+                          or we can add a provider dropdown. 
+                          
+                          Actually, the simplest implementation for "separate model" is just allowing them to pick a provider/model 
+                          for clustering specifically. But that replicates a lot of UI.
+                          
+                          Let's stick to the plan: "Use same model as agent" vs "Use different model".
+                          If different, show a simplified provider config (just Provider + Model + Key if needed).
+                          
+                          For MVP, let's just assume they want to use OpenAI/Azure/Gemini with a specific model string.
+                      */}
+
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-text-secondary">
+                          Clustering Provider
+                        </label>
+                        <select
+                          value={settings.clusteringProvider?.provider || settings.activeProvider}
+                          onChange={(e) => setSettings(prev => ({
+                            ...prev,
+                            clusteringProvider: {
+                              ...prev.clusteringProvider,
+                              provider: e.target.value as any
+                            }
+                          }))}
+                          className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-sm text-text-primary outline-none"
+                        >
+                          {providers.map(p => (
+                            <option key={p} value={p}>{getProviderDisplayName(p)}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-text-secondary">
+                          Model Name
+                        </label>
+                        <input
+                          type="text"
+                          value={settings.clusteringProvider?.model || ''}
+                          onChange={e => setSettings(prev => ({
+                            ...prev,
+                            clusteringProvider: { ...prev.clusteringProvider, model: e.target.value }
+                          }))}
+                          placeholder="e.g. gpt-4o-mini"
+                          className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-text-secondary">
+                          API Key (Optional)
+                        </label>
+                        <input
+                          type="password"
+                          value={(settings.clusteringProvider as any)?.apiKey || ''}
+                          onChange={e => setSettings(prev => ({
+                            ...prev,
+                            clusteringProvider: { ...prev.clusteringProvider, apiKey: e.target.value }
+                          }))}
+                          placeholder="Leave blank to use main key if matching..."
+                          className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted outline-none"
+                        />
+                      </div>
+
+                      <p className="text-xs text-text-muted">
+                        Required if using a different provider than your main agent.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Privacy Note */}
           <div className="p-4 bg-elevated/50 border border-border-subtle rounded-xl">

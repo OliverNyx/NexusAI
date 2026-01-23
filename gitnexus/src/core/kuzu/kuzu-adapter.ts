@@ -127,29 +127,51 @@ export const loadGraphToKuzu = async (
         const [, fromId, toId, relType, confidenceStr, reason] = match;
         const confidence = parseFloat(confidenceStr) || 1.0;
         
-        // Extract labels from node IDs (format: Label:path:name)
-        const fromLabel = fromId.split(':')[0];
-        const toLabel = toId.split(':')[0];
+        // Extract labels from node IDs
+        // Community nodes have IDs like "comm_14" (no colon)
+        // Other nodes have IDs like "Label:path:name"
+        const getNodeLabel = (nodeId: string): string => {
+          if (nodeId.startsWith('comm_')) {
+            return 'Community';
+          }
+          return nodeId.split(':')[0];
+        };
+        
+        // Reserved Cypher keywords need backtick escaping
+        const RESERVED_LABELS = ['Macro', 'Enum', 'Union', 'Const', 'Module', 'Struct'];
+        const escapeLabel = (label: string): string => {
+          return RESERVED_LABELS.includes(label) ? `\`${label}\`` : label;
+        };
+        
+        const fromLabel = escapeLabel(getNodeLabel(fromId));
+        const toLabel = escapeLabel(getNodeLabel(toId));
         
         // INSERT with explicit node matching (including confidence and reason)
         const insertQuery = `
-          MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'})
-          MATCH (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
+          MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'}),
+                (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
           CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}'}]->(b)
         `;
         await conn.query(insertQuery);
         insertedRels++;
-      } catch {
+      } catch (err) {
         // Skip failed insertions (nodes might not exist, or relation pair not allowed by schema)
         skippedRels++;
-        if (import.meta.env.DEV) {
-          const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
-          if (match) {
-            const [, fromId, toId, relType] = match;
-            const fromLabel = fromId.split(':')[0];
-            const toLabel = toId.split(':')[0];
-            const key = `${relType}:${fromLabel}->${toLabel}`;
-            skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
+        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
+        if (match) {
+          const [, fromId, toId, relType] = match;
+          const getNodeLabel = (nodeId: string): string => {
+            if (nodeId.startsWith('comm_')) return 'Community';
+            return nodeId.split(':')[0];
+          };
+          const fromLabel = getNodeLabel(fromId);
+          const toLabel = getNodeLabel(toId);
+          const key = `${relType}:${fromLabel}->` + toLabel;
+          skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
+          
+          // Log each skipped relation
+          if (import.meta.env.DEV) {
+            console.warn(`⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
@@ -203,6 +225,9 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
   }
   if (table === 'Folder') {
     return `COPY Folder(id, name, filePath) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  }
+  if (table === 'Community') {
+    return `COPY Community(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${path}" (HEADER=true, PARALLEL=false)`;
   }
   // All code element tables: Function, Class, Interface, Method, CodeElement
   return `COPY ${table}(id, name, filePath, startLine, endLine, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;

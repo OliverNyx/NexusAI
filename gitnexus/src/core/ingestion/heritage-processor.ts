@@ -117,6 +117,33 @@ export const processHeritage = async (
           });
         }
       }
+
+      // IMPLEMENTS (Rust): impl Trait for Struct
+      if (captureMap['heritage.trait'] && captureMap['heritage.class']) {
+        const structName = captureMap['heritage.class'].text;
+        const traitName = captureMap['heritage.trait'].text;
+
+        // Resolve struct and trait IDs
+        const structId = symbolTable.lookupExact(file.path, structName) ||
+                         symbolTable.lookupFuzzy(structName)[0]?.nodeId ||
+                         generateId('Struct', `${file.path}:${structName}`);
+        
+        const traitId = symbolTable.lookupFuzzy(traitName)[0]?.nodeId ||
+                        generateId('Trait', `${traitName}`);
+
+        if (structId && traitId) {
+          const relId = generateId('IMPLEMENTS', `${structId}->${traitId}`);
+          
+          graph.addRelationship({
+            id: relId,
+            sourceId: structId,
+            targetId: traitId,
+            type: 'IMPLEMENTS',
+            confidence: 1.0,
+            reason: 'trait-impl',
+          });
+        }
+      }
     });
 
     // Cleanup

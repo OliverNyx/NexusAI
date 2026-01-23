@@ -11,7 +11,11 @@ import {
 import { isEmbedderReady, disposeEmbedder } from '../core/embeddings/embedder';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
 import type { ProviderConfig, AgentStreamChunk } from '../core/llm/types';
-import { createGraphRAGAgent, streamAgentResponse, type AgentMessage } from '../core/llm/agent';
+import { createGraphRAGAgent, streamAgentResponse, type AgentMessage, createChatModel } from '../core/llm/agent';
+import { SystemMessage } from '@langchain/core/messages';
+import { enrichClustersBatch, ClusterMemberInfo, ClusterEnrichment } from '../core/ingestion/cluster-enricher';
+import { CommunityNode } from '../core/ingestion/community-processor';
+import { PipelineResult } from '../types/pipeline';
 import { buildCodebaseContext } from '../core/llm/context-builder';
 import { 
   buildBM25Index, 
@@ -41,6 +45,11 @@ let storedFileContents: Map<string, string> = new Map();
 // Agent state
 let currentAgent: ReturnType<typeof createGraphRAGAgent> | null = null;
 let currentProviderConfig: ProviderConfig | null = null;
+let currentGraphResult: PipelineResult | null = null;
+
+// Pending enrichment config (for background processing)
+let pendingEnrichmentConfig: ProviderConfig | null = null;
+let enrichmentCancelled = false;
 
 /**
  * Worker API exposed via Comlink
@@ -57,10 +66,14 @@ const workerApi = {
    */
   async runPipeline(
     file: File,
-    onProgress: (progress: PipelineProgress) => void
+    onProgress: (progress: PipelineProgress) => void,
+    clusteringConfig?: ProviderConfig
   ): Promise<SerializablePipelineResult> {
+    // Debug logging
+    console.log('🔧 runPipeline called with clusteringConfig:', !!clusteringConfig);
     // Run the actual pipeline
     const result = await runIngestionPipeline(file, onProgress);
+    currentGraphResult = result;
     
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
@@ -94,6 +107,12 @@ const workerApi = {
       }
     } catch {
       // KuzuDB is optional - silently continue without it
+    }
+    
+    // Store clustering config for background enrichment (runs after graph loads)
+    if (clusteringConfig) {
+      pendingEnrichmentConfig = clusteringConfig;
+      console.log('📋 Clustering config saved for background enrichment');
     }
     
     // Convert to serializable format for transfer back to main thread
@@ -145,7 +164,8 @@ const workerApi = {
    */
   async runPipelineFromFiles(
     files: FileEntry[],
-    onProgress: (progress: PipelineProgress) => void
+    onProgress: (progress: PipelineProgress) => void,
+    clusteringConfig?: ProviderConfig
   ): Promise<SerializablePipelineResult> {
     // Skip extraction phase, start from 15%
     onProgress({
@@ -157,6 +177,7 @@ const workerApi = {
 
     // Run the pipeline
     const result = await runPipelineFromFiles(files, onProgress);
+    currentGraphResult = result;
     
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
@@ -190,6 +211,12 @@ const workerApi = {
       }
     } catch {
       // KuzuDB is optional - silently continue without it
+    }
+    
+    // Store clustering config for background enrichment (runs after graph loads)
+    if (clusteringConfig) {
+      pendingEnrichmentConfig = clusteringConfig;
+      console.log('📋 Clustering config saved for background enrichment');
     }
     
     // Convert to serializable format for transfer back to main thread
@@ -233,6 +260,44 @@ const workerApi = {
       progressCallback,
       forceDevice ? { device: forceDevice } : {}
     );
+  },
+
+  /**
+   * Start background cluster enrichment (if pending)
+   * Called after graph loads, runs in background like embeddings
+   * @param onProgress - Progress callback
+   */
+  async startBackgroundEnrichment(
+    onProgress?: (current: number, total: number) => void
+  ): Promise<{ enriched: number; skipped: boolean }> {
+    if (!pendingEnrichmentConfig) {
+      console.log('⏭️ No pending enrichment config, skipping');
+      return { enriched: 0, skipped: true };
+    }
+    
+    console.log('✨ Starting background LLM enrichment...');
+    try {
+      await workerApi.enrichCommunities(
+        pendingEnrichmentConfig,
+        onProgress ?? (() => {})
+      );
+      pendingEnrichmentConfig = null; // Clear after running
+      console.log('✅ Background enrichment completed');
+      return { enriched: 1, skipped: false };
+    } catch (err) {
+      console.error('❌ Background enrichment failed:', err);
+      pendingEnrichmentConfig = null;
+      return { enriched: 0, skipped: false };
+    }
+  },
+
+  /**
+   * Cancel the current enrichment operation
+   */
+  async cancelEnrichment(): Promise<void> {
+    enrichmentCancelled = true;
+    pendingEnrichmentConfig = null;
+    console.log('⏸️ Enrichment cancelled by user');
   },
 
   /**
@@ -521,6 +586,137 @@ const workerApi = {
   disposeAgent(): void {
     currentAgent = null;
     currentProviderConfig = null;
+  },
+
+  /**
+   * Enrich community clusters using LLM
+   */
+  async enrichCommunities(
+    providerConfig: ProviderConfig,
+    onProgress: (current: number, total: number) => void
+  ): Promise<{ enrichments: Record<string, ClusterEnrichment>, tokensUsed: number }> {
+    if (!currentGraphResult) {
+      throw new Error('No graph loaded. Please ingest a repository first.');
+    }
+
+    const { graph } = currentGraphResult;
+    
+    // Filter for community nodes
+    const communityNodes = graph.nodes
+      .filter(n => n.label === 'Community')
+      .map(n => ({
+        id: n.id,
+        label: 'Community',
+        heuristicLabel: n.properties.heuristicLabel,
+        cohesion: n.properties.cohesion,
+        symbolCount: n.properties.symbolCount
+      } as CommunityNode));
+
+    if (communityNodes.length === 0) {
+      return { enrichments: {}, tokensUsed: 0 };
+    }
+
+    // Build member map: CommunityID -> Member Info
+    const memberMap = new Map<string, ClusterMemberInfo[]>();
+    
+    // Initialize map
+    communityNodes.forEach(c => memberMap.set(c.id, []));
+    
+    // Find all MEMBER_OF edges
+    graph.relationships.forEach(rel => {
+      if (rel.type === 'MEMBER_OF') {
+        const communityId = rel.targetId;
+        const memberId = rel.sourceId; // MEMBER_OF goes Member -> Community
+        
+        if (memberMap.has(communityId)) {
+          // Find member node details
+          const memberNode = graph.nodes.find(n => n.id === memberId);
+          if (memberNode) {
+            memberMap.get(communityId)?.push({
+              name: memberNode.properties.name,
+              filePath: memberNode.properties.filePath,
+              type: memberNode.label
+            });
+          }
+        }
+      }
+    });
+
+    // Create LLM client adapter for LangChain model
+    const chatModel = createChatModel(providerConfig);
+    const llmClient = {
+      generate: async (prompt: string): Promise<string> => {
+        const response = await chatModel.invoke([
+          new SystemMessage('You are a helpful code analysis assistant.'),
+          { role: 'user', content: prompt }
+        ]);
+        return response.content as string;
+      }
+    };
+
+    // Run enrichment
+    const { enrichments, tokensUsed } = await enrichClustersBatch(
+      communityNodes,
+      memberMap,
+      llmClient,
+      5, // Batch size
+      onProgress
+    );
+
+    if (import.meta.env.DEV) {
+      console.log(`✨ Enriched ${enrichments.size} clusters using ~${Math.round(tokensUsed)} tokens`);
+    }
+
+    // Update graph nodes with enrichment data
+    graph.nodes.forEach(node => {
+      if (node.label === 'Community' && enrichments.has(node.id)) {
+        const enrichment = enrichments.get(node.id)!;
+        node.properties.name = enrichment.name; // Update display label
+        node.properties.keywords = enrichment.keywords;
+        node.properties.description = enrichment.description;
+        node.properties.enrichedBy = 'llm';
+      }
+    });
+
+    // Update KuzuDB with new data
+    try {
+      const kuzu = await getKuzuAdapter();
+        
+      onProgress(enrichments.size, enrichments.size); // Done
+      
+      // Update one by one via Cypher (simplest for now)
+      for (const [id, enrichment] of enrichments.entries()) {
+         // Escape strings for Cypher - replace backslash first, then quotes
+         const escapeCypher = (str: string) => str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+         
+         const keywordsStr = JSON.stringify(enrichment.keywords);
+         const descStr = escapeCypher(enrichment.description);
+         const nameStr = escapeCypher(enrichment.name);
+         const escapedId = escapeCypher(id);
+         
+         const query = `
+           MATCH (c:Community {id: "${escapedId}"})
+           SET c.label = "${nameStr}", 
+               c.keywords = ${keywordsStr}, 
+               c.description = "${descStr}",
+               c.enrichedBy = "llm"
+         `;
+         
+         await kuzu.executeQuery(query);
+      }
+      
+    } catch (err) {
+      console.error('Failed to update KuzuDB with enrichment:', err);
+    }
+    
+    // Convert Map to Record for serialization
+    const enrichmentsRecord: Record<string, ClusterEnrichment> = {};
+    for (const [id, val] of enrichments.entries()) {
+      enrichmentsRecord[id] = val;
+    }
+     
+    return { enrichments: enrichmentsRecord, tokensUsed };
+  
   },
 };
 

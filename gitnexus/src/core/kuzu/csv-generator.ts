@@ -196,6 +196,36 @@ const generateCodeElementCSV = (
   return rows.join('\n');
 };
 
+/**
+ * Generate CSV for Community nodes (from Leiden algorithm)
+ * Headers: id,label,heuristicLabel,keywords,description,enrichedBy,cohesion,symbolCount
+ */
+const generateCommunityCSV = (nodes: GraphNode[]): string => {
+  const headers = ['id', 'label', 'heuristicLabel', 'keywords', 'description', 'enrichedBy', 'cohesion', 'symbolCount'];
+  const rows: string[] = [headers.join(',')];
+  
+  for (const node of nodes) {
+    if (node.label !== 'Community') continue;
+    
+    // Handle keywords array - convert to KuzuDB array format
+    const keywords = (node.properties as any).keywords || [];
+    const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+    
+    rows.push([
+      escapeCSVField(node.id),
+      escapeCSVField(node.properties.name || ''),  // label is stored in name
+      escapeCSVField(node.properties.heuristicLabel || ''),
+      keywordsStr,  // Array format for KuzuDB
+      escapeCSVField((node.properties as any).description || ''),
+      escapeCSVField((node.properties as any).enrichedBy || 'heuristic'),
+      escapeCSVNumber(node.properties.cohesion, 0),
+      escapeCSVNumber(node.properties.symbolCount, 0),
+    ].join(','));
+  }
+  
+  return rows.join('\n');
+};
+
 // ============================================================================
 // RELATIONSHIP CSV GENERATOR (Single Table)
 // ============================================================================
@@ -247,6 +277,7 @@ export const generateAllCSVs = (
   nodeCSVs.set('Interface', generateCodeElementCSV(nodes, 'Interface', fileContents));
   nodeCSVs.set('Method', generateCodeElementCSV(nodes, 'Method', fileContents));
   nodeCSVs.set('CodeElement', generateCodeElementCSV(nodes, 'CodeElement', fileContents));
+  nodeCSVs.set('Community', generateCommunityCSV(nodes));
   
   // Generate single relation CSV
   const relCSV = generateRelationCSV(graph);
