@@ -99,7 +99,7 @@ Think like a senior architect. Be concise—no fluff, short, precise and to the 
 - Use tables for comparisons/rankings
 - Use mermaid diagrams for flows/dependencies
 - Surface deep insights: patterns, coupling, design decisions
-- End with **TL;DR** (1-2 sentences)
+- End with **TL;DR** (short summary of the response, summing up the response and the most critical parts)
 
 ## MERMAID RULES
 When generating diagrams:
