@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Activity, Search, Database, Terminal, Eye, Loader2, CheckCircle, XCircle, Clock, FileText, Zap } from 'lucide-react';
+import { Activity, Search, Database, Terminal, Loader2, CheckCircle, XCircle, Clock, FileText, Zap, Map, Compass } from 'lucide-react';
 import { getMCPClient, type ActivityEvent } from '../core/mcp/mcp-client';
 
 // Tool icons
@@ -16,8 +16,9 @@ const TOOL_ICONS: Record<string, typeof Search> = {
     cypher: Database,
     grep: Terminal,
     read: FileText,
-    blastRadius: Activity,
-    highlight: Eye,
+    impact: Activity,
+    overview: Map,
+    explore: Compass,
 };
 
 // Tool colors
@@ -27,8 +28,9 @@ const TOOL_COLORS: Record<string, string> = {
     cypher: 'text-purple-400',
     grep: 'text-green-400',
     read: 'text-blue-400',
-    blastRadius: 'text-rose-400',
-    highlight: 'text-teal-400',
+    impact: 'text-rose-400',
+    overview: 'text-indigo-400',
+    explore: 'text-teal-400',
 };
 
 export function ActivityFeed() {
