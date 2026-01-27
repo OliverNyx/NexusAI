@@ -238,27 +238,74 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
             const results = await runQuery(query);
             return results;
           }}
-          onBlastRadius={async (nodeId, hops = 2) => {
-            // Run blast radius query
+          onImpact={async (nodeId: string, hops = 2) => {
+            // Run impact analysis query
             const query = `
               MATCH (start)-[*1..${hops}]-(connected)
               WHERE start.id = '${nodeId}' OR start.name = '${nodeId}'
               RETURN DISTINCT connected.id AS id, connected.name AS name, labels(connected) AS labels
             `;
             const results = await runQuery(query);
-            // Trigger ripple animation on blast radius results
+            // Trigger ripple animation on impact results
             const nodeIds = results.map((r: any) => r.id).filter(Boolean);
             if (nodeIds.length > 0) {
               triggerNodeAnimation(nodeIds, 'ripple');
             }
             return results;
           }}
-          onHighlight={(nodeIds) => {
-            // Highlight nodes in the graph
-            setHighlightedNodeIds(new Set(nodeIds));
-            // Trigger glow animation on highlighted nodes
-            if (nodeIds.length > 0) {
-              triggerNodeAnimation(nodeIds, 'glow');
+          onOverview={async () => {
+            // Return codebase overview: clusters + processes
+            const clustersQuery = `
+              MATCH (c:Community)
+              OPTIONAL MATCH (c)<-[:CodeRelation {type: 'MEMBER_OF'}]-(m)
+              RETURN c.id AS id, c.label AS label, c.cohesion AS cohesion, c.description AS description, count(m) AS memberCount
+              ORDER BY memberCount DESC
+              LIMIT 50
+            `;
+            const processesQuery = `
+              MATCH (p:Process)
+              RETURN p.id AS id, p.label AS label, p.processType AS type, p.stepCount AS steps
+              ORDER BY p.stepCount DESC
+              LIMIT 50
+            `;
+            const [clusters, processes] = await Promise.all([
+              runQuery(clustersQuery),
+              runQuery(processesQuery),
+            ]);
+            return { clusters, processes };
+          }}
+          onExplore={async (target: string, type?: 'symbol' | 'cluster' | 'process') => {
+            // Explore a specific target
+            if (type === 'cluster' || target.startsWith('comm_')) {
+              const query = `
+                MATCH (c:Community)
+                WHERE c.id = '${target}' OR c.label CONTAINS '${target}'
+                OPTIONAL MATCH (c)<-[:CodeRelation {type: 'MEMBER_OF'}]-(m)
+                RETURN c.id AS id, c.label AS label, c.description AS description, collect(m.name)[0..10] AS members
+                LIMIT 1
+              `;
+              return await runQuery(query);
+            } else if (type === 'process' || target.startsWith('proc_')) {
+              const query = `
+                MATCH (p:Process)
+                WHERE p.id = '${target}' OR p.label CONTAINS '${target}'
+                OPTIONAL MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p)
+                RETURN p.id AS id, p.label AS label, p.stepCount AS steps, collect({name: s.name, step: r.step})[0..20] AS trace
+                LIMIT 1
+              `;
+              return await runQuery(query);
+            } else {
+              // Symbol exploration
+              const query = `
+                MATCH (n)
+                WHERE n.name = '${target}' OR n.id ENDS WITH ':${target}'
+                OPTIONAL MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+                OPTIONAL MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+                RETURN n.id AS id, n.name AS name, n.filePath AS filePath, label(n) AS nodeType,
+                       c.label AS cluster, collect({process: p.label, step: r.step}) AS processes
+                LIMIT 1
+              `;
+              return await runQuery(query);
             }
           }}
           getContext={async () => {

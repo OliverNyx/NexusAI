@@ -34,6 +34,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'local_function_statement',
   // Rust
   'function_item',
+  'impl_item', // Methods inside impl blocks
 ]);
 
 /**
@@ -51,21 +52,46 @@ const findEnclosingFunction = (
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       // Found enclosing function - try to get its name
       let funcName: string | null = null;
+      let label = 'Function';
       
       // Different node types have different name locations
       if (current.type === 'function_declaration' || 
           current.type === 'function_definition' ||
           current.type === 'async_function_declaration' ||
-          current.type === 'generator_function_declaration') {
+          current.type === 'generator_function_declaration' ||
+          current.type === 'function_item') { // Rust function
         // Named function: function foo() {}
         const nameNode = current.childForFieldName?.('name') || 
                          current.children?.find((c: any) => c.type === 'identifier' || c.type === 'property_identifier');
         funcName = nameNode?.text;
+      } else if (current.type === 'impl_item') {
+        // Rust method inside impl block: wrapper around function_item or const_item
+        // We need to look inside for the function_item
+        const funcItem = current.children?.find((c: any) => c.type === 'function_item');
+        if (funcItem) {
+           const nameNode = funcItem.childForFieldName?.('name') || 
+                            funcItem.children?.find((c: any) => c.type === 'identifier');
+           funcName = nameNode?.text;
+           label = 'Method';
+        }
       } else if (current.type === 'method_definition') {
-        // Method: foo() {} inside class
+        // Method: foo() {} inside class (JS/TS)
         const nameNode = current.childForFieldName?.('name') ||
                          current.children?.find((c: any) => c.type === 'property_identifier');
         funcName = nameNode?.text;
+        label = 'Method';
+      } else if (current.type === 'method_declaration') {
+        // Java method: public void foo() {}
+        const nameNode = current.childForFieldName?.('name') ||
+                         current.children?.find((c: any) => c.type === 'identifier');
+        funcName = nameNode?.text;
+        label = 'Method';
+      } else if (current.type === 'constructor_declaration') {
+        // Java constructor: public ClassName() {}
+        const nameNode = current.childForFieldName?.('name') ||
+                         current.children?.find((c: any) => c.type === 'identifier');
+        funcName = nameNode?.text;
+        label = 'Method'; // Treat constructors as methods for process detection
       } else if (current.type === 'arrow_function' || current.type === 'function_expression') {
         // Arrow/expression: const foo = () => {} - check parent variable declarator
         const parent = current.parent;
@@ -78,12 +104,18 @@ const findEnclosingFunction = (
       
       if (funcName) {
         // Look up the function in symbol table to get its node ID
+        // Try exact match first
         const nodeId = symbolTable.lookupExact(filePath, funcName);
         if (nodeId) return nodeId;
         
-        // Fallback: generate ID based on name and file
-        const fallbackLabel = current.type === 'method_definition' ? 'Method' : 'Function';
-        return generateId(fallbackLabel, `${filePath}:${funcName}`);
+        // Try construct ID manually if lookup fails (common for non-exported internal functions)
+        // Format should match what parsing-processor generates: "Function:path/to/file:funcName"
+        // Check if we already have a node with this ID in the symbol table to be safe
+        const generatedId = generateId(label, `${filePath}:${funcName}`);
+        
+        // Ideally we should verify this ID exists, but strictly speaking if we are inside it,
+        // it SHOULD exist. Returning it is better than falling back to File.
+        return generatedId;
       }
       
       // Couldn't determine function name - try parent (might be nested)

@@ -177,15 +177,13 @@ export interface ToolCallInfo {
  * Now supports step-based streaming where each step is a distinct message
  */
 export interface AgentStreamChunk {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'highlight' | 'error' | 'done';
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done';
   /** LLM's reasoning/thinking text (shown as a step) */
   reasoning?: string;
   /** Final answer content (streamed token by token) */
   content?: string;
   /** Tool call information */
   toolCall?: ToolCallInfo;
-  /** Node IDs to highlight in the graph */
-  highlightNodeIds?: string[];
   /** Error message */
   error?: string;
 }

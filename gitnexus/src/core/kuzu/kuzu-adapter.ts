@@ -120,12 +120,15 @@ export const loadGraphToKuzu = async (
     for (const line of relLines) {
       try {
         // Parse CSV - handle quoted fields and numeric confidence
-        // Format: "from","to","type",confidence,"reason"
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
+        // Parse CSV - handle quoted fields and numeric confidence
+        // Format: "from","to","type",confidence,"reason",step
+        // Note: step is unquoted numeric
+        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
         if (!match) continue;
         
-        const [, fromId, toId, relType, confidenceStr, reason] = match;
+        const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
         const confidence = parseFloat(confidenceStr) || 1.0;
+        const step = parseInt(stepStr) || 0;
         
         // Extract labels from node IDs
         // Community nodes have IDs like "comm_14" (no colon)
@@ -133,6 +136,9 @@ export const loadGraphToKuzu = async (
         const getNodeLabel = (nodeId: string): string => {
           if (nodeId.startsWith('comm_')) {
             return 'Community';
+          }
+          if (nodeId.startsWith('proc_')) {
+            return 'Process';
           }
           return nodeId.split(':')[0];
         };
@@ -150,7 +156,7 @@ export const loadGraphToKuzu = async (
         const insertQuery = `
           MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'}),
                 (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
-          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}'}]->(b)
+          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
         `;
         await conn.query(insertQuery);
         insertedRels++;
@@ -162,6 +168,7 @@ export const loadGraphToKuzu = async (
           const [, fromId, toId, relType] = match;
           const getNodeLabel = (nodeId: string): string => {
             if (nodeId.startsWith('comm_')) return 'Community';
+            if (nodeId.startsWith('proc_')) return 'Process';
             return nodeId.split(':')[0];
           };
           const fromLabel = getNodeLabel(fromId);
@@ -228,6 +235,9 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
   }
   if (table === 'Community') {
     return `COPY Community(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  }
+  if (table === 'Process') {
+    return `COPY Process(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" (HEADER=true, PARALLEL=false)`;
   }
   // All code element tables: Function, Class, Interface, Method, CodeElement
   return `COPY ${table}(id, name, filePath, startLine, endLine, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;

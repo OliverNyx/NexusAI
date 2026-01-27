@@ -226,9 +226,35 @@ const generateCommunityCSV = (nodes: GraphNode[]): string => {
   return rows.join('\n');
 };
 
-// ============================================================================
-// RELATIONSHIP CSV GENERATOR (Single Table)
-// ============================================================================
+/**
+ * Generate CSV for Process nodes
+ * Headers: id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId
+ */
+const generateProcessCSV = (nodes: GraphNode[]): string => {
+  const headers = ['id', 'label', 'heuristicLabel', 'processType', 'stepCount', 'communities', 'entryPointId', 'terminalId'];
+  const rows: string[] = [headers.join(',')];
+  
+  for (const node of nodes) {
+    if (node.label !== 'Process') continue;
+    
+    // Handle communities array (string[])
+    const communities = (node.properties as any).communities || [];
+    const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
+    
+    rows.push([
+      escapeCSVField(node.id),
+      escapeCSVField(node.properties.name || ''), // label stores name
+      escapeCSVField((node.properties as any).heuristicLabel || ''),
+      escapeCSVField((node.properties as any).processType || ''),
+      escapeCSVNumber((node.properties as any).stepCount, 0),
+      escapeCSVField(communitiesStr), // Needs CSV escaping because it contains commas!
+      escapeCSVField((node.properties as any).entryPointId || ''),
+      escapeCSVField((node.properties as any).terminalId || ''),
+    ].join(','));
+  }
+  
+  return rows.join('\n');
+};
 
 /**
  * Generate CSV for the single CodeRelation table
@@ -238,7 +264,7 @@ const generateCommunityCSV = (nodes: GraphNode[]): string => {
  * reason: 'import-resolved' | 'same-file' | 'fuzzy-global' (or empty for non-CALLS)
  */
 const generateRelationCSV = (graph: KnowledgeGraph): string => {
-  const headers = ['from', 'to', 'type', 'confidence', 'reason'];
+  const headers = ['from', 'to', 'type', 'confidence', 'reason', 'step'];
   const rows: string[] = [headers.join(',')];
   
   for (const rel of graph.relationships) {
@@ -248,6 +274,7 @@ const generateRelationCSV = (graph: KnowledgeGraph): string => {
       escapeCSVField(rel.type),
       escapeCSVNumber(rel.confidence, 1.0),
       escapeCSVField(rel.reason),
+      escapeCSVNumber((rel as any).step, 0),
     ].join(','));
   }
   
@@ -278,6 +305,7 @@ export const generateAllCSVs = (
   nodeCSVs.set('Method', generateCodeElementCSV(nodes, 'Method', fileContents));
   nodeCSVs.set('CodeElement', generateCodeElementCSV(nodes, 'CodeElement', fileContents));
   nodeCSVs.set('Community', generateCommunityCSV(nodes));
+  nodeCSVs.set('Process', generateProcessCSV(nodes));
   
   // Generate single relation CSV
   const relCSV = generateRelationCSV(graph);

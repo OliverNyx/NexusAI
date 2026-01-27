@@ -1042,10 +1042,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   }
                 }
 
-                // Parse blast radius marker from tool results
-                const blastMatch = tc.result.match(/\[BLAST_RADIUS:([^\]]+)\]/);
-                if (blastMatch) {
-                  const rawIds = blastMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
+              // Parse impact marker from tool results
+              const impactMatch = tc.result.match(/\[IMPACT:([^\]]+)\]/);
+              if (impactMatch) {
+                const rawIds = impactMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
                     const graphNodeIds = graph.nodes.map(n => n.id);

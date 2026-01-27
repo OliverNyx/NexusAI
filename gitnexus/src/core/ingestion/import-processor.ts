@@ -11,16 +11,18 @@ export type ImportMap = Map<string, Set<string>>;
 
 export const createImportMap = (): ImportMap => new Map();
 
-// Helper: Resolve relative paths (e.g. "../utils" -> "src/lib/utils.ts")
+// Helper: Resolve import paths (relative and absolute/package-style)
 const resolveImportPath = (
   currentFile: string, 
   importPath: string, 
-  allFiles: Set<string>
+  allFiles: Set<string>,
+  allFileList: string[],
+  resolveCache: Map<string, string | null>
 ): string | null => {
-  // 1. Handle non-relative imports (libraries like 'react')
-  if (!importPath.startsWith('.')) return null; // We skip node_modules for now
+  const cacheKey = `${currentFile}::${importPath}`;
+  if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
 
-  // 2. Resolve '..' and '.'
+  // 1. Resolve '..' and '.' for relative imports
   const currentDir = currentFile.split('/').slice(0, -1);
   const parts = importPath.split('/');
   
@@ -35,7 +37,7 @@ const resolveImportPath = (
   
   const basePath = currentDir.join('/');
 
-  // 3. Try extensions for all supported languages
+  // 2. Try extensions for all supported languages
   const extensions = [
     '', 
     // TypeScript/JavaScript
@@ -54,11 +56,51 @@ const resolveImportPath = (
     '.rs', '/mod.rs'
   ];
   
-  for (const ext of extensions) {
-    const candidate = basePath + ext;
-    if (allFiles.has(candidate)) return candidate;
+  if (importPath.startsWith('.')) {
+    for (const ext of extensions) {
+      const candidate = basePath + ext;
+      if (allFiles.has(candidate)) {
+        resolveCache.set(cacheKey, candidate);
+        return candidate;
+      }
+    }
+    resolveCache.set(cacheKey, null);
+    return null;
   }
 
+  // 3. Handle absolute/package imports (Java, Go, Python, etc.)
+  if (importPath.endsWith('.*')) {
+    resolveCache.set(cacheKey, null);
+    return null;
+  }
+
+  const pathLike = importPath.includes('/')
+    ? importPath
+    : importPath.replace(/\./g, '/');
+  const pathParts = pathLike.split('/').filter(Boolean);
+
+  // Normalize all file paths to forward slashes for matching
+  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
+
+  for (let i = 0; i < pathParts.length; i++) {
+    const suffix = pathParts.slice(i).join('/');
+    for (const ext of extensions) {
+      const suffixWithExt = suffix + ext;
+      // Require path separator before match to avoid false positives like "View.java" matching "RootView.java"
+      const suffixPattern = '/' + suffixWithExt;
+      const matchIdx = normalizedFileList.findIndex(filePath => 
+        filePath.endsWith(suffixPattern) || filePath.toLowerCase().endsWith(suffixPattern.toLowerCase())
+      );
+      if (matchIdx !== -1) {
+        const match = allFileList[matchIdx];
+        resolveCache.set(cacheKey, match);
+        return match;
+      }
+    }
+  }
+
+  // Unresolved imports (external packages, SDK imports) are expected - don't log
+  resolveCache.set(cacheKey, null);
   return null;
 };
 
@@ -72,6 +114,12 @@ export const processImports = async (
   // Create a Set of all file paths for fast lookup during resolution
   const allFilePaths = new Set(files.map(f => f.path));
   const parser = await loadParser();
+  const resolveCache = new Map<string, string | null>();
+  const allFileList = files.map(f => f.path);
+  
+  // Track import statistics
+  let totalImportsFound = 0;
+  let totalImportsResolved = 0;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -102,6 +150,8 @@ export const processImports = async (
     try {
       query = parser.getLanguage().query(queryStr);
       matches = query.matches(tree.rootNode);
+      
+      // Removed verbose Java import logging
     } catch (queryError: any) {
       // Detailed debug logging for query failures
       console.group(`🔴 Query Error: ${file.path}`);
@@ -123,19 +173,35 @@ export const processImports = async (
 
       if (captureMap['import']) {
         const sourceNode = captureMap['import.source'];
-        if (!sourceNode) return;
+        if (!sourceNode) {
+          if (import.meta.env.DEV) {
+            console.log(`⚠️ Import captured but no source node in ${file.path}`);
+          }
+          return;
+        }
 
         // Clean path (remove quotes)
         const rawImportPath = sourceNode.text.replace(/['"]/g, '');
+        totalImportsFound++;
+        
+        // Removed verbose per-import logging
         
         // Resolve to actual file in the system
-        const resolvedPath = resolveImportPath(file.path, rawImportPath, allFilePaths);
+        const resolvedPath = resolveImportPath(
+          file.path,
+          rawImportPath,
+          allFilePaths,
+          allFileList,
+          resolveCache
+        );
 
         if (resolvedPath) {
           // A. Update Graph (File -> IMPORTS -> File)
           const sourceId = generateId('File', file.path);
           const targetId = generateId('File', resolvedPath);
           const relId = generateId('IMPORTS', `${file.path}->${resolvedPath}`);
+
+          totalImportsResolved++;
 
           graph.addRelationship({
             id: relId,
@@ -160,6 +226,10 @@ export const processImports = async (
     if (wasReparsed) {
       tree.delete();
     }
+  }
+  
+  if (import.meta.env.DEV) {
+    console.log(`📊 Import processing complete: ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
   }
 };
 

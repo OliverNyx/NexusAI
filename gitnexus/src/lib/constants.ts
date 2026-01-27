@@ -18,6 +18,7 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Type: '#a78bfa',       // Violet light
   CodeElement: '#64748b', // Slate - muted
   Community: '#818cf8',  // Indigo light - cluster indicator
+  Process: '#f43f5e',    // Rose - execution flow indicator
 };
 
 // Node sizes by type - clear visual hierarchy with dramatic size differences
@@ -39,6 +40,7 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Type: 3,         // Type alias - small
   CodeElement: 2,  // Generic small
   Community: 0,    // Hidden by default - metadata node
+  Process: 0,      // Hidden by default - metadata node
 };
 
 // Community color palette for cluster-based coloring

@@ -13,7 +13,7 @@
 // NODE TABLE NAMES
 // ============================================================================
 export const NODE_TABLES = [
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community',
+  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
   // Multi-language support
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
   'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
@@ -26,7 +26,7 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'STEP_IN_PROCESS'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -128,6 +128,23 @@ CREATE NODE TABLE Community (
 )`;
 
 // ============================================================================
+// PROCESS NODE TABLE (for execution flow detection)
+// ============================================================================
+
+export const PROCESS_SCHEMA = `
+CREATE NODE TABLE Process (
+  id STRING,
+  label STRING,
+  heuristicLabel STRING,
+  processType STRING,
+  stepCount INT32,
+  communities STRING[],
+  entryPointId STRING,
+  terminalId STRING,
+  PRIMARY KEY (id)
+)`;
+
+// ============================================================================
 // MULTI-LANGUAGE NODE TABLE SCHEMAS
 // ============================================================================
 
@@ -206,31 +223,64 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Function TO \`Enum\`,
   FROM Function TO Namespace,
   FROM Function TO TypeAlias,
+  FROM Function TO \`Module\`,
+  FROM Function TO Impl,
+  FROM Function TO Interface,
+  FROM Function TO Constructor,
   FROM Class TO Method,
   FROM Class TO Function,
   FROM Class TO Class,
   FROM Class TO Interface,
   FROM Class TO Community,
   FROM Class TO Template,
+  FROM Class TO TypeAlias,
+  FROM Class TO \`Struct\`,
+  FROM Class TO \`Enum\`,
+  FROM Class TO Constructor,
   FROM Method TO Function,
   FROM Method TO Method,
   FROM Method TO Class,
   FROM Method TO Community,
   FROM Method TO Template,
   FROM Method TO \`Struct\`,
+  FROM Method TO TypeAlias,
+  FROM Method TO \`Enum\`,
+  FROM Method TO \`Macro\`,
+  FROM Method TO Namespace,
+  FROM Method TO \`Module\`,
+  FROM Method TO Impl,
+  FROM Method TO Interface,
+  FROM Method TO Constructor,
   FROM Template TO Template,
   FROM Template TO Function,
   FROM Template TO Method,
   FROM Template TO Class,
   FROM Template TO \`Struct\`,
+  FROM Template TO TypeAlias,
+  FROM Template TO \`Enum\`,
+  FROM Template TO \`Macro\`,
+  FROM Template TO Interface,
+  FROM Template TO Constructor,
+  FROM \`Module\` TO \`Module\`,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
+  FROM Interface TO Function,
+  FROM Interface TO Method,
+  FROM Interface TO Class,
+  FROM Interface TO Interface,
+  FROM Interface TO TypeAlias,
+  FROM Interface TO \`Struct\`,
+  FROM Interface TO Constructor,
   FROM \`Struct\` TO Community,
   FROM \`Struct\` TO Trait,
   FROM \`Struct\` TO Function,
   FROM \`Struct\` TO Method,
   FROM \`Enum\` TO Community,
   FROM \`Macro\` TO Community,
+  FROM \`Macro\` TO Function,
+  FROM \`Macro\` TO Method,
+  FROM \`Module\` TO Function,
+  FROM \`Module\` TO Method,
   FROM Typedef TO Community,
   FROM \`Union\` TO Community,
   FROM Namespace TO Community,
@@ -247,11 +297,45 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Constructor TO Community,
   FROM Constructor TO Interface,
   FROM Constructor TO Class,
+  FROM Constructor TO Method,
+  FROM Constructor TO Function,
+  FROM Constructor TO Constructor,
+  FROM Constructor TO \`Struct\`,
+  FROM Constructor TO \`Macro\`,
+  FROM Constructor TO Template,
+  FROM Constructor TO TypeAlias,
+  FROM Constructor TO \`Enum\`,
+  FROM Constructor TO Impl,
+  FROM Constructor TO Namespace,
   FROM Template TO Community,
   FROM \`Module\` TO Community,
+  FROM Function TO Process,
+  FROM Method TO Process,
+  FROM Class TO Process,
+  FROM Interface TO Process,
+  FROM \`Struct\` TO Process,
+  FROM Constructor TO Process,
+  FROM \`Module\` TO Process,
+  FROM \`Macro\` TO Process,
+  FROM Impl TO Process,
+  FROM Typedef TO Process,
+  FROM TypeAlias TO Process,
+  FROM \`Enum\` TO Process,
+  FROM \`Union\` TO Process,
+  FROM Namespace TO Process,
+  FROM Trait TO Process,
+  FROM \`Const\` TO Process,
+  FROM Static TO Process,
+  FROM Property TO Process,
+  FROM Record TO Process,
+  FROM Delegate TO Process,
+  FROM Annotation TO Process,
+  FROM Template TO Process,
+  FROM CodeElement TO Process,
   type STRING,
   confidence DOUBLE,
-  reason STRING
+  reason STRING,
+  step INT32
 )`;
 
 // ============================================================================
@@ -288,6 +372,7 @@ export const NODE_SCHEMA_QUERIES = [
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
+  PROCESS_SCHEMA,
   // Multi-language support
   STRUCT_SCHEMA,
   ENUM_SCHEMA,

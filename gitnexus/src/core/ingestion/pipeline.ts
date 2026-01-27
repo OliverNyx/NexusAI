@@ -6,6 +6,7 @@ import { processImports, createImportMap } from './import-processor';
 import { processCalls } from './call-processor';
 import { processHeritage } from './heritage-processor';
 import { processCommunities, CommunityDetectionResult } from './community-processor';
+import { processProcesses, ProcessDetectionResult } from './process-processor';
 import { createSymbolTable } from './symbol-table';
 import { createASTCache } from './ast-cache';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline';
@@ -122,6 +123,16 @@ export const runPipelineFromFiles = async (
       stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
     });
   });
+  
+  // Debug: Count IMPORTS relationships
+  if (import.meta.env.DEV) {
+    const importsCount = graph.relationships.filter(r => r.type === 'IMPORTS').length;
+    console.log(`📊 Pipeline: After import phase, graph has ${importsCount} IMPORTS relationships (total: ${graph.relationshipCount})`);
+    if (importsCount > 0) {
+      const sample = graph.relationships.filter(r => r.type === 'IMPORTS').slice(0, 3);
+      sample.forEach(r => console.log(`   Sample IMPORTS: ${r.sourceId} → ${r.targetId}`));
+    }
+  }
 
 
   // Phase 5: Calls (82-98%)
@@ -210,12 +221,70 @@ export const runPipelineFromFiles = async (
     });
   });
 
+  // Phase 8: Process Detection (98-99%)
+  onProgress({
+    phase: 'processes',
+    percent: 98,
+    message: 'Detecting execution flows...',
+    stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+  });
+
+  const processResult = await processProcesses(
+    graph,
+    communityResult.memberships,
+    (message, progress) => {
+      const processProgress = 98 + (progress * 0.01);
+      onProgress({
+        phase: 'processes',
+        percent: Math.round(processProgress),
+        message,
+        stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+      });
+    }
+  );
+
+  // Log process detection results
+  if (import.meta.env.DEV) {
+    console.log(`🔄 Process detection: ${processResult.stats.totalProcesses} processes found (${processResult.stats.crossCommunityCount} cross-community)`);
+  }
+
+  // Add Process nodes to the graph
+  processResult.processes.forEach(proc => {
+    graph.addNode({
+      id: proc.id,
+      label: 'Process' as const,
+      properties: {
+        name: proc.label,
+        filePath: '',
+        heuristicLabel: proc.heuristicLabel,
+        processType: proc.processType,
+        stepCount: proc.stepCount,
+        communities: proc.communities,
+        entryPointId: proc.entryPointId,
+        terminalId: proc.terminalId,
+      }
+    });
+  });
+
+  // Add STEP_IN_PROCESS relationships
+  processResult.steps.forEach(step => {
+    graph.addRelationship({
+      id: `${step.nodeId}_step_${step.step}_${step.processId}`,
+      type: 'STEP_IN_PROCESS',
+      sourceId: step.nodeId,
+      targetId: step.processId,
+      confidence: 1.0,
+      reason: 'trace-detection',
+      step: step.step,
+    });
+  });
+
   
-  // Phase 8: Complete (100%)
+  // Phase 9: Complete (100%)
   onProgress({
     phase: 'complete',
     percent: 100,
-    message: `Graph complete! ${communityResult.stats.totalCommunities} communities detected.`,
+    message: `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`,
     stats: { 
       filesProcessed: files.length, 
       totalFiles: files.length, 
@@ -226,7 +295,7 @@ export const runPipelineFromFiles = async (
   // Cleanup WASM memory before returning
   astCache.clear();
   
-  return { graph, fileContents, communityResult };
+  return { graph, fileContents, communityResult, processResult };
 
   } catch (error) {
     cleanup();

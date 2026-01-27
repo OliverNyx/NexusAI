@@ -14,7 +14,8 @@ export type NodeLabel =
   | 'Import'
   | 'Type'
   | 'CodeElement'
-  | 'Community';
+  | 'Community'
+  | 'Process';
 
 
 export type NodeProperties = {
@@ -31,6 +32,15 @@ export type NodeProperties = {
   keywords?: string[],
   description?: string,
   enrichedBy?: 'heuristic' | 'llm',
+  // Process-specific properties
+  processType?: 'intra_community' | 'cross_community',
+  stepCount?: number,
+  communities?: string[],
+  entryPointId?: string,
+  terminalId?: string,
+  // Entry point scoring (computed by process detection)
+  entryPointScore?: number,
+  entryPointReason?: string,
 }
 
 export type RelationshipType = 
@@ -45,6 +55,7 @@ export type RelationshipType =
   | 'IMPLEMENTS'
   | 'EXTENDS'
   | 'MEMBER_OF'
+  | 'STEP_IN_PROCESS'
 
 export interface GraphNode {
   id:  string,
@@ -61,6 +72,8 @@ export interface GraphRelationship {
   confidence: number,
   /** Resolution reason: 'import-resolved', 'same-file', 'fuzzy-global', or empty for non-CALLS */
   reason: string,
+  /** Step number for STEP_IN_PROCESS relationships (1-indexed) */
+  step?: number,
 }
 
 export interface KnowledgeGraph {
