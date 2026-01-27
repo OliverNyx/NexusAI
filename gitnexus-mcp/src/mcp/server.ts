@@ -74,22 +74,28 @@ function formatContextAsMarkdown(context: CodebaseContext): string {
   // Usage hints
   lines.push('## 🛠️ Available Tools');
   lines.push('');
-  lines.push('- **search**: Semantic search across the codebase');
-  lines.push('- **cypher**: Execute Cypher queries on the knowledge graph');
-  lines.push('- **blastRadius**: Analyze impact of changes to a node');
-  lines.push('- **highlight**: Visualize nodes in the graph');
+  lines.push('- **search**: Semantic + keyword search across codebase');
+  lines.push('- **cypher**: Execute Cypher queries on knowledge graph');
+  lines.push('- **grep**: Regex pattern search in files');
+  lines.push('- **read**: Read file contents');
+  lines.push('- **explore**: Deep dive on symbol, cluster, or process');
+  lines.push('- **overview**: Codebase map (all clusters + processes)');
+  lines.push('- **impact**: Analyze change impact (upstream/downstream)');
+  lines.push('- **highlight**: Visualize nodes in graph');
   lines.push('');
   lines.push('## 📝 Graph Schema');
   lines.push('');
-  lines.push('**Node Types**: File, Folder, Function, Class, Interface, Method');
+  lines.push('**Node Types**: File, Folder, Function, Class, Interface, Method, Community, Process');
   lines.push('');
   lines.push('**Relation**: `CodeRelation` with `type` property:');
-  lines.push('- CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS');
+  lines.push('- CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES');
+  lines.push('- MEMBER_OF (symbol → community), STEP_IN_PROCESS (symbol → process)');
   lines.push('');
   lines.push('**Example Cypher Queries**:');
   lines.push('```cypher');
   lines.push('MATCH (f:Function) RETURN f.name LIMIT 10');
   lines.push("MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f.name, g.name");
+  lines.push("MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community) RETURN c.label, count(s)");
   lines.push('```');
   
   return lines.join('\n');

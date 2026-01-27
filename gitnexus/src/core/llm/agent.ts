@@ -81,6 +81,17 @@ You are an investigator. For each question:
 Nodes: File, Folder, Function, Class, Interface, Method, Community, Process
 Relations: \`CodeRelation\` with \`type\` property: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS
 
+## 📐 GRAPH SEMANTICS (Important!)
+**Edge Types:**
+- \`CALLS\`: Method invocation OR constructor injection. If A receives B as parameter and uses it, A→B is CALLS. This is intentional simplification.
+- \`IMPORTS\`: File-level import/include statement.
+- \`EXTENDS/IMPLEMENTS\`: Class inheritance.
+
+**Process Nodes:**
+- Process labels use format: "EntryPoint → Terminal" (e.g., "onCreate → showToast")
+- These are heuristic names from tracing execution flow, NOT application-defined names
+- Entry points are detected via export status, naming patterns, and framework conventions
+
 Cypher examples:
 - \`MATCH (f:Function) RETURN f.name LIMIT 10\`
 - \`MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f.name, g.name\`

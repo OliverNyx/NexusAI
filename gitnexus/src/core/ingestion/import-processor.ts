@@ -93,18 +93,13 @@ const resolveImportPath = (
       );
       if (matchIdx !== -1) {
         const match = allFileList[matchIdx];
-        if (import.meta.env.DEV) {
-          console.log(`📦 Import resolved: ${importPath} → ${match}`);
-        }
         resolveCache.set(cacheKey, match);
         return match;
       }
     }
   }
 
-  if (import.meta.env.DEV && pathParts.length > 0) {
-    console.log(`⚠️ Import unresolved: ${importPath} (tried suffixes from ${pathParts.join('/')})`);
-  }
+  // Unresolved imports (external packages, SDK imports) are expected - don't log
   resolveCache.set(cacheKey, null);
   return null;
 };
@@ -156,12 +151,7 @@ export const processImports = async (
       query = parser.getLanguage().query(queryStr);
       matches = query.matches(tree.rootNode);
       
-      if (import.meta.env.DEV && language === 'java') {
-        const importMatches = matches.filter(m => m.captures.some(c => c.name === 'import'));
-        if (importMatches.length > 0) {
-          console.log(`📋 Java file ${file.path}: ${importMatches.length} import matches found`);
-        }
-      }
+      // Removed verbose Java import logging
     } catch (queryError: any) {
       // Detailed debug logging for query failures
       console.group(`🔴 Query Error: ${file.path}`);
@@ -194,9 +184,7 @@ export const processImports = async (
         const rawImportPath = sourceNode.text.replace(/['"]/g, '');
         totalImportsFound++;
         
-        if (import.meta.env.DEV && language === 'java') {
-          console.log(`🔍 Java import found in ${file.path}: ${rawImportPath}`);
-        }
+        // Removed verbose per-import logging
         
         // Resolve to actual file in the system
         const resolvedPath = resolveImportPath(

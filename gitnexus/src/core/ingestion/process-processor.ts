@@ -12,6 +12,7 @@
 
 import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../graph/types';
 import { CommunityMembership } from './community-processor';
+import { calculateEntryPointScore, isTestFile } from './entry-point-scoring';
 
 // ============================================================================
 // CONFIGURATION
@@ -236,11 +237,12 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 /**
  * Find functions/methods that are good entry points for tracing.
  * 
- * An entry point is a function that:
- * 1. Has outgoing CALLS (so we can trace forward)
- * 2. Ranked by having high outgoing/incoming call ratio
+ * Entry points are scored based on:
+ * 1. Call ratio (calls many, called by few)
+ * 2. Export status (exported/public functions rank higher)
+ * 3. Name patterns (handle*, on*, *Controller, etc.)
  * 
- * We prioritize functions that call many others but are called by few.
+ * Test files are excluded entirely.
  */
 const findEntryPoints = (
   graph: KnowledgeGraph, 
@@ -248,39 +250,53 @@ const findEntryPoints = (
   callsEdges: AdjacencyList
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
-  const entryPointCandidates: { id: string; score: number; callers: number; callees: number }[] = [];
+  const entryPointCandidates: { 
+    id: string; 
+    score: number; 
+    reasons: string[];
+  }[] = [];
   
   graph.nodes.forEach(node => {
-    if (symbolTypes.has(node.label)) {
-      const callers = reverseCallsEdges.get(node.id) || [];
-      const callees = callsEdges.get(node.id) || [];
-      
-      // Must have at least 1 outgoing call to trace forward
-      if (callees.length > 0) {
-        // Score: ratio of outgoing to incoming calls
-        // Higher ratio = better entry point (calls many, called by few)
-        // Add 1 to denominators to avoid division by zero
-        const score = callees.length / (callers.length + 1);
-        
-        entryPointCandidates.push({ 
-          id: node.id, 
-          score,
-          callers: callers.length,
-          callees: callees.length
-        });
-      }
+    if (!symbolTypes.has(node.label)) return;
+    
+    const filePath = node.properties.filePath || '';
+    
+    // Skip test files entirely
+    if (isTestFile(filePath)) return;
+    
+    const callers = reverseCallsEdges.get(node.id) || [];
+    const callees = callsEdges.get(node.id) || [];
+    
+    // Must have at least 1 outgoing call to trace forward
+    if (callees.length === 0) return;
+    
+    // Calculate entry point score using new scoring system
+    const { score, reasons } = calculateEntryPointScore(
+      node.properties.name,
+      node.properties.language || 'javascript',
+      node.properties.isExported ?? false,
+      callers.length,
+      callees.length,
+      filePath  // Pass filePath for framework detection
+    );
+    
+    if (score > 0) {
+      entryPointCandidates.push({ id: node.id, score, reasons });
     }
   });
   
   // Sort by score descending and return top candidates
   const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
   
-  // DEBUG: Log top candidates
-  if (sorted.length > 0) {
-    console.log(`[Process Debug] Top 5 entry point candidates:`);
-    sorted.slice(0, 5).forEach((c, i) => {
+  // DEBUG: Log top candidates with new scoring details
+  if (sorted.length > 0 && typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+    console.log(`[Process] Top 10 entry point candidates (new scoring):`);
+    sorted.slice(0, 10).forEach((c, i) => {
       const node = graph.nodes.find(n => n.id === c.id);
-      console.log(`  ${i+1}. ${node?.properties.name} - calls: ${c.callees}, callers: ${c.callers}, score: ${c.score.toFixed(2)}`);
+      const exported = node?.properties.isExported ? '✓' : '✗';
+      const shortPath = node?.properties.filePath?.split('/').slice(-2).join('/') || '';
+      console.log(`  ${i+1}. ${node?.properties.name} [exported:${exported}] (${shortPath})`);
+      console.log(`     score: ${c.score.toFixed(2)} = [${c.reasons.join(' × ')}]`);
     });
   }
   

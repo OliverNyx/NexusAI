@@ -908,12 +908,23 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         : 'Dependencies this RELIES ON';
       
       // Try to find the target node first
-      const findTargetQuery = `
-        MATCH (n) 
-        WHERE n.name = '${target.replace(/'/g, "''")}'
-        RETURN n.id AS id, label(n) AS nodeType, n.filePath AS filePath
-        LIMIT 5
-      `;
+      // If target contains '/', search by filePath; otherwise by name
+      const isPathQuery = target.includes('/');
+      const escapedTarget = target.replace(/'/g, "''");
+      
+      const findTargetQuery = isPathQuery
+        ? `
+          MATCH (n) 
+          WHERE n.filePath IS NOT NULL AND n.filePath CONTAINS '${escapedTarget}'
+          RETURN n.id AS id, label(n) AS nodeType, n.filePath AS filePath
+          LIMIT 10
+        `
+        : `
+          MATCH (n) 
+          WHERE n.name = '${escapedTarget}'
+          RETURN n.id AS id, label(n) AS nodeType, n.filePath AS filePath
+          LIMIT 10
+        `;
       
       let targetResults;
       try {

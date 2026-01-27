@@ -41,19 +41,20 @@ ALWAYS call this first to understand the codebase before searching or querying.`
   {
     name: 'search',
     description: `Hybrid search (keyword + semantic) across the codebase.
-Returns code nodes with their graph connections.
+Returns code nodes with their graph connections, grouped by process.
 
 WHEN TO USE:
 - Finding implementations ("where is auth handled?")
 - Understanding code flow ("what calls UserService?")
 - Locating patterns ("find all API endpoints")
 
-RETURNS: Array of {name, type, filePath, code, connections[]}`,
+RETURNS: Array of {name, type, filePath, code, connections[], cluster, processes[]}`,
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
         limit: { type: 'number', description: 'Max results to return', default: 10 },
+        groupByProcess: { type: 'boolean', description: 'Group results by process', default: true },
       },
       required: ['query'],
     },
@@ -63,23 +64,23 @@ RETURNS: Array of {name, type, filePath, code, connections[]}`,
     description: `Execute Cypher query against the code knowledge graph.
 
 SCHEMA:
-- Nodes: File, Function, Class, Interface, Method
-- Edges: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS
+- Nodes: File, Folder, Function, Class, Interface, Method, Community, Process
+- Edges via CodeRelation.type: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
 
 EXAMPLES:
 • Find callers of a function:
-  MATCH (a)-[:CALLS]->(b:Function {name: "validateUser"}) RETURN a.name, a.filePath
+  MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b:Function {name: "validateUser"}) RETURN a.name, a.filePath
 
-• Find class hierarchy:
-  MATCH (c:Class)-[:EXTENDS*]->(base) WHERE c.name = "AdminUser" RETURN base.name
+• Find all functions in a community:
+  MATCH (f:Function)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community {label: "Auth"}) RETURN f.name
 
-• Impact analysis (what depends on X):
-  MATCH (target:Function {name: $name})<-[:CALLS*1..3]-(caller) RETURN DISTINCT caller
+• Find steps in a process:
+  MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {label: "UserLogin"}) RETURN s.name, r.step ORDER BY r.step
 
 TIPS:
-- Relationship types are UPPERCASE: CALLS, IMPORTS, EXTENDS
-- Node labels are PascalCase: Function, Class, Interface
-- Properties: name, filePath, code, startLine, endLine`,
+- All relationships use CodeRelation table with 'type' property
+- Community = functional cluster detected by Leiden algorithm
+- Process = execution flow trace from entry point to terminal`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -133,17 +134,60 @@ RETURNS: {filePath, content, language, lines}`,
     },
   },
   {
-    name: 'blastRadius',
+    name: 'explore',
+    description: `Deep dive on a symbol, cluster, or process.
+
+TYPE: symbol | cluster | process
+
+For SYMBOL: Shows cluster membership, process participation, callers/callees
+For CLUSTER: Shows members, cohesion score, processes touching it
+For PROCESS: Shows step-by-step trace, clusters traversed, entry/terminal points
+
+Use after search to understand context of a specific node.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of symbol, cluster, or process to explore' },
+        type: { type: 'string', description: 'Type: symbol, cluster, or process' },
+      },
+      required: ['name', 'type'],
+    },
+  },
+  {
+    name: 'overview',
+    description: `Get codebase map showing all clusters and processes.
+
+Returns:
+- All communities (clusters) with member counts and cohesion scores
+- All processes with step counts and types (intra/cross-community)
+- High-level architectural view
+
+Use to understand overall codebase structure before diving deep.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        showProcesses: { type: 'boolean', description: 'Include process list', default: true },
+        showClusters: { type: 'boolean', description: 'Include cluster list', default: true },
+        limit: { type: 'number', description: 'Max items per category', default: 20 },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'impact',
     description: `Analyze the impact of changing a code element.
 Returns all nodes affected by modifying the target, with distance, edge type, and confidence.
 
 USE BEFORE making changes to understand ripple effects.
 
-Output format (compact tabular):
-  Type|Name|File:Line|EdgeType|Confidence%
+Output includes:
+- Affected processes (with step positions)
+- Affected clusters (direct/indirect)
+- Risk assessment (critical/high/medium/low)
+- Callers/dependents grouped by depth
 
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS
-Confidence: 100% = certain, <80% = fuzzy match [fuzzy]
+Confidence: 100% = certain, <80% = fuzzy match
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
@@ -155,7 +199,7 @@ Depth groups:
         target: { type: 'string', description: 'Name of function, class, or file to analyze' },
         direction: { type: 'string', description: 'upstream (what depends on this) or downstream (what this depends on)' },
         maxDepth: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
-        relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES (default: usage-based)' },
+        relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS (default: usage-based)' },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
       },

@@ -8,6 +8,108 @@ import { getLanguageFromFilename } from './utils';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
+// ============================================================================
+// EXPORT DETECTION - Language-specific visibility detection
+// ============================================================================
+
+/**
+ * Check if a symbol (function, class, etc.) is exported/public
+ * Handles all 9 supported languages with explicit logic
+ * 
+ * @param node - The AST node for the symbol name
+ * @param name - The symbol name
+ * @param language - The programming language
+ * @returns true if the symbol is exported/public
+ */
+const isNodeExported = (node: any, name: string, language: string): boolean => {
+  let current = node;
+  
+  switch (language) {
+    // JavaScript/TypeScript: Check for export keyword in ancestors
+    case 'javascript':
+    case 'typescript':
+      while (current) {
+        const type = current.type;
+        if (type === 'export_statement' || 
+            type === 'export_specifier' ||
+            type === 'lexical_declaration' && current.parent?.type === 'export_statement') {
+          return true;
+        }
+        // Also check if text starts with 'export '
+        if (current.text?.startsWith('export ')) {
+          return true;
+        }
+        current = current.parent;
+      }
+      return false;
+    
+    // Python: Public if no leading underscore (convention)
+    case 'python':
+      return !name.startsWith('_');
+    
+    // Java: Check for 'public' modifier
+    // In tree-sitter Java, modifiers are siblings of the name node, not parents
+    case 'java':
+      while (current) {
+        // Check if this node or any sibling is a 'modifiers' node containing 'public'
+        if (current.parent) {
+          const parent = current.parent;
+          // Check all children of the parent for modifiers
+          for (let i = 0; i < parent.childCount; i++) {
+            const child = parent.child(i);
+            if (child?.type === 'modifiers' && child.text?.includes('public')) {
+              return true;
+            }
+          }
+          // Also check if the parent's text starts with 'public' (fallback)
+          if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
+            if (parent.text?.trimStart().startsWith('public')) {
+              return true;
+            }
+          }
+        }
+        current = current.parent;
+      }
+      return false;
+    
+    // C#: Check for 'public' modifier in ancestors
+    case 'csharp':
+      while (current) {
+        if (current.type === 'modifier' || current.type === 'modifiers') {
+          if (current.text?.includes('public')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+    
+    // Go: Uppercase first letter = exported
+    case 'go':
+      if (name.length === 0) return false;
+      const first = name[0];
+      // Must be uppercase letter (not a number or symbol)
+      return first === first.toUpperCase() && first !== first.toLowerCase();
+    
+    // Rust: Check for 'pub' visibility modifier
+    case 'rust':
+      while (current) {
+        if (current.type === 'visibility_modifier') {
+          if (current.text?.includes('pub')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+    
+    // C/C++: No native export concept at language level
+    // Entry points will be detected via name patterns (main, etc.)
+    case 'c':
+    case 'cpp':
+      return false;
+    
+    default:
+      return false;
+  }
+};
+
 export const processParsing = async (
   graph: KnowledgeGraph, 
   files: { path: string; content: string }[],
@@ -123,7 +225,8 @@ export const processParsing = async (
           filePath: file.path,
           startLine: nameNode.startPosition.row,
           endLine: nameNode.endPosition.row,
-          language: language
+          language: language,
+          isExported: isNodeExported(nameNode, nodeName, language),
         }
       };
 

@@ -38,6 +38,9 @@ export type NodeProperties = {
   communities?: string[],
   entryPointId?: string,
   terminalId?: string,
+  // Entry point scoring (computed by process detection)
+  entryPointScore?: number,
+  entryPointReason?: string,
 }
 
 export type RelationshipType = 
