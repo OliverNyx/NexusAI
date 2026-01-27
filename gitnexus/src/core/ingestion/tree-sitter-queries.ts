@@ -160,8 +160,8 @@ export const JAVA_QUERIES = `
 (method_declaration name: (identifier) @name) @definition.method
 (constructor_declaration name: (identifier) @name) @definition.constructor
 
-; Imports
-(import_declaration (scoped_identifier) @import.source) @import
+; Imports - capture any import declaration child as source
+(import_declaration (_) @import.source) @import
 
 ; Calls
 (method_invocation name: (identifier) @call.name) @call

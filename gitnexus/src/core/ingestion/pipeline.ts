@@ -123,6 +123,16 @@ export const runPipelineFromFiles = async (
       stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
     });
   });
+  
+  // Debug: Count IMPORTS relationships
+  if (import.meta.env.DEV) {
+    const importsCount = graph.relationships.filter(r => r.type === 'IMPORTS').length;
+    console.log(`📊 Pipeline: After import phase, graph has ${importsCount} IMPORTS relationships (total: ${graph.relationshipCount})`);
+    if (importsCount > 0) {
+      const sample = graph.relationships.filter(r => r.type === 'IMPORTS').slice(0, 3);
+      sample.forEach(r => console.log(`   Sample IMPORTS: ${r.sourceId} → ${r.targetId}`));
+    }
+  }
 
 
   // Phase 5: Calls (82-98%)

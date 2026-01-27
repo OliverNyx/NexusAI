@@ -926,11 +926,39 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         return `Could not find "${target}" in the codebase. Try using the search tool first to find the exact name.`;
       }
       
-      // Use the first match
-      const targetNode = targetResults[0];
+      // Handle multiple matches - require disambiguation
+      const allPaths = targetResults.map((r: any) => Array.isArray(r) ? r[2] : r.filePath).filter(Boolean);
+      
+      // If multiple matches and target doesn't look like a specific path, ask for clarification
+      if (targetResults.length > 1 && !target.includes('/')) {
+        return `⚠️ AMBIGUOUS TARGET: Multiple files named "${target}" found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease specify which file you mean by using a more specific path, e.g.:\n- impact("${allPaths[0].split('/').slice(-3).join('/')}")\n- impact("${allPaths[1]?.split('/').slice(-3).join('/') || allPaths[0]}")`;
+      }
+      
+      // If target contains a path, try to find matching file
+      let targetNode = targetResults[0];
+      if (target.includes('/') && targetResults.length > 1) {
+        const exactMatch = targetResults.find((r: any) => {
+          const path = Array.isArray(r) ? r[2] : r.filePath;
+          return path && path.toLowerCase().includes(target.toLowerCase());
+        });
+        if (exactMatch) {
+          targetNode = exactMatch;
+        } else {
+          // Still ambiguous even with path
+          return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+        }
+      }
+      
       const targetId = Array.isArray(targetNode) ? targetNode[0] : targetNode.id;
       const targetType = Array.isArray(targetNode) ? targetNode[1] : targetNode.nodeType;
       const targetFilePath = Array.isArray(targetNode) ? targetNode[2] : targetNode.filePath;
+      
+      if (import.meta.env.DEV) {
+        console.log(`🎯 Impact: Found target "${target}" → id=${targetId}, type=${targetType}, filePath=${targetFilePath}`);
+      }
+      
+      // No more multipleMatchWarning needed - we either disambiguated or returned early
+      const multipleMatchWarning = '';
       
       // For File targets, find what calls code INSIDE the file (by filePath)
       // For code elements (Function, Class, etc.), use the direct id
@@ -1016,7 +1044,18 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.reason AS reason
             LIMIT 300
           `;
-      depthQueries.push(executeQuery(d1Query).catch(err => {
+      if (import.meta.env.DEV) {
+        console.log(`🔍 Impact d=1 query:\n${d1Query}`);
+      }
+      depthQueries.push(executeQuery(d1Query).then(results => {
+        if (import.meta.env.DEV) {
+          console.log(`📊 Impact d=1 results: ${results.length} rows`);
+          if (results.length > 0) {
+            console.log('   Sample:', results.slice(0, 3));
+          }
+        }
+        return results;
+      }).catch(err => {
         if (import.meta.env.DEV) console.warn('Impact d=1 query failed:', err);
         return [];
       }));
@@ -1174,7 +1213,38 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const totalAffected = allNodeIds.length;
       
       if (totalAffected === 0) {
-        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.`;
+        if (isFileTarget) {
+          const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const targetFileName = (targetFilePath || target).split('/').pop() || target;
+          const baseName = targetFileName.replace(/\.[^/.]+$/, '');
+          const refRegex = new RegExp(`\\b${escapeRegex(baseName)}\\b`, 'g');
+          const hints: Array<{ file: string; line: number; content: string }> = [];
+          const hintLimit = 15;
+          
+          for (const [filePath, content] of fileContents.entries()) {
+            if (filePath === targetFilePath) continue;
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              if (refRegex.test(lines[i])) {
+                hints.push({
+                  file: filePath,
+                  line: i + 1,
+                  content: lines[i].trim().slice(0, 150),
+                });
+                if (hints.length >= hintLimit) break;
+              }
+              refRegex.lastIndex = 0;
+            }
+            if (hints.length >= hintLimit) break;
+          }
+          
+          if (hints.length > 0) {
+            const formatted = hints.map(h => `${h.file}:${h.line}: ${h.content}`).join('\n');
+            return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}), but textual references were detected (graph may be incomplete):\n\n${formatted}${multipleMatchWarning}`;
+          }
+        }
+
+        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.${multipleMatchWarning}`;
       }
       
       const depth1 = byDepth.get(1) || [];
@@ -1361,6 +1431,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Compact footer
       lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
       lines.push(`⚠️ Optional: grep("${target}") for dynamic patterns`);
+      if (multipleMatchWarning) {
+        lines.push(multipleMatchWarning);
+      }
       lines.push(``);
       
       return lines.join('\n');
