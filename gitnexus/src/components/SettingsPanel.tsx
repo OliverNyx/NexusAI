@@ -4,6 +4,7 @@ import {
   loadSettings,
   saveSettings,
   getProviderDisplayName,
+  fetchOpenRouterModels,
 } from '../core/llm/settings-service';
 import type { LLMSettings, LLMProvider } from '../core/llm/types';
 
@@ -46,6 +47,9 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
   // Ollama connection state
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [isCheckingOllama, setIsCheckingOllama] = useState(false);
+  // OpenRouter models state
+  const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
 
   // Load settings when panel opens
   useEffect(() => {
@@ -64,6 +68,14 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
     const { error } = await checkOllamaStatus(baseUrl);
     setIsCheckingOllama(false);
     setOllamaError(error);
+  }, []);
+
+  // Load OpenRouter models
+  const loadOpenRouterModels = useCallback(async () => {
+    setIsLoadingModels(true);
+    const models = await fetchOpenRouterModels();
+    setOpenRouterModels(models);
+    setIsLoadingModels(false);
   }, []);
 
   useEffect(() => {
@@ -97,7 +109,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama'];
+  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
 
 
   return (
@@ -153,7 +165,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : '☁️'}
+                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -529,6 +541,92 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
                 />
                 <p className="text-xs text-text-muted">
                   Pull a model with <code className="px-1 py-0.5 bg-elevated rounded">ollama pull llama3.2</code>
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* OpenRouter Settings */}
+          {settings.activeProvider === 'openrouter' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Key className="w-4 h-4" />
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey['openrouter'] ? 'text' : 'password'}
+                    value={settings.openrouter?.apiKey ?? ''}
+                    onChange={e => setSettings(prev => ({
+                      ...prev,
+                      openrouter: { ...prev.openrouter!, apiKey: e.target.value }
+                    }))}
+                    placeholder="Enter your OpenRouter API key"
+                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleApiKeyVisibility('openrouter')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    {showApiKey['openrouter'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  Get your API key from{' '}
+                  <a
+                    href="https://openrouter.ai/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    OpenRouter Keys
+                  </a>
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Model</label>
+                <select
+                  value={settings.openrouter?.model ?? ''}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    openrouter: { ...prev.openrouter!, model: e.target.value }
+                  }))}
+                  onFocus={() => {
+                    if (openRouterModels.length === 0 && !isLoadingModels) {
+                      loadOpenRouterModels();
+                    }
+                  }}
+                  disabled={isLoadingModels}
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm disabled:opacity-50"
+                >
+                  {isLoadingModels ? (
+                    <option>Loading models...</option>
+                  ) : openRouterModels.length === 0 ? (
+                    <option value="">Click to load models</option>
+                  ) : (
+                    <>
+                      <option value="">Select a model</option>
+                      {openRouterModels.map(model => (
+                        <option key={model.id} value={model.id}>
+                          {model.name}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+                <p className="text-xs text-text-muted">
+                  Browse all models at{' '}
+                  <a
+                    href="https://openrouter.ai/models"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    OpenRouter Models
+                  </a>
                 </p>
               </div>
             </div>

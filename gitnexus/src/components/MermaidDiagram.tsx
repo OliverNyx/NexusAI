@@ -1,31 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
-import { AlertTriangle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertTriangle, Maximize2 } from 'lucide-react';
+import { ProcessFlowModal } from './ProcessFlowModal';
+import type { ProcessData } from '../lib/mermaid-generator';
 
-// Initialize mermaid with dark theme
+// Initialize mermaid with cyan theme matching ProcessFlowModal
 mermaid.initialize({
   startOnLoad: false,
-  theme: 'dark',
+  maxTextSize: 900000,
+  theme: 'base',
   themeVariables: {
-    primaryColor: '#06b6d4',
-    primaryTextColor: '#e4e4ed',
-    primaryBorderColor: '#1e1e2a',
-    lineColor: '#3b3b54',
-    secondaryColor: '#1e1e2a',
-    tertiaryColor: '#0a0a10',
-    background: '#0a0a10',
-    mainBkg: '#0f0f18',
-    nodeBorder: '#3b3b54',
-    clusterBkg: '#1e1e2a',
-    titleColor: '#e4e4ed',
-    edgeLabelBackground: '#0f0f18',
-    nodeTextColor: '#e4e4ed',
+    primaryColor: '#1e293b', // node bg - slate
+    primaryTextColor: '#f1f5f9',
+    primaryBorderColor: '#22d3ee', // cyan
+    lineColor: '#94a3b8',
+    secondaryColor: '#1e293b',
+    tertiaryColor: '#0f172a',
+    mainBkg: '#1e293b',
+    nodeBorder: '#22d3ee', // cyan
+    clusterBkg: '#1e293b',
+    clusterBorder: '#475569',
+    titleColor: '#f1f5f9',
+    edgeLabelBackground: '#0f172a',
   },
   flowchart: {
     curve: 'basis',
     padding: 15,
     nodeSpacing: 50,
     rankSpacing: 50,
+    htmlLabels: true,
   },
   sequence: {
     actorMargin: 50,
@@ -36,7 +39,7 @@ mermaid.initialize({
   },
   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   fontSize: 13,
-  suppressErrorRendering: true, // Prevent default error div appending
+  suppressErrorRendering: true,
 });
 
 // Override the default error handler to prevent it from logging to UI
@@ -51,7 +54,7 @@ interface MermaidDiagramProps {
 export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const [svg, setSvg] = useState<string>('');
 
   useEffect(() => {
@@ -84,6 +87,17 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
     return () => clearTimeout(timeoutId);
   }, [code]);
 
+  // Create a pseudo ProcessData for the modal (with custom rawMermaid property)
+  const processData: any = showModal ? {
+    id: 'ai-generated',
+    label: 'AI Generated Diagram',
+    processType: 'intra_community',
+    steps: [], // Empty - we'll render raw mermaid
+    edges: [],
+    clusters: [],
+    rawMermaid: code, // Pass raw mermaid code
+  } : null;
+
   if (error) {
     return (
       <div className="my-3 p-4 bg-rose-500/10 border border-rose-500/30 rounded-lg">
@@ -105,49 +119,39 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   }
 
   return (
-    <div className={`my-3 relative group ${isExpanded ? 'fixed inset-4 z-50' : ''}`}>
-      {/* Backdrop for expanded view */}
-      {isExpanded && (
-        <div
-          className="absolute inset-0 -m-4 bg-deep/95 backdrop-blur-sm"
-          onClick={() => setIsExpanded(false)}
+    <>
+      <div className="my-3 relative group">
+        <div className="relative bg-gradient-to-b from-surface to-elevated border border-border-subtle rounded-xl overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 bg-surface/60 border-b border-border-subtle">
+            <span className="text-[10px] text-text-muted uppercase tracking-wider font-medium">
+              Diagram
+            </span>
+            <button
+              onClick={() => setShowModal(true)}
+              className="p-1 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
+              title="Expand"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Diagram container */}
+          <div
+            ref={containerRef}
+            className="flex items-center justify-center p-4 overflow-auto max-h-[400px]"
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        </div>
+      </div>
+
+      {/* Use ProcessFlowModal for expansion */}
+      {showModal && processData && (
+        <ProcessFlowModal
+          process={processData}
+          onClose={() => setShowModal(false)}
         />
       )}
-
-      <div className={`
-        relative bg-gradient-to-b from-surface to-elevated 
-        border border-border-subtle rounded-xl overflow-hidden
-        ${isExpanded ? 'h-full' : ''}
-      `}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 py-2 bg-surface/60 border-b border-border-subtle">
-          <span className="text-[10px] text-text-muted uppercase tracking-wider font-medium">
-            Diagram
-          </span>
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="p-1 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-            title={isExpanded ? 'Minimize' : 'Expand'}
-          >
-            {isExpanded ? (
-              <Minimize2 className="w-3.5 h-3.5" />
-            ) : (
-              <Maximize2 className="w-3.5 h-3.5" />
-            )}
-          </button>
-        </div>
-
-        {/* Diagram container */}
-        <div
-          ref={containerRef}
-          className={`
-            flex items-center justify-center p-4 overflow-auto
-            ${isExpanded ? 'h-[calc(100%-40px)]' : 'max-h-[400px]'}
-          `}
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
-      </div>
-    </div>
+    </>
   );
 };
-

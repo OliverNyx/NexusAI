@@ -14,6 +14,7 @@ import {
   GeminiConfig,
   AnthropicConfig,
   OllamaConfig,
+  OpenRouterConfig,
   ProviderConfig,
 } from './types';
 
@@ -54,6 +55,10 @@ export const loadSettings = (): LLMSettings => {
       ollama: {
         ...DEFAULT_LLM_SETTINGS.ollama,
         ...parsed.ollama,
+      },
+      openrouter: {
+        ...DEFAULT_LLM_SETTINGS.openrouter,
+        ...parsed.openrouter,
       },
     };
   } catch (error) {
@@ -146,6 +151,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'openrouter': {
+      const updated: LLMSettings = {
+        ...current,
+        openrouter: {
+          ...(current.openrouter ?? {}),
+          ...(updates as Partial<Omit<OpenRouterConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -217,6 +233,19 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         ...settings.ollama,
       } as OllamaConfig;
       
+    case 'openrouter':
+      if (!settings.openrouter?.apiKey || settings.openrouter.apiKey.trim() === '') {
+        return null;
+      }
+      return {
+        provider: 'openrouter',
+        apiKey: settings.openrouter.apiKey,
+        model: settings.openrouter.model || '',
+        baseUrl: settings.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
+        temperature: settings.openrouter.temperature,
+        maxTokens: settings.openrouter.maxTokens,
+      } as OpenRouterConfig;
+      
     default:
       return null;
   }
@@ -251,6 +280,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Anthropic';
     case 'ollama':
       return 'Ollama (Local)';
+    case 'openrouter':
+      return 'OpenRouter';
     default:
       return provider;
   }
@@ -274,6 +305,24 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     default:
       return [];
+  }
+};
+
+/**
+ * Fetch available models from OpenRouter API
+ */
+export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name: string }>> => {
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models');
+    if (!response.ok) throw new Error('Failed to fetch models');
+    const data = await response.json();
+    return data.data.map((model: any) => ({
+      id: model.id,
+      name: model.name || model.id,
+    }));
+  } catch (error) {
+    console.error('Error fetching OpenRouter models:', error);
+    return [];
   }
 };
 

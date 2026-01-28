@@ -8,7 +8,7 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
 
 /**
  * Base configuration shared by all providers
@@ -69,9 +69,19 @@ export interface OllamaConfig extends BaseProviderConfig {
 }
 
 /**
+ * OpenRouter configuration
+ */
+export interface OpenRouterConfig extends BaseProviderConfig {
+  provider: 'openrouter';
+  apiKey: string;
+  model: string;  // e.g., 'anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo'
+  baseUrl?: string;  // defaults to https://openrouter.ai/api/v1
+}
+
+/**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -87,6 +97,7 @@ export interface LLMSettings {
   gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
+  openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -129,6 +140,12 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   ollama: {
     baseUrl: 'http://localhost:11434',
     model: 'llama3.2',
+    temperature: 0.1,
+  },
+  openrouter: {
+    apiKey: '',
+    model: '',
+    baseUrl: 'https://openrouter.ai/api/v1',
     temperature: 0.1,
   },
 };

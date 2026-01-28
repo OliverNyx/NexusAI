@@ -20,6 +20,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     openCodePanel,
     depthFilter,
     highlightedNodeIds,
+    setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
     blastRadiusNodeIds,
@@ -303,13 +304,19 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {/* AI Highlights toggle - Top Right */}
       <div className="absolute top-4 right-4 z-20">
         <button
-          onClick={toggleAIHighlights}
+          onClick={() => {
+            // If turning off, also clear process highlights
+            if (isAIHighlightsEnabled) {
+              setHighlightedNodeIds(new Set());
+            }
+            toggleAIHighlights();
+          }}
           className={
             isAIHighlightsEnabled
               ? 'w-10 h-10 flex items-center justify-center bg-cyan-500/15 border border-cyan-400/40 rounded-lg text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-300/60 transition-colors'
               : 'w-10 h-10 flex items-center justify-center bg-elevated border border-border-subtle rounded-lg text-text-muted hover:bg-hover hover:text-text-primary transition-colors'
           }
-          title={isAIHighlightsEnabled ? 'Turn off AI highlights' : 'Turn on AI highlights'}
+          title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
         >
           {isAIHighlightsEnabled ? <Lightbulb className="w-4 h-4" /> : <LightbulbOff className="w-4 h-4" />}
         </button>
