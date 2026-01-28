@@ -3,7 +3,11 @@
 **Zero-Server, Graph-Based Code Intelligence Engine**
 Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST parsing, all happens inside browser)
 
-https://github.com/user-attachments/assets/2fb7c522-20d1-48f6-9583-36c3969aa4dc
+
+
+https://github.com/user-attachments/assets/40c62247-dfa5-4a2c-b2e1-2a2f48cbefb1
+
+
 
 https://gitnexus.vercel.app
 Being client sided, it costs me zero to deploy, so you can use it for free :-) (would love a ⭐ though)
