@@ -20,6 +20,7 @@ import type {
   GeminiConfig,
   AnthropicConfig,
   OllamaConfig,
+  OpenRouterConfig,
   AgentStreamChunk,
 } from './types';
 import { 
@@ -185,6 +186,37 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         // Increase context window (Ollama default is only 2048!)
         // This is critical for agentic workflows with tool calls
         numCtx: 32768,
+      });
+    }
+    
+    case 'openrouter': {
+      const openRouterConfig = config as OpenRouterConfig;
+      
+      // Debug logging
+      if (import.meta.env.DEV) {
+        console.log('🌐 OpenRouter config:', {
+          hasApiKey: !!openRouterConfig.apiKey,
+          apiKeyLength: openRouterConfig.apiKey?.length || 0,
+          model: openRouterConfig.model,
+          baseUrl: openRouterConfig.baseUrl,
+        });
+      }
+      
+      if (!openRouterConfig.apiKey || openRouterConfig.apiKey.trim() === '') {
+        throw new Error('OpenRouter API key is required but was not provided');
+      }
+      
+      return new ChatOpenAI({
+        openAIApiKey: openRouterConfig.apiKey,
+        apiKey: openRouterConfig.apiKey, // Fallback for some versions
+        modelName: openRouterConfig.model,
+        temperature: openRouterConfig.temperature ?? 0.1,
+        maxTokens: openRouterConfig.maxTokens,
+        configuration: {
+          apiKey: openRouterConfig.apiKey, // Ensure client receives it
+          baseURL: openRouterConfig.baseUrl ?? 'https://openrouter.ai/api/v1',
+        },
+        streaming: true,
       });
     }
     

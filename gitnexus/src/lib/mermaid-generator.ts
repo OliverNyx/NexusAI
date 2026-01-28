@@ -42,11 +42,11 @@ export function generateProcessMermaid(process: ProcessData): string {
 
   // Add class definitions for styling (rounded corners + colors)
   lines.push('  %% Styles');
-  lines.push('  classDef default fill:#1e293b,stroke:#94a3b8,stroke-width:1px,color:#f8fafc,rx:10,ry:10;');
-  lines.push('  classDef entry fill:#1e293b,stroke:#34d399,stroke-width:3px,color:#f8fafc,rx:10,ry:10;');
-  lines.push('  classDef step fill:#1e293b,stroke:#22d3ee,stroke-width:2px,color:#f8fafc,rx:10,ry:10;');
-  lines.push('  classDef terminal fill:#1e293b,stroke:#f472b6,stroke-width:3px,color:#f8fafc,rx:10,ry:10;');
-  lines.push('  classDef cluster fill:#0f172a,stroke:#334155,stroke-width:1px,color:#94a3b8,rx:4,ry:4;');
+  lines.push('  classDef default fill:#1e293b,stroke:#94a3b8,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
+  lines.push('  classDef entry fill:#1e293b,stroke:#34d399,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
+  lines.push('  classDef step fill:#1e293b,stroke:#22d3ee,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
+  lines.push('  classDef terminal fill:#1e293b,stroke:#f472b6,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
+  lines.push('  classDef cluster fill:#0f172a,stroke:#334155,stroke-width:3px,color:#94a3b8,rx:4,ry:4,font-size:20px;');
 
   // Track clusters for subgraph grouping
   const clusterGroups = new Map<string, ProcessStep[]>();

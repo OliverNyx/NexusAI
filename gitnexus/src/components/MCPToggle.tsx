@@ -30,7 +30,7 @@ const MCP_CONFIG = `{
   "mcpServers": {
     "gitnexus": {
       "command": "npx",
-      "args": ["-y", "gitnexus-mcp"]
+      "args": ["--prefer-online", "-y", "gitnexus-mcp@latest"]
     }
   }
 }`;

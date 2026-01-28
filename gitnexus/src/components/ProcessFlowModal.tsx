@@ -5,14 +5,15 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { X, GitBranch, Copy, Focus, Layers } from 'lucide-react';
+import { X, GitBranch, Copy, Focus, Layers, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
 
 interface ProcessFlowModalProps {
     process: ProcessData | null;
     onClose: () => void;
-    onFocusInGraph?: (nodeIds: string[]) => void;
+    onFocusInGraph?: (nodeIds: string[], processId: string) => void;
+    isFullScreen?: boolean;
 }
 
 // Initialize mermaid with cyan/purple theme matching GitNexus
@@ -38,9 +39,9 @@ mermaid.initialize({
     },
     flowchart: {
         curve: 'basis',
-        padding: 20,
-        nodeSpacing: 50,
-        rankSpacing: 60,
+        padding: 50,
+        nodeSpacing: 120,
+        rankSpacing: 140,
         htmlLabels: true,
     },
 });
@@ -51,21 +52,32 @@ mermaid.parseError = (err) => {
     console.debug('Mermaid parse error (suppressed):', err);
 };
 
-export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFlowModalProps) => {
+export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScreen = false }: ProcessFlowModalProps) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const diagramRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    const [zoom, setZoom] = useState(1);
+    
+    // Full process map gets higher default zoom (667%) and max zoom (3000%)
+    const defaultZoom = isFullScreen ? 6.67 : 1;
+    const maxZoom = isFullScreen ? 30 : 10;
+    
+    const [zoom, setZoom] = useState(defaultZoom);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isPanning, setIsPanning] = useState(false);
     const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+    
+    // Reset zoom when switching between full screen and regular mode
+    useEffect(() => {
+        setZoom(defaultZoom);
+        setPan({ x: 0, y: 0 });
+    }, [isFullScreen, defaultZoom]);
 
     // Handle zoom with scroll wheel
     useEffect(() => {
         const handleWheel = (e: WheelEvent) => {
             e.preventDefault();
             const delta = e.deltaY * -0.001;
-            setZoom(prev => Math.min(Math.max(0.1, prev + delta), 5));
+            setZoom(prev => Math.min(Math.max(0.1, prev + delta), maxZoom));
         };
 
         const container = scrollContainerRef.current;
@@ -73,6 +85,28 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
             container.addEventListener('wheel', handleWheel, { passive: false });
             return () => container.removeEventListener('wheel', handleWheel);
         }
+    }, [process, maxZoom]); // Re-attach when process or maxZoom changes
+
+    // Handle keyboard zoom
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === '+' || e.key === '=') {
+                setZoom(prev => Math.min(prev + 0.2, maxZoom));
+            } else if (e.key === '-' || e.key === '_') {
+                setZoom(prev => Math.max(prev - 0.2, 0.1));
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [maxZoom]);
+
+    // Zoom in/out handlers
+    const handleZoomIn = useCallback(() => {
+        setZoom(prev => Math.min(prev + 0.25, maxZoom));
+    }, [maxZoom]);
+
+    const handleZoomOut = useCallback(() => {
+        setZoom(prev => Math.max(prev - 0.25, 0.1));
     }, []);
 
     // Handle pan with mouse drag
@@ -91,9 +125,9 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
     }, []);
 
     const resetView = useCallback(() => {
-        setZoom(1);
+        setZoom(defaultZoom);
         setPan({ x: 0, y: 0 });
-    }, []);
+    }, [defaultZoom]);
 
     // Render mermaid diagram
     useEffect(() => {
@@ -163,7 +197,7 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
     const handleFocusInGraph = useCallback(() => {
         if (!process || !onFocusInGraph) return;
         const nodeIds = process.steps.map(s => s.id);
-        onFocusInGraph(nodeIds);
+        onFocusInGraph(nodeIds, process.id);
         onClose();
     }, [process, onFocusInGraph, onClose]);
 
@@ -172,11 +206,14 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
     return (
         <div
             ref={containerRef}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 animate-fade-in"
             onClick={handleBackdropClick}
         >
             {/* Glassmorphism Modal */}
-            <div className="bg-slate-900/60 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl shadow-cyan-500/10 w-[95%] max-w-5xl max-h-[90vh] flex flex-col animate-scale-in overflow-hidden relative">
+            <div className={`bg-slate-900/60 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl shadow-cyan-500/10 flex flex-col animate-scale-in overflow-hidden relative ${isFullScreen
+                ? 'w-[98%] h-[95vh] max-w-none'
+                : 'w-[95%] max-w-5xl max-h-[90vh]'
+                }`}>
                 {/* Subtle gradient overlay for extra glass feel */}
                 <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
 
@@ -190,7 +227,7 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
                 {/* Diagram */}
                 <div
                     ref={scrollContainerRef}
-                    className="flex-1 p-8 flex items-center justify-center min-h-[400px] relative z-10 overflow-hidden"
+                    className={`flex-1 p-8 flex items-center justify-center relative z-10 overflow-hidden ${isFullScreen ? 'min-h-[70vh]' : 'min-h-[400px]'}`}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
@@ -199,16 +236,35 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph }: ProcessFl
                 >
                     <div
                         ref={diagramRef}
-                        className="[&_svg]:max-w-full [&_svg]:h-auto [&_.edgePath_.path]:stroke-slate-400 [&_.edgePath_.path]:stroke-2 [&_.marker]:fill-slate-400 transition-transform"
+                        className="[&_.edgePath_.path]:stroke-slate-400 [&_.edgePath_.path]:stroke-2 [&_.marker]:fill-slate-400 transition-transform origin-center w-fit h-fit"
                         style={{
                             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                            transformOrigin: 'center'
                         }}
                     />
                 </div>
 
                 {/* Footer Actions */}
                 <div className="flex items-center justify-center gap-3 px-6 py-4 border-t border-white/10 bg-slate-900/50 relative z-10">
+                    {/* Zoom controls */}
+                    <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-1">
+                        <button
+                            onClick={handleZoomOut}
+                            className="p-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-md transition-all"
+                            title="Zoom out (-)"
+                        >
+                            <ZoomOut className="w-4 h-4" />
+                        </button>
+                        <span className="px-2 text-xs text-slate-400 font-mono min-w-[3rem] text-center">
+                            {Math.round(zoom * 100)}%
+                        </span>
+                        <button
+                            onClick={handleZoomIn}
+                            className="p-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-md transition-all"
+                            title="Zoom in (+)"
+                        >
+                            <ZoomIn className="w-4 h-4" />
+                        </button>
+                    </div>
                     <button
                         onClick={resetView}
                         className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-all"

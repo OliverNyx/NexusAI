@@ -6,7 +6,7 @@
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { GitBranch, Search, Eye, Zap, Home, ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
+import { GitBranch, Search, Eye, Zap, Home, ChevronDown, ChevronRight, Sparkles, Lightbulb, Layers } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';
@@ -17,6 +17,7 @@ export const ProcessesPanel = () => {
     const [selectedProcess, setSelectedProcess] = useState<ProcessData | null>(null);
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['cross', 'intra']));
     const [loadingProcess, setLoadingProcess] = useState<string | null>(null);
+    const [focusedProcessId, setFocusedProcessId] = useState<string | null>(null);
 
     // Extract processes from graph
     const processes = useMemo(() => {
@@ -72,6 +73,85 @@ export const ProcessesPanel = () => {
             return next;
         });
     }, []);
+
+    // Load ALL processes and combine into one mega-diagram
+    const handleViewAllProcesses = useCallback(async () => {
+        setLoadingProcess('all');
+
+        try {
+            const allProcessIds = [...processes.cross, ...processes.intra].map(p => p.id);
+
+            if (allProcessIds.length === 0) return;
+
+            // Collect all steps from all processes
+            const allStepsMap = new Map<string, ProcessStep>();
+            const allEdges: Array<{ from: string; to: string; type: string }> = [];
+
+            // Fetch steps for all processes concurrently in batches if needed, but for now sequentially to be safe
+            // Optimization: Fetch all steps in one query if possible
+            const allStepsQuery = `
+                MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+                WHERE p.id IN [${allProcessIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
+                RETURN s.id AS id, s.name AS name, s.filePath AS filePath, r.step AS stepNumber
+            `;
+
+            const stepsResult = await runQuery(allStepsQuery);
+
+            for (const row of stepsResult) {
+                const stepId = row.id || row[0];
+                if (!allStepsMap.has(stepId)) {
+                    allStepsMap.set(stepId, {
+                        id: stepId,
+                        name: row.name || row[1] || 'Unknown',
+                        filePath: row.filePath || row[2],
+                        stepNumber: row.stepNumber || row.step || row[3] || 0,
+                    });
+                }
+            }
+
+            const allSteps = Array.from(allStepsMap.values());
+            const stepIds = allSteps.map(s => s.id);
+
+            // Query for all CALLS edges between the combined steps
+            if (stepIds.length > 0) {
+                // Batch query if too many steps
+                const edgesQuery = `
+                    MATCH (from)-[r:CodeRelation {type: 'CALLS'}]->(to)
+                    WHERE from.id IN [${stepIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
+                      AND to.id IN [${stepIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
+                    RETURN from.id AS fromId, to.id AS toId, r.type AS type
+                `;
+
+                try {
+                    const edgesResult = await runQuery(edgesQuery);
+                    allEdges.push(...edgesResult
+                        .map((row: any) => ({
+                            from: row.fromId || row[0],
+                            to: row.toId || row[1],
+                            type: row.type || row[2] || 'CALLS',
+                        }))
+                        .filter(edge => edge.from !== edge.to));
+                } catch (err) {
+                    console.warn('Could not fetch combined edges:', err);
+                }
+            }
+
+            const combinedProcessData: ProcessData = {
+                id: 'combined-all',
+                label: `All Processes (${allProcessIds.length} combined)`,
+                processType: 'cross_community', // Treat as cross-community for styling
+                steps: allSteps,
+                edges: allEdges,
+                clusters: [],
+            };
+
+            setSelectedProcess(combinedProcessData);
+        } catch (error) {
+            console.error('Failed to load combined processes:', error);
+        } finally {
+            setLoadingProcess(null);
+        }
+    }, [processes, runQuery]);
 
     // Load process steps and open modal
     const handleViewProcess = useCallback(async (processId: string, label: string, processType: string) => {
@@ -143,112 +223,73 @@ export const ProcessesPanel = () => {
         }
     }, [runQuery, graph]);
 
-    // Load ALL processes and combine into one mega-diagram
-    const handleViewAllProcesses = useCallback(async () => {
-        setLoadingProcess('all');
+    // Cache for process steps (so we don't re-query when toggling focus)
+    const [processStepsCache, setProcessStepsCache] = useState<Map<string, string[]>>(new Map());
 
+    // Toggle focus for any process - loads steps on demand
+    const handleToggleFocusForProcess = useCallback(async (processId: string) => {
+        // If already focused on this process, turn off
+        if (focusedProcessId === processId) {
+            setHighlightedNodeIds(new Set());
+            setFocusedProcessId(null);
+            return;
+        }
+
+        // Check if we have cached steps
+        if (processStepsCache.has(processId)) {
+            const stepIds = processStepsCache.get(processId)!;
+            setHighlightedNodeIds(new Set(stepIds));
+            setFocusedProcessId(processId);
+            return;
+        }
+
+        // Load steps for this process
+        setLoadingProcess(processId);
         try {
-            const allProcessIds = [...processes.cross, ...processes.intra].map(p => p.id);
+            const stepsQuery = `
+                MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${processId.replace(/'/g, "''")}'})
+                RETURN s.id AS id
+            `;
+            const stepsResult = await runQuery(stepsQuery);
+            const stepIds = stepsResult.map((row: any) => row.id || row[0]);
 
-            if (allProcessIds.length === 0) return;
+            // Cache the result
+            setProcessStepsCache(prev => new Map(prev).set(processId, stepIds));
 
-            // Collect all steps from all processes
-            const allStepsMap = new Map<string, ProcessStep>();
-            const allEdges: Array<{ from: string; to: string; type: string }> = [];
-            const processColors: Map<string, number> = new Map();
-
-            for (let i = 0; i < allProcessIds.length; i++) {
-                const processId = allProcessIds[i];
-                processColors.set(processId, i);
-
-                // Query steps for this process
-                const stepsQuery = `
-          MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${processId.replace(/'/g, "''")}'})
-          RETURN s.id AS id, s.name AS name, s.filePath AS filePath, r.step AS stepNumber
-        `;
-
-                const stepsResult = await runQuery(stepsQuery);
-
-                for (const row of stepsResult) {
-                    const stepId = row.id || row[0];
-                    if (!allStepsMap.has(stepId)) {
-                        allStepsMap.set(stepId, {
-                            id: stepId,
-                            name: row.name || row[1] || 'Unknown',
-                            filePath: row.filePath || row[2],
-                            stepNumber: row.stepNumber || row.step || row[3] || 0,
-                        });
-                    }
-                }
-            }
-
-            const allSteps = Array.from(allStepsMap.values());
-            const stepIds = allSteps.map(s => s.id);
-
-            // Query for all CALLS edges between the combined steps
-            if (stepIds.length > 0) {
-                const edgesQuery = `
-          MATCH (from)-[r:CodeRelation {type: 'CALLS'}]->(to)
-          WHERE from.id IN [${stepIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
-            AND to.id IN [${stepIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
-          RETURN from.id AS fromId, to.id AS toId, r.type AS type
-        `;
-
-                try {
-                    const edgesResult = await runQuery(edgesQuery);
-                    allEdges.push(...edgesResult
-                        .map((row: any) => ({
-                            from: row.fromId || row[0],
-                            to: row.toId || row[1],
-                            type: row.type || row[2] || 'CALLS',
-                        }))
-                        .filter(edge => edge.from !== edge.to));
-                } catch (err) {
-                    console.warn('Could not fetch combined edges:', err);
-                }
-            }
-
-            const combinedProcessData: ProcessData = {
-                id: 'combined-all',
-                label: `All Processes (${allProcessIds.length} combined)`,
-                processType: 'cross_community',
-                steps: allSteps,
-                edges: allEdges,
-                clusters: [],
-            };
-
-            setSelectedProcess(combinedProcessData);
+            // Set focus
+            setHighlightedNodeIds(new Set(stepIds));
+            setFocusedProcessId(processId);
         } catch (error) {
-            console.error('Failed to load combined processes:', error);
+            console.error('Failed to load process steps for focus:', error);
         } finally {
             setLoadingProcess(null);
         }
-    }, [processes, runQuery]);
+    }, [focusedProcessId, processStepsCache, runQuery, setHighlightedNodeIds]);
 
-    // Focus in graph callback - toggles highlight
-    const handleFocusInGraph = useCallback((nodeIds: string[]) => {
-        // Check if all these nodes are already highlighted
-        const allAlreadyHighlighted = nodeIds.every(id => highlightedNodeIds.has(id))
-            && highlightedNodeIds.size === nodeIds.length;
-
-        if (allAlreadyHighlighted) {
-            // Clear if already highlighted
+    // Focus in graph callback - toggles highlight (used by modal)
+    const handleFocusInGraph = useCallback((nodeIds: string[], processId: string) => {
+        // Check if this process is already focused
+        if (focusedProcessId === processId) {
+            // Clear focus
             setHighlightedNodeIds(new Set());
+            setFocusedProcessId(null);
         } else {
-            // Highlight if not
+            // Set focus and cache
             setHighlightedNodeIds(new Set(nodeIds));
+            setFocusedProcessId(processId);
+            setProcessStepsCache(prev => new Map(prev).set(processId, nodeIds));
         }
-    }, [highlightedNodeIds, setHighlightedNodeIds]);
+    }, [focusedProcessId, setHighlightedNodeIds]);
+
+    // Clear focused process when highlights are cleared externally
+    useEffect(() => {
+        if (highlightedNodeIds.size === 0 && focusedProcessId !== null) {
+            setFocusedProcessId(null);
+        }
+    }, [highlightedNodeIds, focusedProcessId]);
 
     const totalCount = processes.cross.length + processes.intra.length;
 
-    // Auto-show combined diagram when panel first loads
-    useEffect(() => {
-        if (totalCount > 0 && !selectedProcess && loadingProcess === null) {
-            // Auto-trigger view all on first load
-            handleViewAllProcesses();
-        }
-    }, [totalCount]); // Only run when totalCount changes from 0
 
     if (totalCount === 0) {
         return (
@@ -279,14 +320,6 @@ export const ProcessesPanel = () => {
                             className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted"
                         />
                     </div>
-                    <button
-                        onClick={handleViewAllProcesses}
-                        disabled={totalCount === 0 || loadingProcess !== null}
-                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-purple-300 bg-purple-950/30 hover:bg-purple-900/50 border border-purple-500/30 hover:border-purple-400/50 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-purple-900/20 whitespace-nowrap"
-                    >
-                        <Eye className="w-3.5 h-3.5" />
-                        View All
-                    </button>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-text-muted">
                     <span>{totalCount} processes detected</span>
@@ -295,6 +328,30 @@ export const ProcessesPanel = () => {
 
             {/* Process list */}
             <div className="flex-1 overflow-y-auto scrollbar-thin">
+                {/* View All Processes Card */}
+                <div className="px-4 py-3">
+                    <button
+                        onClick={handleViewAllProcesses}
+                        disabled={loadingProcess !== null}
+                        className="w-full flex items-center gap-3 p-3 bg-elevated/40 hover:bg-elevated/80 border border-border-subtle hover:border-cyan-500/30 rounded-xl transition-all group shadow-sm hover:shadow-cyan-900/10 text-left"
+                    >
+                        <div className="p-2 bg-cyan-500/10 rounded-lg group-hover:bg-cyan-500/20 transition-colors">
+                            <Layers className="w-5 h-5 text-cyan-400" />
+                        </div>
+                        <div className="flex-1">
+                            <h4 className="text-sm font-medium text-text-primary group-hover:text-cyan-200">Full Process Map</h4>
+                            <p className="text-xs text-text-muted">View combined map of {totalCount} processes</p>
+                        </div>
+                        {loadingProcess === 'all' ? (
+                            <span className="animate-spin mr-1">
+                                <Sparkles className="w-4 h-4 text-cyan-400" />
+                            </span>
+                        ) : (
+                            <Eye className="w-4 h-4 text-text-muted group-hover:text-cyan-400" />
+                        )}
+                    </button>
+                </div>
+
                 {/* Cross-Community Section */}
                 {filteredProcesses.cross.length > 0 && (
                     <div className="border-b border-border-subtle">
@@ -321,7 +378,10 @@ export const ProcessesPanel = () => {
                                         key={process.id}
                                         process={process}
                                         isLoading={loadingProcess === process.id}
+                                        isSelected={selectedProcess?.id === process.id}
+                                        isFocused={focusedProcessId === process.id}
                                         onView={() => handleViewProcess(process.id, process.label, 'cross_community')}
+                                        onToggleFocus={() => handleToggleFocusForProcess(process.id)}
                                     />
                                 ))}
                             </div>
@@ -355,7 +415,10 @@ export const ProcessesPanel = () => {
                                         key={process.id}
                                         process={process}
                                         isLoading={loadingProcess === process.id}
+                                        isSelected={selectedProcess?.id === process.id}
+                                        isFocused={focusedProcessId === process.id}
                                         onView={() => handleViewProcess(process.id, process.label, 'intra_community')}
+                                        onToggleFocus={() => handleToggleFocusForProcess(process.id)}
                                     />
                                 ))}
                             </div>
@@ -369,6 +432,7 @@ export const ProcessesPanel = () => {
                 process={selectedProcess}
                 onClose={() => setSelectedProcess(null)}
                 onFocusInGraph={handleFocusInGraph}
+                isFullScreen={selectedProcess?.id === 'combined-all'}
             />
         </div>
     );
@@ -378,12 +442,22 @@ export const ProcessesPanel = () => {
 interface ProcessItemProps {
     process: { id: string; label: string; stepCount: number; clusters: string[] };
     isLoading: boolean;
+    isSelected: boolean;
+    isFocused: boolean;
     onView: () => void;
+    onToggleFocus: () => void;
 }
 
-const ProcessItem = ({ process, isLoading, onView }: ProcessItemProps) => {
+const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onToggleFocus }: ProcessItemProps) => {
+    // Determine row styling - focused gets special highlight
+    const rowClass = isFocused
+        ? 'bg-amber-950/40 border border-amber-500/50 ring-1 ring-amber-400/30'
+        : isSelected
+            ? 'bg-cyan-950/40 border border-cyan-500/50 ring-1 ring-cyan-400/30'
+            : '';
+
     return (
-        <div className="flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-colors">
+        <div className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
             <GitBranch className="w-4 h-4 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
                 <div className="text-sm text-text-primary truncate">{process.label}</div>
@@ -397,13 +471,32 @@ const ProcessItem = ({ process, isLoading, onView }: ProcessItemProps) => {
                     )}
                 </div>
             </div>
+            {/* Lightbulb icon - appears on hover, always visible when focused */}
+            <button
+                onClick={onToggleFocus}
+                className={`p-1.5 rounded-md transition-all ${isFocused
+                    ? 'text-amber-400 hover:text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 animate-pulse opacity-100'
+                    : 'text-text-muted hover:text-cyan-400 bg-white/5 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-400/40 opacity-0 group-hover:opacity-100'
+                    }`}
+                title={isFocused ? 'Click to remove highlight from graph' : 'Click to highlight in graph'}
+            >
+                <Lightbulb className="w-4 h-4" />
+            </button>
             <button
                 onClick={onView}
                 disabled={isLoading}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-cyan-400 hover:text-cyan-300 bg-cyan-950/30 hover:bg-cyan-900/50 border border-cyan-500/30 hover:border-cyan-400/50 rounded-md opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50 shadow-sm shadow-cyan-900/20"
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all disabled:opacity-50 shadow-sm ${isSelected
+                    ? 'text-cyan-300 bg-cyan-900/60 border border-cyan-400/60 opacity-100'
+                    : 'text-cyan-400 hover:text-cyan-300 bg-cyan-950/30 hover:bg-cyan-900/50 border border-cyan-500/30 hover:border-cyan-400/50 opacity-0 group-hover:opacity-100 shadow-cyan-900/20'
+                    }`}
             >
                 {isLoading ? (
                     <span className="animate-pulse">Loading...</span>
+                ) : isSelected ? (
+                    <>
+                        <Eye className="w-3.5 h-3.5" />
+                        Viewing
+                    </>
                 ) : (
                     <>
                         <Eye className="w-3.5 h-3.5" />
