@@ -373,3 +373,4 @@ model = pybamm.lithium_ion.DFN(
 *Quick reference for PyBaMM v1.x*
 
 
+
