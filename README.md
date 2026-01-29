@@ -5,7 +5,10 @@ Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST pa
 
 
 
-https://github.com/user-attachments/assets/40c62247-dfa5-4a2c-b2e1-2a2f48cbefb1
+
+https://github.com/user-attachments/assets/abfd0300-0aae-4296-b8d3-8b72ed882433
+
+
 
 
 
