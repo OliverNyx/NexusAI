@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
 import * as Comlink from 'comlink';
 import { KnowledgeGraph, GraphNode, NodeLabel } from '../core/graph/types';
-import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../types/pipeline';
+import { PipelineProgress, PipelineResult, SerializablePipelineResult, deserializePipelineResult } from '../types/pipeline';
 import { createKnowledgeGraph } from '../core/graph/graph';
 import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
@@ -114,6 +114,7 @@ interface AppState {
   // Worker API (shared across app)
   runPipeline: (file: File, onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
   runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
+  loadSerializedGraph: (serialized: SerializablePipelineResult) => Promise<PipelineResult>;
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
 
@@ -458,6 +459,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     const proxiedOnProgress = Comlink.proxy(onProgress);
     const serializedResult = await api.runPipelineFromFiles(files, proxiedOnProgress, clusteringConfig);
     return deserializePipelineResult(serializedResult, createKnowledgeGraph);
+  }, []);
+
+  const loadSerializedGraph = useCallback(async (
+    serialized: SerializablePipelineResult
+  ): Promise<PipelineResult> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    await api.loadSerializedGraph(serialized);
+    return deserializePipelineResult(serialized, createKnowledgeGraph);
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
@@ -1196,6 +1206,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setProjectName,
     runPipeline,
     runPipelineFromFiles,
+    loadSerializedGraph,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

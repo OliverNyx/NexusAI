@@ -128,14 +128,20 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
     case 'openai': {
       const openaiConfig = config as OpenAIConfig;
+      
+      if (!openaiConfig.apiKey || openaiConfig.apiKey.trim() === '') {
+        throw new Error('OpenAI API key is required but was not provided');
+      }
+      
       return new ChatOpenAI({
-        openAIApiKey: openaiConfig.apiKey,
+        apiKey: openaiConfig.apiKey,
         modelName: openaiConfig.model,
         temperature: openaiConfig.temperature ?? 0.1,
         maxTokens: openaiConfig.maxTokens,
-        configuration: openaiConfig.baseUrl ? {
-          baseURL: openaiConfig.baseUrl,
-        } : undefined,
+        configuration: {
+          apiKey: openaiConfig.apiKey,
+          ...(openaiConfig.baseUrl ? { baseURL: openaiConfig.baseUrl } : {}),
+        },
         streaming: true,
       });
     }

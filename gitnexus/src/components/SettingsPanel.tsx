@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { X, Key, Server, Brain, Check, AlertCircle, Eye, EyeOff, RefreshCw, Sparkles } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { X, Key, Server, Brain, Check, AlertCircle, Eye, EyeOff, RefreshCw, Sparkles, ChevronDown, Loader2, Search } from 'lucide-react';
 import {
   loadSettings,
   saveSettings,
@@ -13,6 +13,175 @@ interface SettingsPanelProps {
   onClose: () => void;
   onSettingsSaved?: () => void;
 }
+
+/**
+ * Searchable combobox for OpenRouter model selection
+ */
+interface OpenRouterModelComboboxProps {
+  value: string;
+  onChange: (model: string) => void;
+  models: Array<{ id: string; name: string }>;
+  isLoading: boolean;
+  onLoadModels: () => void;
+}
+
+const OpenRouterModelCombobox = ({ value, onChange, models, isLoading, onLoadModels }: OpenRouterModelComboboxProps) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Filter models based on search term
+  const filteredModels = useMemo(() => {
+    if (!searchTerm.trim()) return models;
+    const lower = searchTerm.toLowerCase();
+    return models.filter(m =>
+      m.id.toLowerCase().includes(lower) ||
+      m.name.toLowerCase().includes(lower)
+    );
+  }, [models, searchTerm]);
+
+  // Find display name for current value
+  const displayValue = useMemo(() => {
+    if (!value) return '';
+    const found = models.find(m => m.id === value);
+    return found ? found.name : value;
+  }, [value, models]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setSearchTerm('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Load models when opening
+  const handleOpen = () => {
+    setIsOpen(true);
+    if (models.length === 0 && !isLoading) {
+      onLoadModels();
+    }
+    setTimeout(() => inputRef.current?.focus(), 10);
+  };
+
+  const handleSelect = (modelId: string) => {
+    onChange(modelId);
+    setIsOpen(false);
+    setSearchTerm('');
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearchTerm(val);
+    // Also allow direct typing of model ID
+    if (val && models.length === 0) {
+      onChange(val);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && searchTerm) {
+      // If exact match in filtered, select it; otherwise use raw input
+      const exact = filteredModels.find(m => m.id.toLowerCase() === searchTerm.toLowerCase());
+      if (exact) {
+        handleSelect(exact.id);
+      } else if (filteredModels.length === 1) {
+        handleSelect(filteredModels[0].id);
+      } else {
+        // Allow custom model ID input
+        onChange(searchTerm);
+        setIsOpen(false);
+        setSearchTerm('');
+      }
+    } else if (e.key === 'Escape') {
+      setIsOpen(false);
+      setSearchTerm('');
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      {/* Main input/button */}
+      <div
+        onClick={handleOpen}
+        className={`w-full px-4 py-3 bg-elevated border rounded-xl cursor-pointer transition-all flex items-center gap-2
+          ${isOpen ? 'border-accent ring-2 ring-accent/20' : 'border-border-subtle hover:border-accent/50'}`}
+      >
+        {isOpen ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={searchTerm}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder="Search or type model ID..."
+            className="flex-1 bg-transparent text-text-primary placeholder:text-text-muted outline-none font-mono text-sm"
+            onClick={e => e.stopPropagation()}
+          />
+        ) : (
+          <span className={`flex-1 font-mono text-sm truncate ${value ? 'text-text-primary' : 'text-text-muted'}`}>
+            {displayValue || 'Select or type a model...'}
+          </span>
+        )}
+        <div className="flex items-center gap-1">
+          {isLoading && <Loader2 className="w-4 h-4 animate-spin text-text-muted" />}
+          <ChevronDown className={`w-4 h-4 text-text-muted transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </div>
+      </div>
+
+      {/* Dropdown */}
+      {isOpen && (
+        <div className="absolute z-50 w-full mt-1 bg-elevated border border-border-subtle rounded-xl shadow-xl overflow-hidden">
+          {isLoading ? (
+            <div className="px-4 py-6 text-center text-text-muted text-sm flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading models...
+            </div>
+          ) : filteredModels.length === 0 ? (
+            <div className="px-4 py-4 text-center">
+              {models.length === 0 ? (
+                <div className="text-text-muted text-sm">
+                  <Search className="w-5 h-5 mx-auto mb-2 opacity-50" />
+                  <p>Type a model ID or press Enter</p>
+                  <p className="text-xs mt-1">e.g. openai/gpt-4o</p>
+                </div>
+              ) : (
+                <div className="text-text-muted text-sm">
+                  <p>No models match "{searchTerm}"</p>
+                  <p className="text-xs mt-1">Press Enter to use as custom ID</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              {filteredModels.slice(0, 50).map(model => (
+                <button
+                  key={model.id}
+                  onClick={() => handleSelect(model.id)}
+                  className={`w-full px-4 py-2.5 text-left hover:bg-hover transition-colors flex flex-col
+                    ${model.id === value ? 'bg-accent/10' : ''}`}
+                >
+                  <span className="text-text-primary text-sm truncate">{model.name}</span>
+                  <span className="text-text-muted text-xs font-mono truncate">{model.id}</span>
+                </button>
+              ))}
+              {filteredModels.length > 50 && (
+                <div className="px-4 py-2 text-xs text-text-muted text-center border-t border-border-subtle">
+                  +{filteredModels.length - 50} more • Refine your search
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 /**
  * Check connection to local Ollama instance
@@ -588,35 +757,16 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
 
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-secondary">Model</label>
-                <select
+                <OpenRouterModelCombobox
                   value={settings.openrouter?.model ?? ''}
-                  onChange={e => setSettings(prev => ({
+                  onChange={(model) => setSettings(prev => ({
                     ...prev,
-                    openrouter: { ...prev.openrouter!, model: e.target.value }
+                    openrouter: { ...prev.openrouter!, model }
                   }))}
-                  onFocus={() => {
-                    if (openRouterModels.length === 0 && !isLoadingModels) {
-                      loadOpenRouterModels();
-                    }
-                  }}
-                  disabled={isLoadingModels}
-                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm disabled:opacity-50"
-                >
-                  {isLoadingModels ? (
-                    <option>Loading models...</option>
-                  ) : openRouterModels.length === 0 ? (
-                    <option value="">Click to load models</option>
-                  ) : (
-                    <>
-                      <option value="">Select a model</option>
-                      {openRouterModels.map(model => (
-                        <option key={model.id} value={model.id}>
-                          {model.name}
-                        </option>
-                      ))}
-                    </>
-                  )}
-                </select>
+                  models={openRouterModels}
+                  isLoading={isLoadingModels}
+                  onLoadModels={loadOpenRouterModels}
+                />
                 <p className="text-xs text-text-muted">
                   Browse all models at{' '}
                   <a
