@@ -1,15 +1,26 @@
+/**
+ * Analyze Command
+ * 
+ * Indexes a repository and stores the knowledge graph in .gitnexus/
+ */
+
 import path from 'path';
 import ora from 'ora';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement } from '../core/kuzu/kuzu-adapter.js';
+import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu } from '../core/kuzu/kuzu-adapter.js';
 import { buildBM25Index, exportBM25Index } from '../core/search/bm25-index.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { ensureRepoBase, getRepoStoragePath, saveMeta, loadMeta } from '../storage/repo-manager.js';
+import { getStoragePaths, saveMeta, loadMeta, addToGitignore } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo } from '../storage/git.js';
+
+export interface AnalyzeOptions {
+  force?: boolean;
+  skipEmbeddings?: boolean;
+}
 
 export const analyzeCommand = async (
   inputPath?: string,
-  options?: { force?: boolean; skipEmbeddings?: boolean }
+  options?: AnalyzeOptions
 ) => {
   const repoPath = path.resolve(inputPath || '.');
   const spinner = ora('Checking repository...').start();
@@ -20,42 +31,45 @@ export const analyzeCommand = async (
     return;
   }
 
-  await ensureRepoBase();
-  const storagePath = getRepoStoragePath(repoPath);
-  const kuzuPath = path.join(storagePath, 'kuzu');
-  const bm25Path = path.join(storagePath, 'bm25.json');
-
+  const { storagePath, kuzuPath, bm25Path } = getStoragePaths(repoPath);
   const currentCommit = getCurrentCommit(repoPath);
   const existingMeta = await loadMeta(storagePath);
+
+  // Skip if already indexed at same commit
   if (existingMeta && !options?.force && existingMeta.lastCommit === currentCommit) {
     spinner.succeed('Repository already up to date');
     return;
   }
 
+  // Run ingestion pipeline
   spinner.text = 'Running ingestion pipeline...';
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     spinner.text = `${progress.phase}: ${progress.percent}%`;
   });
 
+  // Load graph into KuzuDB
   spinner.text = 'Loading graph into KuzuDB...';
   await initKuzu(kuzuPath);
   await loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath);
 
+  // Build BM25 search index
   spinner.text = 'Building BM25 index...';
   buildBM25Index(pipelineResult.fileContents);
   await exportBM25Index(bm25Path);
 
+  // Generate embeddings
   if (!options?.skipEmbeddings) {
     spinner.text = 'Generating embeddings...';
     await runEmbeddingPipeline(
       executeQuery,
       executeWithReusedStatement,
       (progress) => {
-        spinner.text = `embeddings: ${progress.percent}%`;
+        spinner.text = `Embeddings: ${progress.percent}%`;
       }
     );
   }
 
+  // Save metadata
   const stats = await getKuzuStats();
   await saveMeta(storagePath, {
     repoPath,
@@ -70,7 +84,14 @@ export const analyzeCommand = async (
     },
   });
 
-  spinner.succeed('Repository indexed successfully');
-  console.log(`Storage: ${storagePath}`);
-};
+  // Add .gitnexus to .gitignore
+  await addToGitignore(repoPath);
+  
+  // Close database
+  await closeKuzu();
 
+  spinner.succeed('Repository indexed successfully');
+  console.log(`  Path: ${repoPath}`);
+  console.log(`  Storage: ${storagePath}`);
+  console.log(`  Stats: ${stats.nodes} nodes, ${stats.edges} edges`);
+};

@@ -1,7 +1,11 @@
+/**
+ * Repository Manager
+ * 
+ * Manages GitNexus index storage in .gitnexus/ at repo root.
+ */
+
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
-import crypto from 'crypto';
 
 export interface RepoMeta {
   repoPath: string;
@@ -17,7 +21,7 @@ export interface RepoMeta {
 }
 
 export interface IndexedRepo {
-  id: string;
+  repoPath: string;
   storagePath: string;
   kuzuPath: string;
   bm25Path: string;
@@ -25,23 +29,31 @@ export interface IndexedRepo {
   meta: RepoMeta;
 }
 
-const getHomeDir = (): string => path.join(os.homedir(), '.gitnexus');
-const getReposDir = (): string => path.join(getHomeDir(), 'repos');
+const GITNEXUS_DIR = '.gitnexus';
 
-export const ensureRepoBase = async (): Promise<void> => {
-  await fs.mkdir(getReposDir(), { recursive: true });
+/**
+ * Get the .gitnexus storage path for a repository
+ */
+export const getStoragePath = (repoPath: string): string => {
+  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
 };
 
-export const hashRepoPath = (repoPath: string): string => {
-  const resolved = path.resolve(repoPath);
-  return crypto.createHash('sha256').update(resolved).digest('hex').slice(0, 12);
+/**
+ * Get paths to key storage files
+ */
+export const getStoragePaths = (repoPath: string) => {
+  const storagePath = getStoragePath(repoPath);
+  return {
+    storagePath,
+    kuzuPath: path.join(storagePath, 'kuzu'),
+    bm25Path: path.join(storagePath, 'bm25.json'),
+    metaPath: path.join(storagePath, 'meta.json'),
+  };
 };
 
-export const getRepoStoragePath = (repoPathOrHash: string): string => {
-  const hash = repoPathOrHash.length === 12 ? repoPathOrHash : hashRepoPath(repoPathOrHash);
-  return path.join(getReposDir(), hash);
-};
-
+/**
+ * Load metadata from an indexed repo
+ */
 export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> => {
   try {
     const metaPath = path.join(storagePath, 'meta.json');
@@ -52,50 +64,75 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
   }
 };
 
+/**
+ * Save metadata to storage
+ */
 export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
 };
 
-export const listIndexedRepos = async (): Promise<IndexedRepo[]> => {
-  await ensureRepoBase();
-  const dirs = await fs.readdir(getReposDir(), { withFileTypes: true });
-  const repos: IndexedRepo[] = [];
-
-  for (const dir of dirs) {
-    if (!dir.isDirectory()) continue;
-    const id = dir.name;
-    const storagePath = path.join(getReposDir(), id);
-    const meta = await loadMeta(storagePath);
-    if (!meta) continue;
-    repos.push({
-      id,
-      storagePath,
-      kuzuPath: path.join(storagePath, 'kuzu'),
-      bm25Path: path.join(storagePath, 'bm25.json'),
-      metaPath: path.join(storagePath, 'meta.json'),
-      meta,
-    });
+/**
+ * Check if a path has a GitNexus index
+ */
+export const hasIndex = async (repoPath: string): Promise<boolean> => {
+  const { metaPath } = getStoragePaths(repoPath);
+  try {
+    await fs.access(metaPath);
+    return true;
+  } catch {
+    return false;
   }
-
-  return repos;
 };
 
-export const detectRepoByCwd = async (cwd: string): Promise<IndexedRepo | null> => {
-  const repos = await listIndexedRepos();
-  const cwdResolved = path.resolve(cwd);
-  const cwdLower = cwdResolved.toLowerCase();
+/**
+ * Load an indexed repo from a path
+ */
+export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> => {
+  const paths = getStoragePaths(repoPath);
+  const meta = await loadMeta(paths.storagePath);
+  if (!meta) return null;
+  
+  return {
+    repoPath: path.resolve(repoPath),
+    ...paths,
+    meta,
+  };
+};
 
-  for (const repo of repos) {
-    const repoPath = path.resolve(repo.meta.repoPath);
-    const repoLower = repoPath.toLowerCase();
-    if (cwdLower.startsWith(repoLower) || repoLower.startsWith(cwdLower)) {
-      return repo;
-    }
+/**
+ * Find .gitnexus by walking up from a starting path
+ */
+export const findRepo = async (startPath: string): Promise<IndexedRepo | null> => {
+  let current = path.resolve(startPath);
+  const root = path.parse(current).root;
+  
+  while (current !== root) {
+    const repo = await loadRepo(current);
+    if (repo) return repo;
+    current = path.dirname(current);
   }
+  
   return null;
 };
 
-
-
+/**
+ * Add .gitnexus to .gitignore if not already present
+ */
+export const addToGitignore = async (repoPath: string): Promise<void> => {
+  const gitignorePath = path.join(repoPath, '.gitignore');
+  
+  try {
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    if (content.includes(GITNEXUS_DIR)) return;
+    
+    const newContent = content.endsWith('\n') 
+      ? `${content}${GITNEXUS_DIR}\n`
+      : `${content}\n${GITNEXUS_DIR}\n`;
+    await fs.writeFile(gitignorePath, newContent, 'utf-8');
+  } catch {
+    // .gitignore doesn't exist, create it
+    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
+  }
+};

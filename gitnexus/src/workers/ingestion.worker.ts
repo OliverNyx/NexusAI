@@ -1,6 +1,6 @@
 import * as Comlink from 'comlink';
 import { runIngestionPipeline, runPipelineFromFiles } from '../core/ingestion/pipeline';
-import { PipelineProgress, SerializablePipelineResult, serializePipelineResult, deserializePipelineResult } from '../types/pipeline';
+import { PipelineProgress, SerializablePipelineResult, serializePipelineResult } from '../types/pipeline';
 import { FileEntry } from '../services/zip';
 import {
   runEmbeddingPipeline,
@@ -25,7 +25,6 @@ import {
   mergeWithRRF,
   type HybridSearchResult,
 } from '../core/search';
-import { createKnowledgeGraph } from '../core/graph/graph';
 
 // Lazy import for Kuzu to avoid breaking worker if SharedArrayBuffer unavailable
 let kuzuAdapter: typeof import('../core/kuzu/kuzu-adapter') | null = null;
@@ -222,31 +221,6 @@ const workerApi = {
     
     // Convert to serializable format for transfer back to main thread
     return serializePipelineResult(result);
-  },
-
-  /**
-   * Load a serialized graph result into the worker (for local CLI integration)
-   */
-  async loadSerializedGraph(serialized: SerializablePipelineResult): Promise<void> {
-    const result = deserializePipelineResult(serialized, createKnowledgeGraph);
-    currentGraphResult = result;
-    storedFileContents = result.fileContents;
-
-    const bm25DocCount = buildBM25Index(storedFileContents);
-    if (import.meta.env.DEV) {
-      console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
-    }
-
-    try {
-      const kuzu = await getKuzuAdapter();
-      await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
-      if (import.meta.env.DEV) {
-        const stats = await kuzu.getKuzuStats();
-        console.log('KuzuDB loaded from serialized graph:', stats);
-      }
-    } catch {
-      // KuzuDB is optional
-    }
   },
 
   // ============================================================

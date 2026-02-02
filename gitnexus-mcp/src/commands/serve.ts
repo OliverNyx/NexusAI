@@ -1,13 +1,14 @@
 /**
  * Serve Command
  * 
- * Starts the MCP server that bridges external AI agents to GitNexus.
- * - Listens on stdio for MCP protocol (from AI tools)
- * - Hosts a local WebSocket bridge for the GitNexus browser app
+ * Starts the MCP server with hybrid mode:
+ * 1. First tries local .gitnexus/ index (standalone mode)
+ * 2. Falls back to WebSocket bridge if browser is running
  */
 
 import { startMCPServer } from '../mcp/server.js';
 import { WebSocketBridge } from '../bridge/websocket-server.js';
+import { LocalBackend } from '../local/local-backend.js';
 
 interface ServeOptions {
   port: string;
@@ -15,17 +16,30 @@ interface ServeOptions {
 
 export async function serveCommand(options: ServeOptions) {
   const port = parseInt(options.port, 10);
+  // Use GITNEXUS_CWD env var if set, otherwise use process.cwd()
+  const cwd = process.env.GITNEXUS_CWD || process.cwd();
   
-  // Start local WebSocket bridge (browser connects to ws://localhost:<port>)
-  const client = new WebSocketBridge(port);
-  const started = await client.start();
+  // Try local backend first (standalone mode)
+  const local = new LocalBackend();
+  const hasLocalIndex = await local.init(cwd);
+  
+  if (hasLocalIndex) {
+    console.error(`GitNexus: Using local index at ${local.storagePath}`);
+    await startMCPServer(local);
+    return;
+  }
+  
+  // No local index - fall back to browser bridge
+  console.error('GitNexus: No local .gitnexus/ found, starting browser bridge...');
+  
+  const bridge = new WebSocketBridge(port);
+  const started = await bridge.start();
 
   if (!started) {
     console.error(`Failed to start GitNexus browser bridge on port ${port}.`);
-    console.error('Another process is already using this port.');
+    console.error('Run "gitnexus analyze" to index this repository for standalone mode.');
     process.exit(1);
   }
   
-  // Start MCP server on stdio (AI tools connect here)
-  await startMCPServer(client);
+  await startMCPServer(bridge);
 }

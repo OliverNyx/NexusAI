@@ -26,7 +26,6 @@ const AppContent = () => {
     isRightPanelOpen,
     runPipeline,
     runPipelineFromFiles,
-    loadSerializedGraph,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
     refreshLLMSettings,
@@ -43,8 +42,6 @@ const AppContent = () => {
   } = useAppState();
 
   const [showClusteringModal, setShowClusteringModal] = useState(false);
-  const [localRepos, setLocalRepos] = useState<Array<{ id: string; repoPath: string; indexedAt: string }>>([]);
-  const [localAvailable, setLocalAvailable] = useState(false);
 
   // Trigger clustering modal after ingestion if not seen yet
   // DISABLED: Clustering is now in the upload flow
@@ -191,64 +188,6 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent, runClusterEnrichment]);
 
-  useEffect(() => {
-    fetch('http://localhost:4747/api/repos')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.repos?.length) {
-          setLocalAvailable(true);
-          setLocalRepos(data.repos);
-        }
-      })
-      .catch(() => {
-        setLocalAvailable(false);
-      });
-  }, []);
-
-  const handleOpenLocalRepo = useCallback(async (repoId: string, repoPath: string) => {
-    const project = repoPath.split('/').pop() || repoPath.split('\\').pop() || 'repository';
-    setProjectName(project);
-    setProgress({ phase: 'extracting', percent: 0, message: 'Loading local repository...' });
-    setViewMode('loading');
-
-    try {
-      const res = await fetch(`http://localhost:4747/api/repos/${repoId}/serialized`);
-      if (!res.ok) {
-        throw new Error(`Failed to fetch local repo: ${res.status}`);
-      }
-      const serialized = await res.json();
-      const result = await loadSerializedGraph(serialized);
-
-      setGraph(result.graph);
-      setFileContents(result.fileContents);
-      setViewMode('exploring');
-
-      if (getActiveProviderConfig()) {
-        initializeAgent(project);
-      }
-
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
-    } catch (error) {
-      console.error('Local repo load error:', error);
-      setProgress({
-        phase: 'error',
-        percent: 0,
-        message: 'Error loading local repository',
-        detail: error instanceof Error ? error.message : 'Unknown error',
-      });
-      setTimeout(() => {
-        setViewMode('onboarding');
-        setProgress(null);
-      }, 3000);
-    }
-  }, [setProjectName, setProgress, setViewMode, loadSerializedGraph, setGraph, setFileContents, initializeAgent, startEmbeddings]);
-
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
@@ -262,34 +201,7 @@ const AppContent = () => {
 
   // Render based on view mode
   if (viewMode === 'onboarding') {
-    return (
-      <div className="flex h-screen flex-col">
-        {localAvailable && localRepos.length > 0 && (
-          <div className="mx-auto mt-8 w-full max-w-4xl rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-            <div className="text-sm font-medium text-zinc-200">Local GitNexus server detected</div>
-            <div className="mt-2 space-y-2">
-              {localRepos.map((repo) => (
-                <div key={repo.id} className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
-                  <div>
-                    <div className="text-sm text-zinc-200">{repo.repoPath}</div>
-                    <div className="text-xs text-zinc-500">Indexed: {repo.indexedAt}</div>
-                  </div>
-                  <button
-                    className="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-500"
-                    onClick={() => handleOpenLocalRepo(repo.id, repo.repoPath)}
-                  >
-                    Open
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="flex-1">
-          <DropZone onFileSelect={handleFileSelect} onGitClone={handleGitClone} />
-        </div>
-      </div>
-    );
+    return <DropZone onFileSelect={handleFileSelect} onGitClone={handleGitClone} />;
   }
 
   if (viewMode === 'loading' && progress) {

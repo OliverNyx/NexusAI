@@ -2,7 +2,7 @@
  * MCP Tool Definitions
  * 
  * Defines the tools that GitNexus exposes to external AI agents.
- * Each tool has a rich description with examples to help agents use them correctly.
+ * Only includes tools that provide unique value over native IDE capabilities.
  */
 
 export interface ToolDefinition {
@@ -15,6 +15,7 @@ export interface ToolDefinition {
       description?: string;
       default?: any;
       items?: { type: string };
+      enum?: string[];
     }>;
     required: string[];
   };
@@ -22,13 +23,37 @@ export interface ToolDefinition {
 
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
+    name: 'analyze',
+    description: `Index or re-index the current repository.
+
+Creates .gitnexus/ in repo root with:
+- Knowledge graph (functions, classes, calls, imports)
+- BM25 search index
+- Community detection (Leiden)
+- Process tracing
+
+Run this when:
+- First time using GitNexus on a repo
+- After major code changes
+- When 'not indexed' error appears`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repo path (default: current directory)' },
+        force: { type: 'boolean', description: 'Re-index even if exists', default: false },
+        skipEmbeddings: { type: 'boolean', description: 'Skip embedding generation (faster)', default: false },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'context',
     description: `Get GitNexus codebase context. CALL THIS FIRST before using other tools.
 
 Returns:
 - Project name and stats (files, functions, classes)
 - Hotspots (most connected/important nodes)
-- Directory structure (TOON format for token efficiency)
+- Communities and processes count
 - Tool usage guidance
 
 ALWAYS call this first to understand the codebase before searching or querying.`,
@@ -43,10 +68,10 @@ ALWAYS call this first to understand the codebase before searching or querying.`
     description: `Hybrid search (keyword + semantic) across the codebase.
 Returns code nodes with their graph connections, grouped by process.
 
-WHEN TO USE:
-- Finding implementations ("where is auth handled?")
-- Understanding code flow ("what calls UserService?")
-- Locating patterns ("find all API endpoints")
+BETTER THAN IDE search because:
+- Process-aware grouping (shows execution flows)
+- Cluster context (which functional area)
+- Relationship data (callers/callees)
 
 RETURNS: Array of {name, type, filePath, code, connections[], cluster, processes[]}`,
     inputSchema: {
@@ -54,6 +79,7 @@ RETURNS: Array of {name, type, filePath, code, connections[], cluster, processes
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
         limit: { type: 'number', description: 'Max results to return', default: 10 },
+        depth: { type: 'string', description: 'Result detail: "definitions" (symbols only) or "full" (with relationships)', enum: ['definitions', 'full'], default: 'definitions' },
         groupByProcess: { type: 'boolean', description: 'Group results by process', default: true },
       },
       required: ['query'],
@@ -87,50 +113,6 @@ TIPS:
         query: { type: 'string', description: 'Cypher query to execute' },
       },
       required: ['query'],
-    },
-  },
-  {
-    name: 'grep',
-    description: `Regex search for exact patterns in file contents.
-
-WHEN TO USE:
-- Finding exact strings: error codes, TODOs, specific API keys
-- Pattern matching: all console.log, all fetch calls
-- Finding imports of specific modules
-
-BETTER THAN search for: exact matches, regex patterns, case-sensitive
-
-RETURNS: Array of {filePath, line, lineNumber, match}`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'Regex pattern to search for' },
-        caseSensitive: { type: 'boolean', description: 'Case-sensitive search', default: false },
-        maxResults: { type: 'number', description: 'Max results to return', default: 50 },
-      },
-      required: ['pattern'],
-    },
-  },
-  {
-    name: 'read',
-    description: `Read file content from the codebase.
-
-WHEN TO USE:
-- After search/grep to see full context
-- To understand implementation details
-- Before making changes
-
-ALWAYS read before concluding - don't guess from names alone.
-
-RETURNS: {filePath, content, language, lines}`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        filePath: { type: 'string', description: 'Path to file to read' },
-        startLine: { type: 'number', description: 'Start line (optional)' },
-        endLine: { type: 'number', description: 'End line (optional)' },
-      },
-      required: ['filePath'],
     },
   },
   {
@@ -204,22 +186,6 @@ Depth groups:
         minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
       },
       required: ['target', 'direction'],
-    },
-  },
-  {
-    name: 'highlight',
-    description: `Highlight nodes in the GitNexus graph visualization.
-Use after search/analysis to show the user what you found.
-
-The user will see the nodes glow in the graph view.
-Great for visual confirmation of your findings.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        nodeIds: { type: 'array', items: { type: 'string' }, description: 'Array of node IDs to highlight' },
-        color: { type: 'string', description: 'Highlight color (optional, default: cyan)' },
-      },
-      required: ['nodeIds'],
     },
   },
 ];

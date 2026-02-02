@@ -1,3 +1,9 @@
+/**
+ * CLI MCP Server
+ * 
+ * Standalone MCP server that uses local .gitnexus/ index.
+ */
+
 import path from 'path';
 import fs from 'fs/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -9,7 +15,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import { detectRepoByCwd, loadMeta } from '../storage/repo-manager.js';
+import { findRepo } from '../storage/repo-manager.js';
 import { initKuzu, executeQuery } from '../core/kuzu/kuzu-adapter.js';
 import { loadBM25Index, isBM25Ready, searchBM25 } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -51,7 +57,7 @@ export const startMCPServer = async () => {
   );
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const repo = await detectRepoByCwd(process.cwd());
+    const repo = await findRepo(process.cwd());
     if (!repo) return { resources: [] };
     return {
       resources: [
@@ -69,7 +75,7 @@ export const startMCPServer = async () => {
     if (request.params.uri !== 'gitnexus://context') {
       throw new Error(`Unknown resource: ${request.params.uri}`);
     }
-    const repo = await detectRepoByCwd(process.cwd());
+    const repo = await findRepo(process.cwd());
     if (!repo) {
       return {
         contents: [
@@ -101,7 +107,7 @@ export const startMCPServer = async () => {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const repo = await detectRepoByCwd(process.cwd());
+    const repo = await findRepo(process.cwd());
     if (!repo) {
       return {
         content: [{ type: 'text', text: notIndexedMessage(process.cwd()) }],
@@ -147,14 +153,7 @@ export const startMCPServer = async () => {
           isError: true,
         };
       }
-      const meta = await loadMeta(repo.storagePath);
-      if (!meta) {
-        return {
-          content: [{ type: 'text', text: notIndexedMessage(process.cwd()) }],
-          isError: true,
-        };
-      }
-      const fullPath = path.join(meta.repoPath, String(filePath));
+      const fullPath = path.join(repo.repoPath, String(filePath));
       const content = await fs.readFile(fullPath, 'utf-8');
       return { content: [{ type: 'text', text: content }] };
     }
@@ -174,5 +173,3 @@ export const startMCPServer = async () => {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 };
-
-
