@@ -43,9 +43,8 @@ program
   .action(statusCommand);
 
 program
-  .command('clean [target]')
-  .description('Delete indexed repository(ies)')
-  .option('-a, --all', 'Delete all indexed repositories')
+  .command('clean')
+  .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .action(cleanCommand);
 

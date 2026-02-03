@@ -119,7 +119,7 @@ export const analyzeCommand = async (
   console.log(`  Storage: ${storagePath}`);
   console.log(`  Stats: ${stats.nodes} nodes, ${stats.edges} edges`);
   
-  if (aiContext.pointerFiles.length > 0) {
-    console.log(`  AI Context: ${aiContext.pointerFiles.join(', ')}`);
+  if (aiContext.files.length > 0) {
+    console.log(`  AI Context: ${aiContext.files.join(', ')}`);
   }
 };
