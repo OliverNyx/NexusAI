@@ -1,4 +1,4 @@
-import { SupportedLanguages } from '../../config/supported-languages';
+import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /**
  * Map file extension to SupportedLanguage enum

@@ -10,8 +10,8 @@
  * - All fields are consistently quoted for safety with code content
  */
 
-import { KnowledgeGraph, GraphNode, NodeLabel } from '../graph/types';
-import { NODE_TABLES, NodeTableName } from './schema';
+import { KnowledgeGraph, GraphNode, NodeLabel } from '../graph/types.js';
+import { NODE_TABLES, NodeTableName } from './schema.js';
 
 // ============================================================================
 // CSV ESCAPE UTILITIES
@@ -133,9 +133,14 @@ export interface CSVData {
 const generateFileCSV = (nodes: GraphNode[], fileContents: Map<string, string>): string => {
   const headers = ['id', 'name', 'filePath', 'content'];
   const rows: string[] = [headers.join(',')];
+  const seenIds = new Set<string>();
   
   for (const node of nodes) {
     if (node.label !== 'File') continue;
+    // Skip duplicates
+    if (seenIds.has(node.id)) continue;
+    seenIds.add(node.id);
+    
     const content = extractContent(node, fileContents);
     rows.push([
       escapeCSVField(node.id),

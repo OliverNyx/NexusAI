@@ -5,7 +5,7 @@
  * Generates semantic names, keywords, and descriptions using an LLM.
  */
 
-import { CommunityNode } from './community-processor';
+import { CommunityNode } from './community-processor.js';
 
 // ============================================================================
 // TYPES

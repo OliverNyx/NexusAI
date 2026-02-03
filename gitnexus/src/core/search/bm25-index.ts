@@ -6,6 +6,7 @@
  */
 
 import MiniSearch from 'minisearch';
+import fs from 'fs/promises';
 
 export interface BM25Document {
   id: string;       // File path
@@ -82,7 +83,8 @@ export const buildBM25Index = (fileContents: Map<string, string>): number => {
   searchIndex.addAll(documents);
   indexedDocCount = documents.length;
   
-  if (import.meta.env.DEV) {
+  const isDev = process.env.NODE_ENV !== 'production';
+  if (isDev) {
     console.log(`📚 BM25 index built: ${indexedDocCount} documents`);
   }
   
@@ -143,6 +145,46 @@ export const getBM25Stats = (): { documentCount: number; termCount: number } => 
 export const clearBM25Index = (): void => {
   searchIndex = null;
   indexedDocCount = 0;
+};
+
+/**
+ * Export the BM25 index to disk
+ */
+export const exportBM25Index = async (filePath: string): Promise<void> => {
+  if (!searchIndex) return;
+  const json = JSON.stringify(searchIndex.toJSON());
+  await fs.writeFile(filePath, json, 'utf-8');
+};
+
+/**
+ * Load a BM25 index from disk
+ */
+export const loadBM25Index = async (filePath: string): Promise<boolean> => {
+  try {
+    const json = await fs.readFile(filePath, 'utf-8');
+    const data = JSON.parse(json);
+    searchIndex = MiniSearch.loadJSON(data, {
+      fields: ['content', 'name'],
+      storeFields: ['id'],
+      tokenize: (text: string) => {
+        const tokens = text.toLowerCase().split(/[\s\-_./\\(){}[\]<>:;,!?'"]+/);
+        const expanded: string[] = [];
+        for (const token of tokens) {
+          if (token.length === 0) continue;
+          const camelParts = token.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(' ');
+          expanded.push(...camelParts);
+          if (camelParts.length > 1) {
+            expanded.push(token);
+          }
+        }
+        return expanded.filter(t => t.length > 1 && !STOP_WORDS.has(t));
+      },
+    });
+    indexedDocCount = searchIndex.documentCount;
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 /**

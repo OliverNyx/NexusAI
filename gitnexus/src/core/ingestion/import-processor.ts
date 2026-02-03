@@ -1,9 +1,12 @@
-import { KnowledgeGraph } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename } from './utils.js';
+
+const isDev = process.env.NODE_ENV !== 'production';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -141,14 +144,21 @@ export const processImports = async (
     
     if (!tree) {
       // Cache Miss: Re-parse (slower, but necessary if evicted)
-      tree = parser.parse(file.content);
+      // Use larger bufferSize for files > 32KB
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      } catch (parseError) {
+        // Skip files that can't be parsed
+        continue;
+      }
       wasReparsed = true;
     }
 
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryStr);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryStr);
       matches = query.matches(tree.rootNode);
       
       // Removed verbose Java import logging
@@ -163,7 +173,7 @@ export const processImports = async (
       console.log('AST has errors:', tree.rootNode?.hasError);
       console.groupEnd();
       
-      if (wasReparsed) tree.delete();
+      if (wasReparsed) (tree as any).delete?.();
       continue;
     }
 
@@ -174,7 +184,7 @@ export const processImports = async (
       if (captureMap['import']) {
         const sourceNode = captureMap['import.source'];
         if (!sourceNode) {
-          if (import.meta.env.DEV) {
+          if (isDev) {
             console.log(`⚠️ Import captured but no source node in ${file.path}`);
           }
           return;
@@ -224,11 +234,11 @@ export const processImports = async (
 
     // If re-parsed just for this, delete the tree to save memory
     if (wasReparsed) {
-      tree.delete();
+      (tree as any).delete?.();
     }
   }
   
-  if (import.meta.env.DEV) {
+  if (isDev) {
     console.log(`📊 Import processing complete: ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
   }
 };

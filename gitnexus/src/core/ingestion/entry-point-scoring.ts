@@ -10,7 +10,7 @@
  * This module is language-agnostic - language-specific patterns are defined per language.
  */
 
-import { detectFrameworkFromPath } from './framework-detection';
+import { detectFrameworkFromPath } from './framework-detection.js';
 
 // ============================================================================
 // NAME PATTERNS - All 9 supported languages

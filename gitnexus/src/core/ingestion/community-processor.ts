@@ -8,9 +8,11 @@
  * helping agents navigate the codebase by functional area rather than file structure.
  */
 
+// NOTE: graphology + louvain typings are a bit inconsistent across versions.
+// Keep these as `any` to avoid blocking the CLI build.
 import Graph from 'graphology';
 import louvain from 'graphology-communities-louvain';
-import { KnowledgeGraph, NodeLabel } from '../graph/types';
+import { KnowledgeGraph, NodeLabel } from '../graph/types.js';
 
 // ============================================================================
 // TYPES
@@ -94,7 +96,7 @@ export const processCommunities = async (
   onProgress?.(`Running Leiden algorithm on ${graph.order} nodes...`, 30);
 
   // Step 2: Run Leiden (via Louvain implementation with refinement)
-  const details = louvain.detailed(graph, {
+  const details = (louvain as any).detailed(graph, {
     resolution: 1.0,  // Default resolution, can be tuned
     randomWalk: true,
   });
@@ -141,9 +143,9 @@ export const processCommunities = async (
  * Build a graphology graph containing only symbol nodes and CALLS edges
  * This is what the Leiden algorithm will cluster
  */
-const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): Graph => {
+const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): any => {
   // Use undirected graph for Leiden - it looks at edge density, not direction
-  const graph = new Graph({ type: 'undirected', allowSelfLoops: false });
+  const graph = new (Graph as any)({ type: 'undirected', allowSelfLoops: false });
 
   // Symbol types that should be clustered
   const symbolTypes = new Set<NodeLabel>(['Function', 'Class', 'Method', 'Interface']);
@@ -189,7 +191,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): Graph => {
 const createCommunityNodes = (
   communities: Record<string, number>,
   communityCount: number,
-  graph: Graph,
+  graph: any,
   knowledgeGraph: KnowledgeGraph
 ): CommunityNode[] => {
   // Group node IDs by community
@@ -244,7 +246,7 @@ const createCommunityNodes = (
 const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
-  graph: Graph,
+  graph: any,
   commNum: number
 ): string => {
   // Collect folder names from file paths
@@ -325,7 +327,7 @@ const findCommonPrefix = (strings: string[]): string => {
  * Calculate cohesion score (0-1) based on internal edge density
  * Higher cohesion = more internal connections relative to size
  */
-const calculateCohesion = (memberIds: string[], graph: Graph): number => {
+const calculateCohesion = (memberIds: string[], graph: any): number => {
   if (memberIds.length <= 1) return 1.0;
 
   const memberSet = new Set(memberIds);

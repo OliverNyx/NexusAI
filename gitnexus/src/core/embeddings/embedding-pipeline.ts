@@ -9,8 +9,8 @@
  * 5. Create vector index for semantic search
  */
 
-import { initEmbedder, embedBatch, embedText, embeddingToArray, isEmbedderReady } from './embedder';
-import { generateBatchEmbeddingTexts, generateEmbeddingText } from './text-generator';
+import { initEmbedder, embedBatch, embedText, embeddingToArray, isEmbedderReady } from './embedder.js';
+import { generateBatchEmbeddingTexts, generateEmbeddingText } from './text-generator.js';
 import {
   type EmbeddingProgress,
   type EmbeddingConfig,
@@ -19,7 +19,9 @@ import {
   type ModelProgress,
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDABLE_LABELS,
-} from './types';
+} from './types.js';
+
+const isDev = process.env.NODE_ENV !== 'production';
 
 /**
  * Progress callback type
@@ -71,7 +73,7 @@ const queryEmbeddableNodes = async (
       }
     } catch (error) {
       // Table might not exist or be empty, continue
-      if (import.meta.env.DEV) {
+      if (isDev) {
         console.warn(`Query for ${label} nodes failed:`, error);
       }
     }
@@ -113,7 +115,7 @@ const createVectorIndex = async (
     await executeQuery(cypher);
   } catch (error) {
     // Index might already exist
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.warn('Vector index creation warning:', error);
     }
   }
@@ -159,7 +161,7 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 100,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('🔍 Querying embeddable nodes...');
     }
 
@@ -167,7 +169,7 @@ export const runEmbeddingPipeline = async (
     const nodes = await queryEmbeddableNodes(executeQuery);
     const totalNodes = nodes.length;
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log(`📊 Found ${totalNodes} embeddable nodes`);
     }
 
@@ -236,7 +238,7 @@ export const runEmbeddingPipeline = async (
       totalNodes,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('📇 Creating vector index...');
     }
 
@@ -250,13 +252,13 @@ export const runEmbeddingPipeline = async (
       totalNodes,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('✅ Embedding pipeline complete!');
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.error('❌ Embedding pipeline error:', error);
     }
 

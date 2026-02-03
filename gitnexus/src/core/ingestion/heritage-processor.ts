@@ -6,13 +6,14 @@
  * - IMPLEMENTS: Class implements an Interface (TS only)
  */
 
-import { KnowledgeGraph } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { SymbolTable } from './symbol-table';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import { SymbolTable } from './symbol-table.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename } from './utils.js';
 
 export const processHeritage = async (
   graph: KnowledgeGraph,
@@ -42,18 +43,25 @@ export const processHeritage = async (
     let wasReparsed = false;
 
     if (!tree) {
-      tree = parser.parse(file.content);
+      // Use larger bufferSize for files > 32KB
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      } catch (parseError) {
+        // Skip files that can't be parsed
+        continue;
+      }
       wasReparsed = true;
     }
 
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryStr);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Heritage query error for ${file.path}:`, queryError);
-      if (wasReparsed) tree.delete();
+      if (wasReparsed) (tree as any).delete?.();
       continue;
     }
 
@@ -148,7 +156,7 @@ export const processHeritage = async (
 
     // Cleanup
     if (wasReparsed) {
-      tree.delete();
+      (tree as any).delete?.();
     }
   }
 };

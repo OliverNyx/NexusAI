@@ -1,6 +1,6 @@
-import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types';
-import { CommunityDetectionResult } from '../core/ingestion/community-processor';
-import { ProcessDetectionResult } from '../core/ingestion/process-processor';
+import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types.js';
+import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
+import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 
 export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'processes' | 'enriching' | 'complete' | 'error';
 

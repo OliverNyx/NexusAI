@@ -10,9 +10,11 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../graph/types';
-import { CommunityMembership } from './community-processor';
-import { calculateEntryPointScore, isTestFile } from './entry-point-scoring';
+import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../graph/types.js';
+import { CommunityMembership } from './community-processor.js';
+import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
+
+const isDev = process.env.NODE_ENV !== 'production';
 
 // ============================================================================
 // CONFIGURATION
@@ -289,7 +291,7 @@ const findEntryPoints = (
   const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
   
   // DEBUG: Log top candidates with new scoring details
-  if (sorted.length > 0 && typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+  if (sorted.length > 0 && isDev) {
     console.log(`[Process] Top 10 entry point candidates (new scoring):`);
     sorted.slice(0, 10).forEach((c, i) => {
       const node = graph.nodes.find(n => n.id === c.id);

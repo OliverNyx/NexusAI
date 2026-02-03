@@ -1,10 +1,11 @@
-import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { SymbolTable } from './symbol-table';
-import { ASTCache } from './ast-cache';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { SymbolTable } from './symbol-table.js';
+import { ASTCache } from './ast-cache.js';
+import { getLanguageFromFilename } from './utils.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -134,7 +135,15 @@ export const processParsing = async (
     await loadLanguage(language, file.path);
     
     // 3. Parse the text content into an AST
-    const tree = parser.parse(file.content);
+    // Use larger bufferSize for files > 32KB (default limit)
+    let tree;
+    try {
+      tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+    } catch (parseError) {
+      // Skip files that can't be parsed (binary, encoding issues, etc.)
+      console.warn(`Skipping unparseable file: ${file.path}`);
+      continue;
+    }
     
     // Store in cache immediately (this might evict an old one)
     astCache.set(file.path, tree);
@@ -150,7 +159,8 @@ export const processParsing = async (
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryString);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryString);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);

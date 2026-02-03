@@ -1,11 +1,12 @@
-import { KnowledgeGraph } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { SymbolTable } from './symbol-table';
-import { ImportMap } from './import-processor';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import { SymbolTable } from './symbol-table.js';
+import { ImportMap } from './import-processor.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename } from './utils.js';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -156,18 +157,25 @@ export const processCalls = async (
 
     if (!tree) {
       // Cache Miss: Re-parse
-      tree = parser.parse(file.content);
+      // Use larger bufferSize for files > 32KB
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      } catch (parseError) {
+        // Skip files that can't be parsed
+        continue;
+      }
       wasReparsed = true;
     }
 
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryStr);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);
-      if (wasReparsed) tree.delete();
+      if (wasReparsed) (tree as any).delete?.();
       continue;
     }
 
@@ -218,7 +226,7 @@ export const processCalls = async (
 
     // Cleanup if re-parsed
     if (wasReparsed) {
-      tree.delete();
+      (tree as any).delete?.();
     }
   }
 };

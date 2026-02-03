@@ -8,8 +8,8 @@
  * production search systems.
  */
 
-import { searchBM25, isBM25Ready, type BM25SearchResult } from './bm25-index';
-import type { SemanticSearchResult } from '../embeddings/types';
+import { searchBM25, isBM25Ready, type BM25SearchResult } from './bm25-index.js';
+import type { SemanticSearchResult } from '../embeddings/types.js';
 
 /**
  * RRF constant - standard value used in the literature
@@ -142,6 +142,21 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
   });
   
   return `Found ${results.length} results:\n\n${formatted.join('\n\n')}`;
+};
+
+/**
+ * Execute BM25 + semantic search and merge with RRF.
+ * The semanticSearch function is injected to keep this module environment-agnostic.
+ */
+export const hybridSearch = async (
+  query: string,
+  limit: number,
+  executeQuery: (cypher: string) => Promise<any[]>,
+  semanticSearch: (executeQuery: (cypher: string) => Promise<any[]>, query: string, k?: number) => Promise<SemanticSearchResult[]>
+): Promise<HybridSearchResult[]> => {
+  const bm25Results = isBM25Ready() ? searchBM25(query, limit) : [];
+  const semanticResults = await semanticSearch(executeQuery, query, limit);
+  return mergeWithRRF(bm25Results, semanticResults, limit);
 };
 
 

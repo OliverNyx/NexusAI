@@ -5,8 +5,8 @@
  * Combines node metadata with code snippets for semantic matching.
  */
 
-import type { EmbeddableNode, EmbeddingConfig } from './types';
-import { DEFAULT_EMBEDDING_CONFIG } from './types';
+import type { EmbeddableNode, EmbeddingConfig } from './types.js';
+import { DEFAULT_EMBEDDING_CONFIG } from './types.js';
 
 /**
  * Extract the filename from a file path
