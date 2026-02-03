@@ -126,6 +126,13 @@ export const loadGraphToKuzu = async (
       // ignore
     }
   }
+  
+  // Remove empty csv directory
+  try {
+    await fs.rmdir(csvDir);
+  } catch {
+    // ignore if not empty or other error
+  }
 
   return { success: true, insertedRels, skippedRels };
 };
