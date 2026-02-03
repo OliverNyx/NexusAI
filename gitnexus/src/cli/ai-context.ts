@@ -8,6 +8,11 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+// ESM equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface RepoStats {
   files?: number;
@@ -157,6 +162,74 @@ async function upsertGitNexusSection(
 }
 
 /**
+ * Install GitNexus skills to .claude/skills/gitnexus/
+ * Works natively with Claude Code, Cursor, and GitHub Copilot
+ */
+async function installSkills(repoPath: string): Promise<string[]> {
+  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+  const installedSkills: string[] = [];
+
+  // Skill definitions bundled with the package
+  const skills = [
+    {
+      name: 'exploring',
+      description: 'Navigate unfamiliar code using GitNexus knowledge graph',
+    },
+    {
+      name: 'debugging',
+      description: 'Trace bugs through call chains using knowledge graph',
+    },
+    {
+      name: 'impact-analysis',
+      description: 'Analyze blast radius before making code changes',
+    },
+    {
+      name: 'refactoring',
+      description: 'Plan safe refactors using blast radius and dependency mapping',
+    },
+  ];
+
+  for (const skill of skills) {
+    const skillDir = path.join(skillsDir, skill.name);
+    const skillPath = path.join(skillDir, 'SKILL.md');
+
+    try {
+      // Create skill directory
+      await fs.mkdir(skillDir, { recursive: true });
+
+      // Try to read from package skills directory
+      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
+      let skillContent: string;
+
+      try {
+        skillContent = await fs.readFile(packageSkillPath, 'utf-8');
+      } catch {
+        // Fallback: generate minimal skill content
+        skillContent = `---
+name: gitnexus-${skill.name}
+description: ${skill.description}
+---
+
+# ${skill.name.charAt(0).toUpperCase() + skill.name.slice(1)}
+
+${skill.description}
+
+Use GitNexus tools to accomplish this task.
+`;
+      }
+
+      await fs.writeFile(skillPath, skillContent, 'utf-8');
+      installedSkills.push(skill.name);
+    } catch (err) {
+      // Skip on error, don't fail the whole process
+      console.warn(`Warning: Could not install skill ${skill.name}:`, err);
+    }
+  }
+
+  return installedSkills;
+}
+
+/**
  * Generate AI context files after indexing
  */
 export async function generateAIContextFiles(
@@ -178,5 +251,12 @@ export async function generateAIContextFiles(
   const claudeResult = await upsertGitNexusSection(claudePath, content);
   createdFiles.push(`CLAUDE.md (${claudeResult})`);
 
+  // Install skills to .claude/skills/gitnexus/
+  const installedSkills = await installSkills(repoPath);
+  if (installedSkills.length > 0) {
+    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  }
+
   return { files: createdFiles };
 }
+

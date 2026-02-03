@@ -9,7 +9,8 @@
     "gitnexus": "./dist/cli/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "scripts": {
     "build": "tsc",
