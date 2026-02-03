@@ -55,13 +55,6 @@ Most AI coding tools give the LLM raw data and hope it figures out relationships
 
 Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful—but they share a fundamental limitation: **they don't truly know your codebase structure**.
 
-| Tool | Context Strategy | The Gap |
-|------|------------------|---------|
-| **Cursor** | Files in tabs + embeddings | No call graph. Can't trace "what calls this?" |
-| **Claude Code** | File search + grep | Text-based. Misses semantic connections |
-| **Cline/Roo Code** | Repo map + tree-sitter | Static structure. No runtime dependencies tracked |
-| **Windsurf** | Cascade context | Limited dependency depth |
-
 **What happens:**
 1. AI edits `UserService.validate()` 
 2. Doesn't know 47 functions depend on its return type
