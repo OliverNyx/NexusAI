@@ -11,7 +11,7 @@ import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReuse
 import { buildBM25Index, exportBM25Index } from '../core/search/bm25-index.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo } from '../storage/git.js';
+import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 
 export interface AnalyzeOptions {
@@ -23,8 +23,21 @@ export const analyzeCommand = async (
   inputPath?: string,
   options?: AnalyzeOptions
 ) => {
-  const repoPath = path.resolve(inputPath || '.');
   const spinner = ora('Checking repository...').start();
+
+  // If path provided, use it directly. Otherwise, find git root from cwd.
+  let repoPath: string;
+  if (inputPath) {
+    repoPath = path.resolve(inputPath);
+  } else {
+    const gitRoot = getGitRoot(process.cwd());
+    if (!gitRoot) {
+      spinner.fail('Not inside a git repository');
+      process.exitCode = 1;
+      return;
+    }
+    repoPath = gitRoot;
+  }
 
   if (!isGitRepo(repoPath)) {
     spinner.fail('Not a git repository');

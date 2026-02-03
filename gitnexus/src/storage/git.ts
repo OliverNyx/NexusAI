@@ -25,5 +25,18 @@ export const getStatusPorcelain = (repoPath: string): string => {
   }
 };
 
+/**
+ * Find the git repository root from any path inside the repo
+ */
+export const getGitRoot = (fromPath: string): string | null => {
+  try {
+    return execSync('git rev-parse --show-toplevel', { cwd: fromPath })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+};
+
 
 
