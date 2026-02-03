@@ -1,9 +1,9 @@
 /**
  * AI Context Generator
  * 
- * Creates AI context files for various IDE integrations.
- * Uses .gitnexus/RULES.md as single source of truth,
- * with shadow pointer files for different IDEs.
+ * Creates AGENTS.md and CLAUDE.md with full inline GitNexus context.
+ * AGENTS.md is the standard read by Cursor, Windsurf, OpenCode, Cline, etc.
+ * CLAUDE.md is for Claude Code which only reads that file.
  */
 
 import fs from 'fs/promises';
@@ -17,45 +17,77 @@ interface RepoStats {
   processes?: number;
 }
 
+const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
+const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+
 /**
- * Generate the full GitNexus rules content
+ * Generate the full GitNexus context content
  */
-function generateRulesContent(projectName: string, stats: RepoStats): string {
-  return `# GitNexus MCP Integration
+function generateGitNexusContent(projectName: string, stats: RepoStats): string {
+  return `${GITNEXUS_START_MARKER}
+# GitNexus MCP
 
 This project is indexed by GitNexus, providing AI agents with deep code intelligence.
 
 ## Project: ${projectName}
 
-**Index Stats:**
-- Files: ${stats.files || 0}
-- Symbols: ${stats.nodes || 0}
-- Relationships: ${stats.edges || 0}
-- Communities: ${stats.communities || 0}
-- Processes: ${stats.processes || 0}
+| Metric | Count |
+|--------|-------|
+| Files | ${stats.files || 0} |
+| Symbols | ${stats.nodes || 0} |
+| Relationships | ${stats.edges || 0} |
+| Communities | ${stats.communities || 0} |
+| Processes | ${stats.processes || 0} |
 
-## Available MCP Tools
+## Quick Start
 
-When working with this codebase, use these GitNexus tools:
+1. **Call \`context\` first** — Understand the codebase structure
+2. **Use \`search\` for discovery** — Semantic search with graph context
+3. **Use \`impact\` before refactoring** — Understand blast radius
+
+## Available Tools
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| \`context\` | Codebase overview | Start of conversation |
+| \`search\` | Semantic + keyword search | Finding code |
+| \`overview\` | List clusters & processes | Understanding architecture |
+| \`explore\` | Deep dive on symbol/cluster/process | Detailed investigation |
+| \`impact\` | Blast radius analysis | Before making changes |
+| \`cypher\` | Raw graph queries | Complex analysis |
+
+## Tool Reference
 
 ### \`context\`
-Get codebase overview and stats. **Call this first** to understand the project structure.
+Get codebase overview and stats. **Call this first.**
 
 ### \`search\`
-Hybrid semantic + keyword search across the codebase.
-- Returns symbols with their graph connections
-- Groups results by process
+\`\`\`
+search(query: "authentication middleware", depth: "full")
+\`\`\`
+- \`depth: "definitions"\` — Symbol signatures only (default)
+- \`depth: "full"\` — Symbols + all relationships
 
+### \`explore\`
 \`\`\`
-Example: search for "authentication middleware"
+explore(name: "validateUser", type: "symbol")
+explore(name: "Authentication", type: "cluster")
+explore(name: "LoginFlow", type: "process")
 \`\`\`
+
+### \`impact\`
+\`\`\`
+impact(target: "UserService", direction: "upstream", minConfidence: 0.8)
+\`\`\`
+- \`upstream\` — What depends on this (will break if changed)
+- \`downstream\` — What this depends on
 
 ### \`cypher\`
-Execute Cypher queries on the code knowledge graph.
+Execute Cypher queries on the knowledge graph.
 
 **Schema:**
-- Nodes: \`File\`, \`Function\`, \`Class\`, \`Interface\`, \`Method\`, \`Community\`, \`Process\`
-- Relations: \`CALLS\`, \`IMPORTS\`, \`EXTENDS\`, \`IMPLEMENTS\`, \`DEFINES\`, \`MEMBER_OF\`, \`STEP_IN_PROCESS\`
+- Nodes: \`File\`, \`Folder\`, \`Function\`, \`Class\`, \`Interface\`, \`Method\`, \`Community\`, \`Process\`
+- Edges: \`CALLS\`, \`IMPORTS\`, \`EXTENDS\`, \`IMPLEMENTS\`, \`DEFINES\`, \`MEMBER_OF\`, \`STEP_IN_PROCESS\`
 
 \`\`\`cypher
 // Find all callers of a function
@@ -63,46 +95,15 @@ MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunction"}
 RETURN caller.name, caller.filePath
 \`\`\`
 
-### \`overview\`
-List all communities (functional clusters) and processes (execution flows).
+## Key Concepts
 
-### \`explore\`
-Deep dive on a specific symbol, cluster, or process.
-- \`type: "symbol"\` - Get callers, callees, community membership
-- \`type: "cluster"\` - Get all members of a functional cluster
-- \`type: "process"\` - Get step-by-step execution trace
+| Concept | Description |
+|---------|-------------|
+| **Community** | Functional cluster detected by Leiden algorithm |
+| **Process** | Execution flow from entry point to terminal |
+| **Confidence** | Relationship trust score (1.0 = certain, <0.8 = fuzzy) |
 
-### \`impact\`
-Analyze change impact before modifying code.
-- \`direction: "upstream"\` - What depends on this symbol (will break if changed)
-- \`direction: "downstream"\` - What this symbol depends on
-
-## Best Practices
-
-1. **Always call \`context\` first** when starting a new conversation
-2. **Use \`search\` for discovery** - semantic search understands intent
-3. **Use \`impact\` before refactoring** - understand blast radius
-4. **Use \`explore\` for deep dives** - understand symbol context
-5. **Use \`cypher\` for complex queries** - full graph power
-
-## Graph Concepts
-
-- **Community**: Functional cluster detected by Leiden algorithm (e.g., "Auth", "Database", "API")
-- **Process**: Execution flow from entry point to terminal (e.g., "HandleRequest → ValidateUser → SaveToDb")
-- **Confidence**: Relationship confidence score (1.0 = certain, <0.8 = fuzzy match)
-`;
-}
-
-/**
- * Generate pointer content for shadow files
- */
-function generatePointerContent(): string {
-  return `# AI Agent Rules
-
-Follow .gitnexus/RULES.md for all project context and coding guidelines.
-
-This project uses GitNexus MCP for code intelligence. See .gitnexus/RULES.md for available tools and best practices.
-`;
+${GITNEXUS_END_MARKER}`;
 }
 
 /**
@@ -118,32 +119,41 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
- * Create or append to a file, respecting existing content
+ * Create or update GitNexus section in a file
+ * - If file doesn't exist: create with GitNexus content
+ * - If file exists without GitNexus section: append
+ * - If file exists with GitNexus section: replace that section
  */
-async function createOrAppendFile(
-  filePath: string, 
-  content: string, 
-  appendMarker: string
-): Promise<'created' | 'appended' | 'exists'> {
+async function upsertGitNexusSection(
+  filePath: string,
+  content: string
+): Promise<'created' | 'updated' | 'appended'> {
   const exists = await fileExists(filePath);
-  
-  if (exists) {
-    const existingContent = await fs.readFile(filePath, 'utf-8');
-    
-    // Check if GitNexus content already present
-    if (existingContent.includes(appendMarker)) {
-      return 'exists';
-    }
-    
-    // Append GitNexus content
-    const newContent = existingContent.trim() + '\n\n' + content;
-    await fs.writeFile(filePath, newContent, 'utf-8');
-    return 'appended';
+
+  if (!exists) {
+    await fs.writeFile(filePath, content, 'utf-8');
+    return 'created';
   }
-  
-  // Create new file
-  await fs.writeFile(filePath, content, 'utf-8');
-  return 'created';
+
+  const existingContent = await fs.readFile(filePath, 'utf-8');
+
+  // Check if GitNexus section already exists
+  const startIdx = existingContent.indexOf(GITNEXUS_START_MARKER);
+  const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
+
+  if (startIdx !== -1 && endIdx !== -1) {
+    // Replace existing section
+    const before = existingContent.substring(0, startIdx);
+    const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
+    const newContent = before + content + after;
+    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
+    return 'updated';
+  }
+
+  // Append new section
+  const newContent = existingContent.trim() + '\n\n' + content + '\n';
+  await fs.writeFile(filePath, newContent, 'utf-8');
+  return 'appended';
 }
 
 /**
@@ -151,35 +161,22 @@ async function createOrAppendFile(
  */
 export async function generateAIContextFiles(
   repoPath: string,
-  storagePath: string,
+  _storagePath: string,
   projectName: string,
   stats: RepoStats
-): Promise<{ rulesPath: string; pointerFiles: string[] }> {
-  const rulesPath = path.join(storagePath, 'RULES.md');
-  const pointerFiles: string[] = [];
-  
-  // 1. Create main rules file in .gitnexus/
-  const rulesContent = generateRulesContent(projectName, stats);
-  await fs.writeFile(rulesPath, rulesContent, 'utf-8');
-  
-  // 2. Create pointer files in repo root
-  const pointerContent = generatePointerContent();
-  const appendMarker = '.gitnexus/RULES.md';
-  
-  const pointerConfigs = [
-    { file: 'AGENTS.md', name: 'AGENTS.md' },
-    { file: '.cursorrules', name: '.cursorrules' },
-    { file: '.windsurfrules', name: '.windsurfrules' },
-  ];
-  
-  for (const config of pointerConfigs) {
-    const filePath = path.join(repoPath, config.file);
-    const result = await createOrAppendFile(filePath, pointerContent, appendMarker);
-    
-    if (result === 'created' || result === 'appended') {
-      pointerFiles.push(config.name);
-    }
-  }
-  
-  return { rulesPath, pointerFiles };
+): Promise<{ files: string[] }> {
+  const content = generateGitNexusContent(projectName, stats);
+  const createdFiles: string[] = [];
+
+  // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
+  const agentsPath = path.join(repoPath, 'AGENTS.md');
+  const agentsResult = await upsertGitNexusSection(agentsPath, content);
+  createdFiles.push(`AGENTS.md (${agentsResult})`);
+
+  // Create CLAUDE.md (for Claude Code)
+  const claudePath = path.join(repoPath, 'CLAUDE.md');
+  const claudeResult = await upsertGitNexusSection(claudePath, content);
+  createdFiles.push(`CLAUDE.md (${claudeResult})`);
+
+  return { files: createdFiles };
 }
