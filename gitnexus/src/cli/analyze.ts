@@ -12,6 +12,7 @@ import { buildBM25Index, exportBM25Index } from '../core/search/bm25-index.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo } from '../storage/git.js';
+import { generateAIContextFiles } from './ai-context.js';
 
 export interface AnalyzeOptions {
   force?: boolean;
@@ -87,6 +88,16 @@ export const analyzeCommand = async (
   // Add .gitnexus to .gitignore
   await addToGitignore(repoPath);
   
+  // Generate AI context files
+  const projectName = path.basename(repoPath);
+  const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
+    files: pipelineResult.fileContents.size,
+    nodes: stats.nodes,
+    edges: stats.edges,
+    communities: pipelineResult.communityResult?.stats.totalCommunities,
+    processes: pipelineResult.processResult?.stats.totalProcesses,
+  });
+  
   // Close database
   await closeKuzu();
 
@@ -94,4 +105,8 @@ export const analyzeCommand = async (
   console.log(`  Path: ${repoPath}`);
   console.log(`  Storage: ${storagePath}`);
   console.log(`  Stats: ${stats.nodes} nodes, ${stats.edges} edges`);
+  
+  if (aiContext.pointerFiles.length > 0) {
+    console.log(`  AI Context: ${aiContext.pointerFiles.join(', ')}`);
+  }
 };
