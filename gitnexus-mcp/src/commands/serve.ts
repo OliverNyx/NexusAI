@@ -1,45 +1,102 @@
 /**
  * Serve Command
  * 
- * Starts the MCP server with hybrid mode:
- * 1. First tries local .gitnexus/ index (standalone mode)
- * 2. Falls back to WebSocket bridge if browser is running
+ * Starts the MCP server in standalone mode using local .gitnexus/ index.
+ * 
+ * Auto-detects repository by trying (in order):
+ * 1. GITNEXUS_CWD env var (explicit override)
+ * 2. process.cwd() (IDE working directory)
+ * 3. VSCODE_WORKSPACE_FOLDER env var
  */
 
 import { startMCPServer } from '../mcp/server.js';
-import { WebSocketBridge } from '../bridge/websocket-server.js';
-import { LocalBackend } from '../local/local-backend.js';
+import { LocalBackend, findRepo } from '../local/local-backend.js';
+import path from 'path';
+import fs from 'fs/promises';
 
 interface ServeOptions {
   port: string;
 }
 
-export async function serveCommand(options: ServeOptions) {
-  const port = parseInt(options.port, 10);
-  // Use GITNEXUS_CWD env var if set, otherwise use process.cwd()
-  const cwd = process.env.GITNEXUS_CWD || process.cwd();
+/**
+ * Get candidate paths to search for .gitnexus/ folder
+ */
+function getCandidatePaths(): string[] {
+  const candidates: string[] = [];
   
-  // Try local backend first (standalone mode)
-  const local = new LocalBackend();
-  const hasLocalIndex = await local.init(cwd);
-  
-  if (hasLocalIndex) {
-    console.error(`GitNexus: Using local index at ${local.storagePath}`);
-    await startMCPServer(local);
-    return;
+  // 1. Explicit override (highest priority)
+  if (process.env.GITNEXUS_CWD) {
+    candidates.push(process.env.GITNEXUS_CWD);
   }
   
-  // No local index - fall back to browser bridge
-  console.error('GitNexus: No local .gitnexus/ found, starting browser bridge...');
+  // 2. Current working directory
+  candidates.push(process.cwd());
   
-  const bridge = new WebSocketBridge(port);
-  const started = await bridge.start();
+  // 3. VS Code workspace folders (if available via env)
+  if (process.env.VSCODE_WORKSPACE_FOLDER) {
+    candidates.push(process.env.VSCODE_WORKSPACE_FOLDER);
+  }
+  
+  // Deduplicate while preserving order
+  return [...new Set(candidates.map(p => path.resolve(p)))];
+}
 
-  if (!started) {
-    console.error(`Failed to start GitNexus browser bridge on port ${port}.`);
-    console.error('Run "gitnexus analyze" to index this repository for standalone mode.');
-    process.exit(1);
+/**
+ * Find a git repository root by walking up the directory tree
+ */
+async function findGitRoot(startPath: string): Promise<string | null> {
+  let current = path.resolve(startPath);
+  const root = path.parse(current).root;
+  
+  while (current !== root) {
+    try {
+      const gitPath = path.join(current, '.git');
+      const stat = await fs.stat(gitPath);
+      if (stat.isDirectory()) return current;
+    } catch {}
+    current = path.dirname(current);
+  }
+  return null;
+}
+
+export async function serveCommand(_options: ServeOptions) {
+  // Try multiple candidate paths to find .gitnexus/
+  const candidates = getCandidatePaths();
+  
+  for (const candidate of candidates) {
+    const repo = await findRepo(candidate);
+    if (repo) {
+      const local = new LocalBackend();
+      await local.init(candidate);
+      console.error(`GitNexus: Found index at ${repo.storagePath}`);
+      await startMCPServer(local);
+      return;
+    }
   }
   
-  await startMCPServer(bridge);
+  // No index found - give helpful error message
+  for (const candidate of candidates) {
+    const gitRoot = await findGitRoot(candidate);
+    if (gitRoot) {
+      console.error('');
+      console.error('╔════════════════════════════════════════════════════╗');
+      console.error('║          GitNexus: Repository Not Indexed          ║');
+      console.error('╠════════════════════════════════════════════════════╣');
+      console.error(`║ Found git repo: ${gitRoot.slice(0, 35).padEnd(35)} ║`);
+      console.error('║                                                    ║');
+      console.error('║ To enable AI code understanding, run:              ║');
+      console.error('║                                                    ║');
+      console.error('║   npx gitnexus-cli analyze                         ║');
+      console.error('║                                                    ║');
+      console.error('║ Then restart your IDE.                             ║');
+      console.error('╚════════════════════════════════════════════════════╝');
+      console.error('');
+      process.exit(1);
+    }
+  }
+  
+  // No git repo found
+  console.error('GitNexus: No git repository found.');
+  console.error(`Searched: ${candidates.join(', ')}`);
+  process.exit(1);
 }

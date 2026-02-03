@@ -30,6 +30,7 @@
         "prepublishOnly": "npm run build"
     },
     "dependencies": {
+        "@huggingface/transformers": "^3.5.1",
         "@modelcontextprotocol/sdk": "^1.0.0",
         "kuzu": "^0.11.0",
         "minisearch": "^7.1.0",

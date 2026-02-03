@@ -9,6 +9,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { initKuzu, executeQuery, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
 import { loadBM25Index, searchBM25, isBM25Ready } from '../core/bm25-index.js';
+import { embedQuery, getEmbeddingDims, disposeEmbedder } from '../core/embedder.js';
 
 export interface RepoMeta {
   repoPath: string;
@@ -46,7 +47,18 @@ function getStoragePaths(repoPath: string) {
 
 async function loadMeta(storagePath: string): Promise<RepoMeta | null> {
   try {
+    // Verify both meta.json and kuzu exist for a valid index
     const metaPath = path.join(storagePath, 'meta.json');
+    const kuzuPath = path.join(storagePath, 'kuzu');
+    
+    // Check kuzu exists (can be file or directory depending on how it was saved)
+    try {
+      await fs.stat(kuzuPath);
+    } catch {
+      return null; // kuzu doesn't exist
+    }
+    
+    // Load and parse meta.json
     const raw = await fs.readFile(metaPath, 'utf-8');
     return JSON.parse(raw) as RepoMeta;
   } catch {
@@ -205,88 +217,204 @@ export class LocalBackend {
     ].join('\n');
   }
 
-  private async search(params: { query: string; limit?: number; depth?: string }): Promise<any> {
+  private async search(params: { query: string; limit?: number; depth?: string; groupByProcess?: boolean }): Promise<any> {
     await this.ensureInitialized();
     
     const limit = params.limit || 10;
     const query = params.query;
     const depth = params.depth || 'definitions';
     
-    // BM25 keyword search
-    const bm25Results = isBM25Ready() ? searchBM25(query, limit * 2) : [];
+    // Run BM25 and semantic search in parallel
+    const [bm25Results, semanticResults] = await Promise.all([
+      this.bm25Search(query, limit * 2),
+      this.semanticSearch(query, limit * 2),
+    ]);
     
-    if (bm25Results.length === 0) {
-      return { message: 'No results found', query, bm25Ready: isBM25Ready() };
+    // Merge and deduplicate results using reciprocal rank fusion
+    const scoreMap = new Map<string, { score: number; source: string; data: any }>();
+    
+    // BM25 results
+    for (let i = 0; i < bm25Results.length; i++) {
+      const result = bm25Results[i];
+      const key = result.filePath;
+      const rrfScore = 1 / (60 + i); // RRF formula with k=60
+      const existing = scoreMap.get(key);
+      if (existing) {
+        existing.score += rrfScore;
+        existing.source = 'hybrid';
+      } else {
+        scoreMap.set(key, { score: rrfScore, source: 'bm25', data: result });
+      }
     }
     
-    // Get node details from kuzu for top results
+    // Semantic results
+    for (let i = 0; i < semanticResults.length; i++) {
+      const result = semanticResults[i];
+      const key = result.filePath;
+      const rrfScore = 1 / (60 + i);
+      const existing = scoreMap.get(key);
+      if (existing) {
+        existing.score += rrfScore;
+        existing.source = 'hybrid';
+      } else {
+        scoreMap.set(key, { score: rrfScore, source: 'semantic', data: result });
+      }
+    }
+    
+    // Sort by fused score and take top results
+    const merged = Array.from(scoreMap.entries())
+      .sort((a, b) => b[1].score - a[1].score)
+      .slice(0, limit);
+    
+    // Enrich with graph data
     const results: any[] = [];
     
-    for (const bm25Result of bm25Results.slice(0, limit)) {
+    for (const [_, item] of merged) {
+      const result = item.data;
+      result.searchSource = item.source;
+      result.fusedScore = item.score;
+      
+      // Add relationships if depth is 'full' and we have a node ID
+      if (depth === 'full' && result.nodeId) {
+        try {
+          const relQuery = `
+            MATCH (n {id: '${result.nodeId.replace(/'/g, "''")}'})-[r:CodeRelation]->(m)
+            RETURN r.type AS type, m.name AS targetName, m.filePath AS targetPath
+            LIMIT 5
+          `;
+          const rels = await executeQuery(relQuery);
+          result.connections = rels.map((rel: any) => ({
+            type: rel.type || rel[0],
+            name: rel.targetName || rel[1],
+            path: rel.targetPath || rel[2],
+          }));
+        } catch {
+          result.connections = [];
+        }
+      }
+      
+      results.push(result);
+    }
+    
+    return results;
+  }
+
+  /**
+   * BM25 keyword search helper
+   */
+  private async bm25Search(query: string, limit: number): Promise<any[]> {
+    if (!isBM25Ready()) return [];
+    
+    const bm25Results = searchBM25(query, limit);
+    const results: any[] = [];
+    
+    for (const bm25Result of bm25Results) {
+      const fileName = bm25Result.filePath.split('/').pop() || bm25Result.filePath;
       try {
-        // Use CONTAINS to match file paths (handles relative vs full paths)
-        const fileName = bm25Result.filePath.split('/').pop() || bm25Result.filePath;
         const symbolQuery = `
           MATCH (n) 
           WHERE n.filePath CONTAINS '${fileName.replace(/'/g, "''")}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-          LIMIT 5
+          LIMIT 3
         `;
         const symbols = await executeQuery(symbolQuery);
         
         if (symbols.length > 0) {
           for (const sym of symbols) {
-            const result: any = {
+            results.push({
+              nodeId: sym.id || sym[0],
               name: sym.name || sym[1],
               type: sym.type || sym[2],
               filePath: sym.filePath || sym[3],
               startLine: sym.startLine || sym[4],
               endLine: sym.endLine || sym[5],
-              score: bm25Result.score,
-            };
-            
-            // Add relationships if depth is 'full'
-            if (depth === 'full') {
-              const relQuery = `
-                MATCH (n {id: '${(sym.id || sym[0]).replace(/'/g, "''")}' })-[r:CodeRelation]->(m)
-                RETURN r.type AS type, m.name AS targetName, m.filePath AS targetPath
-                LIMIT 5
-              `;
-              try {
-                const rels = await executeQuery(relQuery);
-                result.connections = rels.map((rel: any) => ({
-                  type: rel.type || rel[0],
-                  name: rel.targetName || rel[1],
-                  path: rel.targetPath || rel[2],
-                }));
-              } catch {
-                result.connections = [];
-              }
-            }
-            
-            results.push(result);
+              bm25Score: bm25Result.score,
+            });
           }
         } else {
-          // No symbols found in kuzu, return file info from BM25
           results.push({
             name: fileName,
             type: 'File',
             filePath: bm25Result.filePath,
-            score: bm25Result.score,
+            bm25Score: bm25Result.score,
           });
         }
       } catch {
-        // On kuzu error, still return BM25 result
         results.push({
-          name: bm25Result.filePath.split('/').pop(),
+          name: fileName,
           type: 'File',
           filePath: bm25Result.filePath,
-          score: bm25Result.score,
+          bm25Score: bm25Result.score,
         });
       }
     }
     
-    return results.slice(0, limit);
+    return results;
+  }
+
+  /**
+   * Semantic vector search helper
+   */
+  private async semanticSearch(query: string, limit: number): Promise<any[]> {
+    try {
+      // Embed the query
+      const queryVec = await embedQuery(query);
+      const dims = getEmbeddingDims();
+      const queryVecStr = `[${queryVec.join(',')}]`;
+      
+      // Query vector index
+      const vectorQuery = `
+        CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
+          CAST(${queryVecStr} AS FLOAT[${dims}]), ${limit})
+        YIELD node AS emb, distance
+        WITH emb, distance
+        WHERE distance < 0.6
+        RETURN emb.nodeId AS nodeId, distance
+        ORDER BY distance
+      `;
+      
+      const embResults = await executeQuery(vectorQuery);
+      
+      if (embResults.length === 0) return [];
+      
+      // Get metadata for each result
+      const results: any[] = [];
+      
+      for (const embRow of embResults) {
+        const nodeId = embRow.nodeId ?? embRow[0];
+        const distance = embRow.distance ?? embRow[1];
+        
+        // Extract label from node ID
+        const labelEndIdx = nodeId.indexOf(':');
+        const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
+        
+        try {
+          const nodeQuery = label === 'File'
+            ? `MATCH (n:File {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath`
+            : `MATCH (n:${label} {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+          
+          const nodeRows = await executeQuery(nodeQuery);
+          if (nodeRows.length > 0) {
+            const nodeRow = nodeRows[0];
+            results.push({
+              nodeId,
+              name: nodeRow.name ?? nodeRow[0] ?? '',
+              type: label,
+              filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
+              distance,
+              startLine: label !== 'File' ? (nodeRow.startLine ?? nodeRow[2]) : undefined,
+              endLine: label !== 'File' ? (nodeRow.endLine ?? nodeRow[3]) : undefined,
+            });
+          }
+        } catch {}
+      }
+      
+      return results;
+    } catch (err: any) {
+      // Semantic search unavailable (no embeddings or model not loaded)
+      console.error('GitNexus: Semantic search unavailable -', err.message);
+      return [];
+    }
   }
 
   private async cypher(params: { query: string }): Promise<any> {
@@ -580,8 +708,9 @@ export class LocalBackend {
     };
   }
 
-  disconnect(): void {
+  async disconnect(): Promise<void> {
     closeKuzu();
+    await disposeEmbedder();
     this.repo = null;
     this._context = null;
     this.initialized = false;

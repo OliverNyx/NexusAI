@@ -2,12 +2,10 @@
  * MCP Server
  * 
  * Model Context Protocol server that runs on stdio.
- * External AI tools (Cursor, Claude Code) spawn this process and
+ * External AI tools (Cursor, Claude) spawn this process and
  * communicate via stdin/stdout using the MCP protocol.
  * 
- * Exposes:
- * - Tools: search, cypher, blastRadius, highlight
- * - Resources: codebase context (stats, hotspots, folder tree)
+ * Tools: context, search, cypher, overview, explore, impact, analyze
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -19,93 +17,50 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import type { CodebaseContext } from '../bridge/websocket-server.js';
-
-// Interface for anything that can call tools (DaemonClient or WebSocketBridge)
-interface ToolCaller {
-  callTool(method: string, params: any): Promise<any>;
-  disconnect?(): void;
-  context?: CodebaseContext | null;
-  onContextChange?: (listener: (context: CodebaseContext | null) => void) => () => void;
-}
+import type { LocalBackend, CodebaseContext } from '../local/local-backend.js';
 
 /**
  * Format context as markdown for the resource
  */
 function formatContextAsMarkdown(context: CodebaseContext): string {
-  const { projectName, stats, hotspots, folderTree } = context;
+  const { projectName, stats } = context;
   
   const lines: string[] = [];
   
   lines.push(`# GitNexus: ${projectName}`);
   lines.push('');
-  lines.push('This codebase is currently loaded in GitNexus. Use the tools below to explore it.');
+  lines.push('## Stats');
+  lines.push(`- Files: ${stats.fileCount}`);
+  lines.push(`- Functions: ${stats.functionCount}`);
+  if (stats.communityCount > 0) lines.push(`- Communities: ${stats.communityCount}`);
+  if (stats.processCount > 0) lines.push(`- Processes: ${stats.processCount}`);
   lines.push('');
   
-  // Stats
-  lines.push('## 📊 Statistics');
-  lines.push(`- **Files**: ${stats.fileCount}`);
-  lines.push(`- **Functions**: ${stats.functionCount}`);
-  if (stats.classCount > 0) lines.push(`- **Classes**: ${stats.classCount}`);
-  if (stats.interfaceCount > 0) lines.push(`- **Interfaces**: ${stats.interfaceCount}`);
-  if (stats.methodCount > 0) lines.push(`- **Methods**: ${stats.methodCount}`);
+  lines.push('## Available Tools');
+  lines.push('');
+  lines.push('- **context**: Codebase overview and stats');
+  lines.push('- **search**: Hybrid semantic + keyword search');
+  lines.push('- **cypher**: Execute Cypher queries on graph');
+  lines.push('- **overview**: List communities and processes');
+  lines.push('- **explore**: Deep dive on symbol/cluster/process');
+  lines.push('- **impact**: Change impact analysis');
+  lines.push('- **analyze**: Index/re-index repository');
   lines.push('');
   
-  // Hotspots
-  if (hotspots.length > 0) {
-    lines.push('## 🔥 Hotspots (Most Connected Nodes)');
-    lines.push('');
-    hotspots.forEach(h => {
-      lines.push(`- \`${h.name}\` (${h.type}) — ${h.connections} connections — ${h.filePath}`);
-    });
-    lines.push('');
-  }
-  
-  // Folder tree
-  if (folderTree) {
-    lines.push('## 📁 Project Structure');
-    lines.push('```');
-    lines.push(projectName + '/');
-    lines.push(folderTree);
-    lines.push('```');
-    lines.push('');
-  }
-  
-  // Usage hints
-  lines.push('## 🛠️ Available Tools');
+  lines.push('## Graph Schema');
   lines.push('');
-  lines.push('- **search**: Semantic + keyword search across codebase');
-  lines.push('- **cypher**: Execute Cypher queries on knowledge graph');
-  lines.push('- **grep**: Regex pattern search in files');
-  lines.push('- **read**: Read file contents');
-  lines.push('- **explore**: Deep dive on symbol, cluster, or process');
-  lines.push('- **overview**: Codebase map (all clusters + processes)');
-  lines.push('- **impact**: Analyze change impact (upstream/downstream)');
-  lines.push('- **highlight**: Visualize nodes in graph');
+  lines.push('**Nodes**: File, Function, Class, Interface, Method, Community, Process');
   lines.push('');
-  lines.push('## 📝 Graph Schema');
-  lines.push('');
-  lines.push('**Node Types**: File, Folder, Function, Class, Interface, Method, Community, Process');
-  lines.push('');
-  lines.push('**Relation**: `CodeRelation` with `type` property:');
-  lines.push('- CALLS, IMPORTS, EXTENDS, IMPLEMENTS, CONTAINS, DEFINES');
-  lines.push('- MEMBER_OF (symbol → community), STEP_IN_PROCESS (symbol → process)');
-  lines.push('');
-  lines.push('**Example Cypher Queries**:');
-  lines.push('```cypher');
-  lines.push('MATCH (f:Function) RETURN f.name LIMIT 10');
-  lines.push("MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f.name, g.name");
-  lines.push("MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community) RETURN c.label, count(s)");
-  lines.push('```');
+  lines.push('**Relations**: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS');
   
   return lines.join('\n');
 }
 
-export async function startMCPServer(client: ToolCaller): Promise<void> {
+export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = new Server(
     {
       name: 'gitnexus',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     {
       capabilities: {
@@ -117,7 +72,7 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const context = client.context;
+    const context = backend.context;
     
     if (!context) {
       return { resources: [] };
@@ -128,7 +83,7 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
         {
           uri: 'gitnexus://codebase/context',
           name: `GitNexus: ${context.projectName}`,
-          description: `Codebase context for ${context.projectName} (${context.stats.fileCount} files, ${context.stats.functionCount} functions)`,
+          description: `Codebase context for ${context.projectName} (${context.stats.fileCount} files)`,
           mimeType: 'text/markdown',
         },
       ],
@@ -140,7 +95,7 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
     const { uri } = request.params;
     
     if (uri === 'gitnexus://codebase/context') {
-      const context = client.context;
+      const context = backend.context;
       
       if (!context) {
         return {
@@ -148,7 +103,7 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
             {
               uri,
               mimeType: 'text/plain',
-              text: 'No codebase loaded. Open GitNexus in your browser and load a repository.',
+              text: 'No codebase loaded.',
             },
           ],
         };
@@ -182,8 +137,7 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
     const { name, arguments: args } = request.params;
 
     try {
-      // Forward the tool call to the browser via daemon
-      const result = await client.callTool(name, args);
+      const result = await backend.callTool(name, args);
 
       return {
         content: [
@@ -213,13 +167,13 @@ export async function startMCPServer(client: ToolCaller): Promise<void> {
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
-    client.disconnect?.();
+    await backend.disconnect();
     await server.close();
     process.exit(0);
   });
 
   process.on('SIGTERM', async () => {
-    client.disconnect?.();
+    await backend.disconnect();
     await server.close();
     process.exit(0);
   });
