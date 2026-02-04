@@ -6,6 +6,7 @@
  * communicate via stdin/stdout using the MCP protocol.
  * 
  * Tools: context, search, cypher, overview, explore, impact, analyze
+ * Resources: context, clusters, processes, schema, cluster/{name}, process/{name}
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -15,46 +16,11 @@ import {
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ListResourceTemplatesRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import type { LocalBackend, CodebaseContext } from './local/local-backend.js';
-
-/**
- * Format context as markdown for the resource
- */
-function formatContextAsMarkdown(context: CodebaseContext): string {
-  const { projectName, stats } = context;
-  
-  const lines: string[] = [];
-  
-  lines.push(`# GitNexus: ${projectName}`);
-  lines.push('');
-  lines.push('## Stats');
-  lines.push(`- Files: ${stats.fileCount}`);
-  lines.push(`- Functions: ${stats.functionCount}`);
-  if (stats.communityCount > 0) lines.push(`- Communities: ${stats.communityCount}`);
-  if (stats.processCount > 0) lines.push(`- Processes: ${stats.processCount}`);
-  lines.push('');
-  
-  lines.push('## Available Tools');
-  lines.push('');
-  lines.push('- **context**: Codebase overview and stats');
-  lines.push('- **search**: Hybrid semantic + keyword search');
-  lines.push('- **cypher**: Execute Cypher queries on graph');
-  lines.push('- **overview**: List communities and processes');
-  lines.push('- **explore**: Deep dive on symbol/cluster/process');
-  lines.push('- **impact**: Change impact analysis');
-  lines.push('- **analyze**: Index/re-index repository');
-  lines.push('');
-  
-  lines.push('## Graph Schema');
-  lines.push('');
-  lines.push('**Nodes**: File, Function, Class, Interface, Method, Community, Process');
-  lines.push('');
-  lines.push('**Relations**: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS');
-  
-  return lines.join('\n');
-}
+import type { LocalBackend } from './local/local-backend.js';
+import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 
 export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = new Server(
@@ -78,15 +44,27 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
       return { resources: [] };
     }
     
+    const resources = getResourceDefinitions(context.projectName);
     return {
-      resources: [
-        {
-          uri: 'gitnexus://codebase/context',
-          name: `GitNexus: ${context.projectName}`,
-          description: `Codebase context for ${context.projectName} (${context.stats.fileCount} files)`,
-          mimeType: 'text/markdown',
-        },
-      ],
+      resources: resources.map(r => ({
+        uri: r.uri,
+        name: r.name,
+        description: r.description,
+        mimeType: r.mimeType,
+      })),
+    };
+  });
+
+  // Handle list resource templates request (for dynamic resources)
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+    const templates = getResourceTemplates();
+    return {
+      resourceTemplates: templates.map(t => ({
+        uriTemplate: t.uriTemplate,
+        name: t.name,
+        description: t.description,
+        mimeType: t.mimeType,
+      })),
     };
   });
 
@@ -94,34 +72,30 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const { uri } = request.params;
     
-    if (uri === 'gitnexus://codebase/context') {
-      const context = backend.context;
-      
-      if (!context) {
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: 'text/plain',
-              text: 'No codebase loaded.',
-            },
-          ],
-        };
-      }
-      
+    try {
+      const content = await readResource(uri, backend);
       return {
         contents: [
           {
             uri,
-            mimeType: 'text/markdown',
-            text: formatContextAsMarkdown(context),
+            mimeType: 'text/yaml',
+            text: content,
+          },
+        ],
+      };
+    } catch (err: any) {
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: 'text/plain',
+            text: `Error: ${err.message}`,
           },
         ],
       };
     }
-    
-    throw new Error(`Unknown resource: ${uri}`);
   });
+
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

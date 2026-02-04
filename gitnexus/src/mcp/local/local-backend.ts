@@ -169,8 +169,6 @@ export class LocalBackend {
     }
 
     switch (method) {
-      case 'context':
-        return this.getContext();
       case 'search':
         return this.search(params);
       case 'cypher':
@@ -186,35 +184,6 @@ export class LocalBackend {
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
-  }
-
-  private async getContext(): Promise<string> {
-    if (!this._context || !this.repo) {
-      return 'Repository not indexed. Run: gitnexus analyze';
-    }
-
-    const stats = this.repo.meta.stats || {};
-    return [
-      `# GitNexus: ${this._context.projectName}`,
-      '',
-      '## Stats',
-      `- Files: ${stats.files || 0}`,
-      `- Nodes: ${stats.nodes || 0}`,
-      `- Edges: ${stats.edges || 0}`,
-      `- Communities: ${stats.communities || 0}`,
-      `- Processes: ${stats.processes || 0}`,
-      '',
-      `Indexed: ${this.repo.meta.indexedAt}`,
-      `Commit: ${this.repo.meta.lastCommit?.slice(0, 7)}`,
-      '',
-      '## Available Tools',
-      '- **analyze**: Index/re-index repository',
-      '- **search**: Hybrid semantic + keyword search',
-      '- **cypher**: Graph queries (Cypher)',
-      '- **overview**: List communities and processes',
-      '- **explore**: Deep dive on symbol/cluster/process',
-      '- **impact**: Change impact analysis',
-    ].join('\n');
   }
 
   private async search(params: { query: string; limit?: number; depth?: string; groupByProcess?: boolean }): Promise<any> {

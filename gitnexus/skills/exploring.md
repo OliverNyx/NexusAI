@@ -6,9 +6,11 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 # Exploring Codebases
 
 ## Quick Start
-1. `gitnexus_context` → Get codebase stats and hotspots
-2. `gitnexus_overview` → See all clusters and processes
-3. `gitnexus_explore(name, "cluster")` → Deep dive on a cluster
+```
+1. READ gitnexus://context        → Get codebase overview (~150 tokens)
+2. READ gitnexus://clusters       → See all functional clusters
+3. READ gitnexus://cluster/{name} → Deep dive on specific cluster
+```
 
 ## When to Use
 - "How does authentication work?"
@@ -16,81 +18,94 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 - "Show me the main components"
 - "Where is the database logic?"
 
-## Workflow
+## Workflow Checklist
 ```
-Exploring Codebase:
-- [ ] Call gitnexus_context to get codebase overview
-- [ ] Call gitnexus_overview to list clusters
+Exploration Progress:
+- [ ] READ gitnexus://context for codebase overview
+- [ ] READ gitnexus://clusters to list all clusters
 - [ ] Identify the relevant cluster by name
-- [ ] Call gitnexus_explore(clusterName, "cluster") to see members
-- [ ] Call gitnexus_explore(symbolName, "symbol") for specific functions
+- [ ] READ gitnexus://cluster/{name} for cluster details
+- [ ] Use gitnexus_explore for specific symbols
 ```
 
-## Tool Reference
+## Resource Reference
 
-### gitnexus_context
-Get codebase overview. **Call first.**
-```
-gitnexus_context()
-→ Stats: 2,400 nodes, 12 clusters, 45 processes
-→ Hotspots: most connected functions
+### gitnexus://context
+Codebase overview. **Read first.**
+```yaml
+project: my-app
+stats:
+  files: 42
+  symbols: 918
+  clusters: 12
+  processes: 45
+tools_available: [search, explore, impact, overview, cypher]
+resources_available: [clusters, processes, cluster/{name}, process/{name}]
 ```
 
-### gitnexus_overview
-List all clusters and processes.
+### gitnexus://clusters
+All functional clusters with cohesion scores.
+```yaml
+clusters:
+  - name: "Auth"
+    symbols: 47
+    cohesion: 92%
+  - name: "Database"
+    symbols: 32
+    cohesion: 88%
 ```
-gitnexus_overview({showClusters: true, showProcesses: true})
-→ Clusters: Auth, Database, API, ...
-→ Processes: LoginFlow, CheckoutFlow, ...
+
+### gitnexus://cluster/{name}
+Members of a specific cluster.
+```yaml
+name: Auth
+symbols: 47
+cohesion: 92%
+members:
+  - name: validateUser
+    type: Function
+    file: src/auth/validator.ts
 ```
+
+### gitnexus://process/{name}
+Full execution trace.
+```yaml
+name: LoginFlow
+type: cross_community
+steps:
+  1: handleLogin (src/auth/handler.ts)
+  2: validateUser (src/auth/validator.ts)
+  3: createSession (src/auth/session.ts)
+```
+
+## Tool Reference (When Resources Aren't Enough)
 
 ### gitnexus_explore
-Deep dive on symbol, cluster, or process.
+For detailed symbol context with callers/callees:
 ```
-gitnexus_explore({name: "Auth", type: "cluster"})
-→ Members: validateUser, checkToken, hashPassword
-→ Processes using this cluster
-
 gitnexus_explore({name: "validateUser", type: "symbol"})
 → Callers: loginHandler, apiMiddleware
 → Callees: checkToken, getUserById
-→ Cluster: Auth
+```
 
-gitnexus_explore({name: "LoginFlow", type: "process"})
-→ Steps: handleLogin → validateUser → createSession → respond
+### gitnexus_search
+For finding code by query:
+```
+gitnexus_search({query: "payment validation", depth: "full"})
 ```
 
 ## Example: "How does payment processing work?"
 
-1. **Get overview**
-   ```
-   gitnexus_context()
-   ```
-   → 2,400 nodes, 12 clusters, 45 processes
+```
+1. READ gitnexus://context
+   → 918 symbols, 12 clusters
 
-2. **Find payment cluster**
-   ```
-   gitnexus_overview({showClusters: true})
-   ```
-   → Clusters: Auth, **Payment**, Database, API, ...
+2. READ gitnexus://clusters
+   → Clusters: Auth, Payment, Database, API...
 
-3. **Explore payment cluster**
-   ```
-   gitnexus_explore({name: "Payment", type: "cluster"})
-   ```
-   → Members: processPayment, validateCard, PaymentService, ...
-   → Processes: CheckoutFlow, RefundFlow
+3. READ gitnexus://cluster/Payment
+   → Members: processPayment, validateCard, PaymentService
 
-4. **Trace the checkout flow**
-   ```
-   gitnexus_explore({name: "CheckoutFlow", type: "process"})
-   ```
+4. READ gitnexus://process/CheckoutFlow
    → handleCheckout → validateCart → processPayment → sendConfirmation
-
-## When to Use Something Else
-
-| Need | Use Instead |
-|------|-------------|
-| Debug failing code | `gitnexus-debugging` skill |
-| Check change impact | `gitnexus-impact-analysis` skill |
-| Plan refactoring | `gitnexus-refactoring` skill |
+```

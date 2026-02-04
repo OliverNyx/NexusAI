@@ -47,23 +47,6 @@ Run this when:
     },
   },
   {
-    name: 'context',
-    description: `Get GitNexus codebase context. CALL THIS FIRST before using other tools.
-
-Returns:
-- Project name and stats (files, functions, classes)
-- Hotspots (most connected/important nodes)
-- Communities and processes count
-- Tool usage guidance
-
-ALWAYS call this first to understand the codebase before searching or querying.`,
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
-  },
-  {
     name: 'search',
     description: `Hybrid search (keyword + semantic) across the codebase.
 Returns code nodes with their graph connections, grouped by process.

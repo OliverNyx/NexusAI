@@ -26,7 +26,7 @@ const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
 
 /**
- * Generate the full GitNexus context content
+ * Generate the full GitNexus context content (resources-first approach)
  */
 function generateGitNexusContent(projectName: string, stats: RepoStats): string {
   return `${GITNEXUS_START_MARKER}
@@ -46,70 +46,66 @@ This project is indexed by GitNexus, providing AI agents with deep code intellig
 
 ## Quick Start
 
-1. **Call \`context\` first** — Understand the codebase structure
-2. **Use \`search\` for discovery** — Semantic search with graph context
-3. **Use \`impact\` before refactoring** — Understand blast radius
+\`\`\`
+1. READ gitnexus://context        → Get codebase overview (~150 tokens)
+2. READ gitnexus://clusters       → See all functional clusters
+3. READ gitnexus://cluster/{name} → Deep dive on specific cluster
+4. gitnexus_search(query)         → Find code by query
+\`\`\`
+
+## Available Resources
+
+| Resource | Purpose |
+|----------|---------|
+| \`gitnexus://context\` | Codebase stats, tools, and resources overview |
+| \`gitnexus://clusters\` | All clusters with symbol counts and cohesion |
+| \`gitnexus://cluster/{name}\` | Cluster members and details |
+| \`gitnexus://processes\` | All execution flows with types |
+| \`gitnexus://process/{name}\` | Full process trace with steps |
+| \`gitnexus://schema\` | Graph schema for Cypher queries |
 
 ## Available Tools
 
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
-| \`context\` | Codebase overview | Start of conversation |
-| \`search\` | Semantic + keyword search | Finding code |
+| \`search\` | Semantic + keyword search | Finding code by query |
 | \`overview\` | List clusters & processes | Understanding architecture |
 | \`explore\` | Deep dive on symbol/cluster/process | Detailed investigation |
 | \`impact\` | Blast radius analysis | Before making changes |
 | \`cypher\` | Raw graph queries | Complex analysis |
 
-## Tool Reference
+## Workflow Examples
 
-### \`context\`
-Get codebase overview and stats. **Call this first.**
-
-### \`search\`
+### Exploring the Codebase
 \`\`\`
-search(query: "authentication middleware", depth: "full")
-\`\`\`
-- \`depth: "definitions"\` — Symbol signatures only (default)
-- \`depth: "full"\` — Symbols + all relationships
-
-### \`explore\`
-\`\`\`
-explore(name: "validateUser", type: "symbol")
-explore(name: "Authentication", type: "cluster")
-explore(name: "LoginFlow", type: "process")
+READ gitnexus://context           → Stats and overview
+READ gitnexus://clusters          → Find relevant cluster
+READ gitnexus://cluster/Auth      → Explore Auth cluster
+gitnexus_explore("validateUser", "symbol") → Detailed symbol info
 \`\`\`
 
-### \`impact\`
+### Planning a Change
 \`\`\`
-impact(target: "UserService", direction: "upstream", minConfidence: 0.8)
+gitnexus_impact("UserService", "upstream") → See what breaks
+READ gitnexus://processes         → Check affected flows
+gitnexus_explore("LoginFlow", "process") → Trace execution
 \`\`\`
-- \`upstream\` — What depends on this (will break if changed)
-- \`downstream\` — What this depends on
 
-### \`cypher\`
-Execute Cypher queries on the knowledge graph.
+## Graph Schema
 
-**Schema:**
-- Nodes: \`File\`, \`Folder\`, \`Function\`, \`Class\`, \`Interface\`, \`Method\`, \`Community\`, \`Process\`
-- Edges: \`CALLS\`, \`IMPORTS\`, \`EXTENDS\`, \`IMPLEMENTS\`, \`DEFINES\`, \`MEMBER_OF\`, \`STEP_IN_PROCESS\`
+**Nodes:** File, Function, Class, Interface, Method, Community, Process
+
+**Relationships:** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
 
 \`\`\`cypher
-// Find all callers of a function
-MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunction"})
+// Example: Find callers of a function
+MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunc"})
 RETURN caller.name, caller.filePath
 \`\`\`
 
-## Key Concepts
-
-| Concept | Description |
-|---------|-------------|
-| **Community** | Functional cluster detected by Leiden algorithm |
-| **Process** | Execution flow from entry point to terminal |
-| **Confidence** | Relationship trust score (1.0 = certain, <0.8 = fuzzy) |
-
 ${GITNEXUS_END_MARKER}`;
 }
+
 
 /**
  * Check if a file exists

@@ -6,9 +6,11 @@ description: Analyze blast radius before making code changes
 # Impact Analysis
 
 ## Quick Start
-1. `gitnexus_impact(target, "upstream")` → What depends on this (will break)
-2. Review affected processes and clusters
-3. Assess risk level
+```
+1. gitnexus_impact({target, direction: "upstream"}) → What depends on this
+2. READ gitnexus://clusters                         → Check affected areas
+3. READ gitnexus://processes                        → Affected execution flows
+```
 
 ## When to Use
 - "Is it safe to change this function?"
@@ -24,84 +26,61 @@ description: Analyze blast radius before making code changes
 | d=2 | LIKELY AFFECTED | Indirect dependencies |
 | d=3 | MAY NEED TESTING | Transitive effects |
 
-| Confidence | Meaning |
-|------------|---------|
-| 1.0 | Certain (static analysis) |
-| 0.8+ | High confidence |
-| <0.8 | Fuzzy match (may be false positive) |
-
-## Workflow
+## Workflow Checklist
 ```
 Impact Analysis:
 - [ ] gitnexus_impact(target, "upstream") to find dependents
-- [ ] Review affected processes
+- [ ] READ gitnexus://clusters to understand affected areas
 - [ ] Check high-confidence (>0.8) dependencies first
 - [ ] Count affected clusters (cross-cutting = higher risk)
 - [ ] If >10 processes affected, consider splitting change
 ```
 
+## Resource Reference
+
+### gitnexus://clusters
+Check which clusters might be affected:
+```yaml
+clusters:
+  - name: Auth
+    symbols: 47
+  - name: API
+    symbols: 32
+```
+
+### gitnexus://processes
+Find which processes touch the target:
+```yaml
+processes:
+  - name: LoginFlow
+    type: cross_community
+    steps: 5
+```
+
 ## Tool Reference
 
 ### gitnexus_impact
-Analyze blast radius.
+Analyze blast radius:
 ```
 gitnexus_impact({
   target: "validateUser",
   direction: "upstream",
   minConfidence: 0.8,
-  maxDepth: 3,
-  includeTests: false
+  maxDepth: 3
 })
+
+→ d=1 (WILL BREAK):
+  - loginHandler (src/auth/login.ts:42) [CALLS, 100%]
+  - apiMiddleware (src/api/middleware.ts:15) [CALLS, 100%]
+
+→ d=2 (LIKELY AFFECTED):
+  - authRouter (src/routes/auth.ts:22) [CALLS, 95%]
+
+→ Affected Processes: LoginFlow, TokenRefresh
+→ Risk: MEDIUM (3 processes)
 ```
 
-**Parameters:**
-- `target` — Function, class, or file name
-- `direction` — "upstream" (what depends on this) or "downstream" (what this depends on)
-- `minConfidence` — Filter out fuzzy matches (default: 0.7)
-- `maxDepth` — How far to trace (default: 3)
-- `includeTests` — Include test files (default: false)
-
-**Output:**
-```
-Impact Analysis for "validateUser":
-
-d=1 (WILL BREAK):
-- loginHandler (src/auth/login.ts:42) [CALLS, 100%]
-- apiMiddleware (src/api/middleware.ts:15) [CALLS, 100%]
-
-d=2 (LIKELY AFFECTED):
-- authRouter (src/routes/auth.ts:22) [CALLS, 95%]
-- sessionManager (src/session/manager.ts:88) [CALLS, 90%]
-
-Affected Processes: LoginFlow, TokenRefresh, APIGateway
-Affected Clusters: Auth, API
-
-Risk: MEDIUM (3 processes, 2 clusters)
-```
-
-## Example: "What breaks if I change validateUser?"
-
-1. **Run impact analysis**
-   ```
-   gitnexus_impact({
-     target: "validateUser",
-     direction: "upstream",
-     minConfidence: 0.8
-   })
-   ```
-
-2. **Review output**
-   - d=1: loginHandler, apiMiddleware (WILL BREAK)
-   - d=2: authRouter, sessionManager (LIKELY AFFECTED)
-   - Processes: LoginFlow, TokenRefresh, APIGateway
-   - Risk: MEDIUM
-
-3. **Decision**
-   - 2 direct callers → manageable
-   - 3 processes → need to test all three
-   - Auth + API clusters → may need API team coordination
-
-## Risk Assessment Guide
+## Risk Assessment
 
 | Affected | Risk |
 |----------|------|
@@ -120,10 +99,15 @@ Before Committing:
 - [ ] If cross-cluster, coordinate with other teams
 ```
 
-## When to Use Something Else
+## Example: "What breaks if I change validateUser?"
 
-| Need | Use Instead |
-|------|-------------|
-| Explore unfamiliar code | `gitnexus-exploring` skill |
-| Debug failing code | `gitnexus-debugging` skill |
-| Plan large refactors | `gitnexus-refactoring` skill |
+```
+1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+   → d=1: loginHandler, apiMiddleware
+   → d=2: authRouter, sessionManager
+
+2. READ gitnexus://clusters
+   → Auth and API clusters affected
+
+3. Decision: 2 direct callers, 2 clusters = MEDIUM risk
+```

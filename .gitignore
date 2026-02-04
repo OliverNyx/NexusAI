@@ -41,3 +41,6 @@ coverage/
 
 .env*.local
 .gitnexus
+
+# Generated files (should not be indexed)
+repomix-output*
