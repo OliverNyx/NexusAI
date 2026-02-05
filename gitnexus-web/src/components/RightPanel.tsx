@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  Send, Sparkles, User,
+  Send, Square, Sparkles, User,
   PanelRightClose, Loader2, AlertTriangle, Activity, GitBranch
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
@@ -24,6 +24,7 @@ export const RightPanel = () => {
     isAgentReady,
     isAgentInitializing,
     sendChatMessage,
+    stopChatResponse,
     clearChat,
   } = useAppState();
 
@@ -429,13 +430,23 @@ export const RightPanel = () => {
               >
                 Clear
               </button>
-              <button
-                onClick={handleSendMessage}
-                disabled={!chatInput.trim() || isChatLoading || isAgentInitializing}
-                className="w-9 h-9 flex items-center justify-center bg-accent rounded-md text-white transition-all hover:bg-accent-dim disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              </button>
+              {isChatLoading ? (
+                <button
+                  onClick={stopChatResponse}
+                  className="w-9 h-9 flex items-center justify-center bg-red-500/80 rounded-md text-white transition-all hover:bg-red-500"
+                  title="Stop response"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!chatInput.trim() || isAgentInitializing}
+                  className="w-9 h-9 flex items-center justify-center bg-accent rounded-md text-white transition-all hover:bg-accent-dim disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
             {!isAgentReady && !isAgentInitializing && (
               <div className="mt-2 text-xs text-amber-200 flex items-center gap-2">

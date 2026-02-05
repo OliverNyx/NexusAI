@@ -240,7 +240,7 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
     return `COPY Process(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" (HEADER=true, PARALLEL=false)`;
   }
   // All code element tables: Function, Class, Interface, Method, CodeElement
-  return `COPY ${table}(id, name, filePath, startLine, endLine, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  return `COPY ${table}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
 };
 
 /**

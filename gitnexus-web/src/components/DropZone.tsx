@@ -1,12 +1,11 @@
-import { useState, useCallback, DragEvent, useEffect } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { useState, useCallback, DragEvent } from 'react';
+import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff } from 'lucide-react';
 import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
 import { FileEntry } from '../services/zip';
-import { getActiveProviderConfig } from '../core/llm/settings-service';
 
 interface DropZoneProps {
-  onFileSelect: (file: File, enableSmartClustering?: boolean) => void;
-  onGitClone?: (files: FileEntry[], enableSmartClustering?: boolean) => void;
+  onFileSelect: (file: File) => void;
+  onGitClone?: (files: FileEntry[]) => void;
 }
 
 export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
@@ -18,15 +17,6 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
   const [isCloning, setIsCloning] = useState(false);
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState<string | null>(null);
-  const [enableSmartClustering, setEnableSmartClustering] = useState(false);
-  const [hasLLMProvider, setHasLLMProvider] = useState(false);
-
-  // Check if LLM provider is configured
-  useEffect(() => {
-    const config = getActiveProviderConfig();
-    setHasLLMProvider(!!config);
-    // Keep smart clustering OFF by default, user must opt-in
-  }, []);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -49,25 +39,24 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
     if (files.length > 0) {
       const file = files[0];
       if (file.name.endsWith('.zip')) {
-        onFileSelect(file, enableSmartClustering);
+        onFileSelect(file);
       } else {
         setError('Please drop a .zip file');
       }
     }
-  }, [onFileSelect, enableSmartClustering]);
+  }, [onFileSelect]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
       const file = files[0];
       if (file.name.endsWith('.zip')) {
-        console.log('🎯 DropZone: Calling onFileSelect with enableSmartClustering:', enableSmartClustering);
-        onFileSelect(file, enableSmartClustering);
+        onFileSelect(file);
       } else {
         setError('Please select a .zip file');
       }
     }
-  }, [onFileSelect, enableSmartClustering]);
+  }, [onFileSelect]);
 
   const handleGitClone = async () => {
     if (!githubUrl.trim()) {
@@ -96,7 +85,7 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
       setGithubToken('');
 
       if (onGitClone) {
-        onGitClone(files, enableSmartClustering);
+        onGitClone(files);
       }
     } catch (err) {
       console.error('Clone failed:', err);
@@ -224,41 +213,6 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
               </div>
             </div>
 
-            {/* Smart Clustering Toggle - Below drop zone */}
-            <div className="mt-4 p-4 bg-surface/50 border border-border-subtle rounded-xl">
-              <label className="flex items-center justify-between cursor-pointer group">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Sparkles className="w-4 h-4 text-accent" />
-                    <span className="text-sm font-medium text-text-primary">Enable Smart Clustering</span>
-                  </div>
-                  <p className="text-xs text-text-muted leading-relaxed">
-                    Uses LLM to label processes and clusters for better detection. Don't worry, it consumes very less tokens one time.
-                  </p>
-                  {!hasLLMProvider && (
-                    <p className="text-xs text-amber-400 mt-2">
-                      ⚠️ Setup LLM provider to enable smart clustering
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => hasLLMProvider && setEnableSmartClustering(!enableSmartClustering)}
-                  disabled={!hasLLMProvider}
-                  className={`
-                  relative inline-flex h-6 w-11 items-center rounded-full transition-colors ml-4
-                  ${enableSmartClustering && hasLLMProvider ? 'bg-accent' : 'bg-gray-700'}
-                  ${!hasLLMProvider ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
-                `}>
-                  <span
-                    className={`
-                    inline-block h-4 w-4 transform rounded-full bg-white transition-transform
-                    ${enableSmartClustering && hasLLMProvider ? 'translate-x-6' : 'translate-x-1'}
-                  `}
-                  />
-                </button>
-              </label>
-            </div>
           </>
         )}
 

@@ -123,9 +123,6 @@ interface AppState {
 
   // Embedding methods
   startEmbeddings: (forceDevice?: 'webgpu' | 'wasm') => Promise<void>;
-  startBackgroundEnrichment: () => Promise<void>;
-  cancelEnrichment: () => Promise<void>;
-  enrichmentProgress: { current: number; total: number } | null;
   semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
   isEmbeddingReady: boolean;
@@ -149,7 +146,6 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  runClusterEnrichment: () => Promise<void>;
   initializeAgent: (overrideProjectName?: string) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   clearChat: () => void;
@@ -293,10 +289,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
-
-  // Cluster enrichment state
-  const [enrichmentProgress, setEnrichmentProgress] = useState<{ current: number; total: number } | null>(null);
-  const enrichmentCancelledRef = useRef(false);
 
   const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -521,63 +513,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  // Background cluster enrichment
-  const startBackgroundEnrichment = useCallback(async (): Promise<void> => {
-    const api = apiRef.current;
-    if (!api) return;
-
-    enrichmentCancelledRef.current = false;
-
-    try {
-      const result = await api.startBackgroundEnrichment(
-        Comlink.proxy((current: number, total: number) => {
-          setEnrichmentProgress({ current, total });
-          setProgress({
-            phase: 'complete',
-            percent: 100,
-            message: `Labeling clusters ${current}/${total}...`,
-          });
-        })
-      );
-
-      setEnrichmentProgress(null);
-
-      if (!result.skipped && result.enriched > 0) {
-        setProgress({
-          phase: 'complete',
-          percent: 100,
-          message: 'Smart cluster labels generated!',
-        });
-        // Clear after 3 seconds
-        setTimeout(() => setProgress(null), 3000);
-      }
-    } catch (err) {
-      console.warn('Background enrichment failed:', err);
-      setEnrichmentProgress(null);
-    }
-  }, []);
-
-  // Cancel/pause enrichment
-  const cancelEnrichment = useCallback(async (): Promise<void> => {
-    const api = apiRef.current;
-    if (!api) return;
-
-    enrichmentCancelledRef.current = true;
-    setEnrichmentProgress(null);
-
-    try {
-      await api.cancelEnrichment();
-      setProgress({
-        phase: 'complete',
-        percent: 100,
-        message: 'LLM labeling stopped. Using heuristic labels.',
-      });
-      setTimeout(() => setProgress(null), 3000);
-    } catch (err) {
-      console.warn('Cancel enrichment failed:', err);
-    }
-  }, []);
-
   const semanticSearch = useCallback(async (
     query: string,
     k: number = 10
@@ -611,93 +546,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       return next;
     });
   }, []);
-
-  const runClusterEnrichment = useCallback(async () => {
-    const api = apiRef.current;
-    if (!api) {
-      setAgentError('Worker not initialized');
-      return;
-    }
-
-
-    const defaultConfig = getActiveProviderConfig();
-    const configToUse = (!llmSettings.useSameModelForClustering && llmSettings.clusteringProvider?.provider)
-      ? {
-        ...defaultConfig,
-        provider: llmSettings.clusteringProvider.provider || defaultConfig!.provider,
-        model: llmSettings.clusteringProvider.model || defaultConfig!.model,
-        apiKey: (llmSettings.clusteringProvider as any).apiKey || (defaultConfig as any).apiKey
-      } as ProviderConfig
-      : defaultConfig;
-
-    if (!configToUse) {
-      // No provider configured - open settings panel
-      setSettingsPanelOpen(true);
-      setAgentError('Please configure an LLM provider in Settings first.');
-      return;
-    }
-
-
-    try {
-      setProgress({
-        phase: 'enriching',
-        percent: 1,
-        message: 'Starting AI enrichment...',
-        stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: 0 }
-      });
-
-      const { enrichments } = await api.enrichCommunities(
-        configToUse,
-        Comlink.proxy((current, total) => {
-          setProgress(prev => prev ? ({
-            ...prev,
-            percent: Math.min(99, 5 + Math.round((current / total) * 90)),
-            message: `Enriching clusters ${current}/${total}`
-          }) : null);
-        })
-      );
-
-      // Update local graph
-      setGraph(prevGraph => {
-        if (!prevGraph) return null;
-
-        const newNodes = prevGraph.nodes.map(n => {
-          if (n.label === 'Community' && enrichments[n.id]) {
-            const e = enrichments[n.id];
-            return {
-              ...n,
-              properties: {
-                ...n.properties,
-                name: e.name,
-                keywords: e.keywords,
-                description: e.description,
-                enrichedBy: 'llm' as const
-              }
-            };
-          }
-          return n;
-        });
-        return { ...prevGraph, nodes: newNodes };
-      });
-
-      setProgress({
-        phase: 'complete',
-        percent: 100,
-        message: '✨ Smart labels generated!',
-        stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: 0 }
-      });
-
-
-      // Clear progress after 3 seconds
-      setTimeout(() => setProgress(null), 3000);
-
-    } catch (err) {
-      console.error(err);
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setAgentError('Clustering enrichment failed: ' + errorMsg);
-      setProgress(null);
-    }
-  }, [llmSettings]);
 
   const refreshLLMSettings = useCallback(() => {
     setLLMSettings(loadSettings());
@@ -1095,6 +943,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
 
+  const stopChatResponse = useCallback(() => {
+    const api = apiRef.current;
+    if (api && isChatLoading) {
+      api.stopChat();
+      setIsChatLoading(false);
+      setCurrentToolCalls([]);
+    }
+  }, [isChatLoading]);
+
   const clearChat = useCallback(() => {
     setChatMessages([]);
     setCurrentToolCalls([]);
@@ -1202,9 +1059,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     embeddingStatus,
     embeddingProgress,
     startEmbeddings,
-    startBackgroundEnrichment,
-    cancelEnrichment,
-    enrichmentProgress,
     semanticSearch,
     semanticSearchWithContext,
     isEmbeddingReady: embeddingStatus === 'ready',
@@ -1224,9 +1078,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     currentToolCalls,
     // LLM methods
     refreshLLMSettings,
-    runClusterEnrichment,
     initializeAgent,
     sendChatMessage,
+    stopChatResponse,
     clearChat,
     // Code References Panel
     codeReferences,

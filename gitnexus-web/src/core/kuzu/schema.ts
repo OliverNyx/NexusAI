@@ -62,6 +62,7 @@ CREATE NODE TABLE Function (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  isExported BOOLEAN,
   content STRING,
   PRIMARY KEY (id)
 )`;
@@ -73,6 +74,7 @@ CREATE NODE TABLE Class (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  isExported BOOLEAN,
   content STRING,
   PRIMARY KEY (id)
 )`;
@@ -84,6 +86,7 @@ CREATE NODE TABLE Interface (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  isExported BOOLEAN,
   content STRING,
   PRIMARY KEY (id)
 )`;
@@ -95,6 +98,7 @@ CREATE NODE TABLE Method (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  isExported BOOLEAN,
   content STRING,
   PRIMARY KEY (id)
 )`;
@@ -106,6 +110,7 @@ CREATE NODE TABLE CodeElement (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  isExported BOOLEAN,
   content STRING,
   PRIMARY KEY (id)
 )`;

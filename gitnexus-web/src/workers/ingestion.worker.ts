@@ -51,6 +51,9 @@ let currentGraphResult: PipelineResult | null = null;
 let pendingEnrichmentConfig: ProviderConfig | null = null;
 let enrichmentCancelled = false;
 
+// Chat cancellation flag
+let chatCancelled = false;
+
 /**
  * Worker API exposed via Comlink
  * 
@@ -570,14 +573,32 @@ const workerApi = {
       return;
     }
 
+    chatCancelled = false;
+
     try {
       for await (const chunk of streamAgentResponse(currentAgent, messages)) {
+        if (chatCancelled) {
+          onChunk({ type: 'done' });
+          break;
+        }
         onChunk(chunk);
       }
     } catch (error) {
+      if (chatCancelled) {
+        // Swallow errors from cancellation
+        onChunk({ type: 'done' });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       onChunk({ type: 'error', error: message });
     }
+  },
+
+  /**
+   * Stop the current chat stream
+   */
+  stopChat(): void {
+    chatCancelled = true;
   },
 
   /**

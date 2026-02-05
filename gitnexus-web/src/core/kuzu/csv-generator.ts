@@ -170,14 +170,14 @@ const generateFolderCSV = (nodes: GraphNode[]): string => {
 
 /**
  * Generate CSV for code element nodes (Function, Class, Interface, Method, CodeElement)
- * Headers: id,name,filePath,startLine,endLine,content
+ * Headers: id,name,filePath,startLine,endLine,isExported,content
  */
 const generateCodeElementCSV = (
   nodes: GraphNode[],
   label: NodeLabel,
   fileContents: Map<string, string>
 ): string => {
-  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'content'];
+  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'isExported', 'content'];
   const rows: string[] = [headers.join(',')];
   
   for (const node of nodes) {
@@ -189,6 +189,7 @@ const generateCodeElementCSV = (
       escapeCSVField(node.properties.filePath || ''),
       escapeCSVNumber(node.properties.startLine, -1),
       escapeCSVNumber(node.properties.endLine, -1),
+      node.properties.isExported ? 'true' : 'false',
       escapeCSVField(content),
     ].join(','));
   }

@@ -55,9 +55,9 @@
 **Goal:** Group related code into named clusters.
 
 ### 1.1 Research & Setup
-- [ ] Research JS/WASM implementations of Leiden algorithm
-  - Options: `graphology-communities-louvain`, custom WASM port
-  - Constraint: Must run in browser
+- [x] Implement Leiden algorithm for community detection
+  - Vendored from graphology-communities-leiden (unpublished npm, MIT licensed)
+  - Works in both browser (ESM) and Node.js (CJS)
 - [ ] Benchmark on sample codebases (100, 1K, 10K nodes)
 
 ### 1.2 Schema Updates
@@ -324,10 +324,9 @@ interface ImpactResult {
 
 ## Technical Notes
 
-### Leiden Algorithm Options
-1. **graphology-communities-louvain** (JS, works in browser)
-2. **Custom WASM port** (if performance needed)
-3. **Simple Louvain** might be sufficient for V1
+### Leiden Algorithm
+Implemented using vendored graphology-communities-leiden source (MIT licensed).
+The Leiden algorithm guarantees well-connected communities via a refinement phase after each Louvain-style move phase.
 
 ### Schema Summary (New Additions)
 ```

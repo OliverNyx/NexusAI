@@ -1,7 +1,7 @@
 /**
  * Community Detection Processor
  * 
- * Uses the Leiden algorithm (via graphology-communities-louvain) to detect
+ * Uses the Leiden algorithm (vendored from graphology-communities-leiden) to detect
  * communities/clusters in the code graph based on CALLS relationships.
  * 
  * Communities represent groups of code that work together frequently,
@@ -9,7 +9,7 @@
  */
 
 import Graph from 'graphology';
-import louvain from 'graphology-communities-louvain';
+import leiden from '../../vendor/leiden/index.js';
 import { KnowledgeGraph, NodeLabel } from '../graph/types';
 
 // ============================================================================
@@ -93,8 +93,8 @@ export const processCommunities = async (
 
   onProgress?.(`Running Leiden algorithm on ${graph.order} nodes...`, 30);
 
-  // Step 2: Run Leiden (via Louvain implementation with refinement)
-  const details = louvain.detailed(graph, {
+  // Step 2: Run Leiden algorithm for community detection
+  const details = leiden.detailed(graph, {
     resolution: 1.0,  // Default resolution, can be tuned
     randomWalk: true,
   });
