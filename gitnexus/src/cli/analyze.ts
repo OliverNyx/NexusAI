@@ -7,8 +7,7 @@
 import path from 'path';
 import ora from 'ora';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu } from '../core/kuzu/kuzu-adapter.js';
-import { buildBM25Index, exportBM25Index } from '../core/search/bm25-index.js';
+import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex } from '../core/kuzu/kuzu-adapter.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
@@ -45,7 +44,7 @@ export const analyzeCommand = async (
     return;
   }
 
-  const { storagePath, kuzuPath, bm25Path } = getStoragePaths(repoPath);
+  const { storagePath, kuzuPath } = getStoragePaths(repoPath);
   const currentCommit = getCurrentCommit(repoPath);
   const existingMeta = await loadMeta(storagePath);
 
@@ -62,14 +61,33 @@ export const analyzeCommand = async (
   });
 
   // Load graph into KuzuDB
+  // Always start fresh - remove existing kuzu DB to avoid stale/corrupt data
   spinner.text = 'Loading graph into KuzuDB...';
+  await closeKuzu();
+  
+  // Kuzu 0.11 stores databases as: <name> (main file) + <name>.wal (WAL file)
+  // BOTH must be deleted or kuzu will find the orphaned WAL and corrupt the database
+  const fsClean = await import('fs/promises');
+  const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
+  for (const f of kuzuFiles) {
+    try { await fsClean.rm(f, { recursive: true, force: true }); } catch { /* may not exist */ }
+  }
+  
   await initKuzu(kuzuPath);
   await loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath);
 
-  // Build BM25 search index
-  spinner.text = 'Building BM25 index...';
-  buildBM25Index(pipelineResult.fileContents);
-  await exportBM25Index(bm25Path);
+  // Create FTS indexes for keyword search
+  // Indexes searchable content on: File, Function, Class, Method
+  spinner.text = 'Creating FTS indexes...';
+  try {
+    await createFTSIndex('File', 'file_fts', ['name', 'content']);
+    await createFTSIndex('Function', 'function_fts', ['name', 'content']);
+    await createFTSIndex('Class', 'class_fts', ['name', 'content']);
+    await createFTSIndex('Method', 'method_fts', ['name', 'content']);
+  } catch (e: any) {
+    // FTS index creation may fail if tables are empty (no data for that type)
+    console.error('Note: Some FTS indexes may not have been created:', e.message);
+  }
 
   // Generate embeddings
   if (!options?.skipEmbeddings) {

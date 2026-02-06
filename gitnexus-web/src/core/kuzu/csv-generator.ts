@@ -18,12 +18,17 @@ import { NODE_TABLES, NodeTableName } from './schema';
 // ============================================================================
 
 /**
- * Sanitize string to ensure valid UTF-8
- * Removes or replaces invalid characters that would break CSV parsing
+ * Sanitize string to ensure valid UTF-8 and safe CSV content for KuzuDB
+ * Removes or replaces invalid characters that would break CSV parsing.
+ * 
+ * Critical: KuzuDB's CSV parser can misinterpret \r\n inside quoted fields.
+ * We normalize all line endings to \n only.
  */
 const sanitizeUTF8 = (str: string): string => {
   return str
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars except \t \n \r
+    .replace(/\r\n/g, '\n')          // Normalize Windows line endings first
+    .replace(/\r/g, '\n')            // Normalize remaining \r to \n
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars except \t \n
     .replace(/[\uD800-\uDFFF]/g, '') // Remove surrogate pairs (invalid standalone)
     .replace(/[\uFFFE\uFFFF]/g, ''); // Remove BOM and special chars
 };

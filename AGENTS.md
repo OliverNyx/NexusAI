@@ -13,10 +13,10 @@ This project is indexed by GitNexus, providing AI agents with deep code intellig
 
 | Metric | Count |
 |--------|-------|
-| Files | 150 |
-| Symbols | 930 |
-| Relationships | 2411 |
-| Communities | 280 |
+| Files | 146 |
+| Symbols | 907 |
+| Relationships | 2306 |
+| Communities | 278 |
 | Processes | 75 |
 
 ## Quick Start

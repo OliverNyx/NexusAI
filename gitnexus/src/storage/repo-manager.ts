@@ -17,6 +17,7 @@ export interface RepoMeta {
     edges?: number;
     communities?: number;
     processes?: number;
+    embeddings?: number;
   };
 }
 
@@ -24,7 +25,6 @@ export interface IndexedRepo {
   repoPath: string;
   storagePath: string;
   kuzuPath: string;
-  bm25Path: string;
   metaPath: string;
   meta: RepoMeta;
 }
@@ -46,7 +46,6 @@ export const getStoragePaths = (repoPath: string) => {
   return {
     storagePath,
     kuzuPath: path.join(storagePath, 'kuzu'),
-    bm25Path: path.join(storagePath, 'bm25.json'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
 };

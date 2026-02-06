@@ -521,7 +521,7 @@ ORDER BY distance
 | **Visualization** | Sigma.js, Graphology, ForceAtlas2 (WebGL) |
 | **Parsing** | Tree-sitter WASM (9 languages) |
 | **Database** | KuzuDB WASM (graph + vector HNSW) |
-| **Clustering** | Graphology + Leiden (Louvain) |
+| **Clustering** | Graphology + Leiden algorithm |
 | **Embeddings** | transformers.js, snowflake-arctic-embed-xs (22M) |
 | **AI** | LangChain ReAct agent, streaming |
 | **Concurrency** | Web Workers + Comlink |
@@ -534,12 +534,6 @@ ORDER BY distance
 - No code uploaded to any server
 - API keys stored in localStorage only
 - Open source—audit the code yourself
-
----
-
-## 📝 License
-
-MIT License
 
 ---
 

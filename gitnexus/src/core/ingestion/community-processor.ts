@@ -1,18 +1,28 @@
 /**
  * Community Detection Processor
  * 
- * Uses the Leiden algorithm (via graphology-communities-louvain) to detect
+ * Uses the Leiden algorithm (via graphology-communities-leiden) to detect
  * communities/clusters in the code graph based on CALLS relationships.
  * 
  * Communities represent groups of code that work together frequently,
  * helping agents navigate the codebase by functional area rather than file structure.
  */
 
-// NOTE: graphology + louvain typings are a bit inconsistent across versions.
-// Keep these as `any` to avoid blocking the CLI build.
+// NOTE: The Leiden algorithm source is vendored from graphology's repo
+// (src/communities-leiden) because it was never published to npm.
+// We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
-import louvain from 'graphology-communities-louvain';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { KnowledgeGraph, NodeLabel } from '../graph/types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Navigate to package root (works from both src/ and dist/)
+const leidenPath = resolve(__dirname, '..', '..', '..', 'vendor', 'leiden', 'index.cjs');
+const _require = createRequire(import.meta.url);
+const leiden = _require(leidenPath);
 
 // ============================================================================
 // TYPES
@@ -95,8 +105,8 @@ export const processCommunities = async (
 
   onProgress?.(`Running Leiden algorithm on ${graph.order} nodes...`, 30);
 
-  // Step 2: Run Leiden (via Louvain implementation with refinement)
-  const details = (louvain as any).detailed(graph, {
+  // Step 2: Run Leiden algorithm for community detection
+  const details = (leiden as any).detailed(graph, {
     resolution: 1.0,  // Default resolution, can be tuned
     randomWalk: true,
   });

@@ -7,6 +7,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 
 ## Quick Start
 ```
+0. If "Index is stale" → gitnexus_analyze({})
 1. gitnexus_impact({target, direction: "upstream"}) → Map all dependents
 2. READ gitnexus://schema                           → Understand graph structure
 3. gitnexus_cypher                                  → Find all references

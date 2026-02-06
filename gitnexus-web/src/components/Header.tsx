@@ -3,8 +3,6 @@ import { useAppState } from '../hooks/useAppState';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
 import { EmbeddingStatus } from './EmbeddingStatus';
-import { MCPToggle } from './MCPToggle';
-import { buildCodebaseContext } from '../core/llm/context-builder';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -31,11 +29,6 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
-    runQuery,
-    semanticSearch,
-    setHighlightedNodeIds,
-    fileContents,
-    triggerNodeAnimation,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -219,177 +212,6 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
 
         {/* Embedding Status */}
         <EmbeddingStatus />
-
-        {/* MCP Toggle for external AI agents */}
-        <MCPToggle
-          showOnboardingTip={!!graph}
-          onSearch={async (query, limit = 10) => {
-            // Use semantic search from the app
-            const results = await semanticSearch(query, limit);
-            // Trigger pulse animation on search results
-            const nodeIds = results.map((r: any) => r.id).filter(Boolean);
-            if (nodeIds.length > 0) {
-              triggerNodeAnimation(nodeIds, 'pulse');
-            }
-            return results;
-          }}
-          onCypher={async (query) => {
-            // Execute Cypher query
-            const results = await runQuery(query);
-            return results;
-          }}
-          onImpact={async (nodeId: string, hops = 2) => {
-            // Run impact analysis query
-            const query = `
-              MATCH (start)-[*1..${hops}]-(connected)
-              WHERE start.id = '${nodeId}' OR start.name = '${nodeId}'
-              RETURN DISTINCT connected.id AS id, connected.name AS name, labels(connected) AS labels
-            `;
-            const results = await runQuery(query);
-            // Trigger ripple animation on impact results
-            const nodeIds = results.map((r: any) => r.id).filter(Boolean);
-            if (nodeIds.length > 0) {
-              triggerNodeAnimation(nodeIds, 'ripple');
-            }
-            return results;
-          }}
-          onOverview={async () => {
-            // Return codebase overview: clusters + processes
-            const clustersQuery = `
-              MATCH (c:Community)
-              OPTIONAL MATCH (c)<-[:CodeRelation {type: 'MEMBER_OF'}]-(m)
-              RETURN c.id AS id, c.label AS label, c.cohesion AS cohesion, c.description AS description, count(m) AS memberCount
-              ORDER BY memberCount DESC
-              LIMIT 50
-            `;
-            const processesQuery = `
-              MATCH (p:Process)
-              RETURN p.id AS id, p.label AS label, p.processType AS type, p.stepCount AS steps
-              ORDER BY p.stepCount DESC
-              LIMIT 50
-            `;
-            const [clusters, processes] = await Promise.all([
-              runQuery(clustersQuery),
-              runQuery(processesQuery),
-            ]);
-            return { clusters, processes };
-          }}
-          onExplore={async (target: string, type?: 'symbol' | 'cluster' | 'process') => {
-            // Explore a specific target
-            if (type === 'cluster' || target.startsWith('comm_')) {
-              const query = `
-                MATCH (c:Community)
-                WHERE c.id = '${target}' OR c.label CONTAINS '${target}'
-                OPTIONAL MATCH (c)<-[:CodeRelation {type: 'MEMBER_OF'}]-(m)
-                RETURN c.id AS id, c.label AS label, c.description AS description, collect(m.name)[0..10] AS members
-                LIMIT 1
-              `;
-              return await runQuery(query);
-            } else if (type === 'process' || target.startsWith('proc_')) {
-              const query = `
-                MATCH (p:Process)
-                WHERE p.id = '${target}' OR p.label CONTAINS '${target}'
-                OPTIONAL MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p)
-                RETURN p.id AS id, p.label AS label, p.stepCount AS steps, collect({name: s.name, step: r.step})[0..20] AS trace
-                LIMIT 1
-              `;
-              return await runQuery(query);
-            } else {
-              // Symbol exploration
-              const query = `
-                MATCH (n)
-                WHERE n.name = '${target}' OR n.id ENDS WITH ':${target}'
-                OPTIONAL MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-                OPTIONAL MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-                RETURN n.id AS id, n.name AS name, n.filePath AS filePath, label(n) AS nodeType,
-                       c.label AS cluster, collect({process: p.label, step: r.step}) AS processes
-                LIMIT 1
-              `;
-              return await runQuery(query);
-            }
-          }}
-          getContext={async () => {
-            // Build codebase context for external AI agents
-            if (!projectName) return null;
-            const context = await buildCodebaseContext(runQuery, projectName);
-            // Reshape to match MCP CodebaseContext format
-            return {
-              projectName: context.stats.projectName,
-              stats: {
-                fileCount: context.stats.fileCount,
-                functionCount: context.stats.functionCount,
-                classCount: context.stats.classCount,
-                interfaceCount: context.stats.interfaceCount,
-                methodCount: context.stats.methodCount,
-              },
-              hotspots: context.hotspots,
-              folderTree: context.folderTree,
-            };
-          }}
-          onGrep={async (pattern, caseSensitive = false, maxResults = 50) => {
-            // Grep across file contents
-            const results: Array<{ filePath: string; line: string; lineNumber: number; match: string }> = [];
-            const regex = new RegExp(pattern, caseSensitive ? 'g' : 'gi');
-
-            for (const [filePath, content] of fileContents.entries()) {
-              const lines = content.split('\n');
-              for (let i = 0; i < lines.length && results.length < maxResults; i++) {
-                const line = lines[i];
-                const match = line.match(regex);
-                if (match) {
-                  results.push({
-                    filePath,
-                    line: line.trim(),
-                    lineNumber: i + 1,
-                    match: match[0],
-                  });
-                }
-              }
-              if (results.length >= maxResults) break;
-            }
-            return results;
-          }}
-          onRead={async (filePath, startLine, endLine) => {
-            // Read file content
-            let content = fileContents.get(filePath);
-
-            // Try normalized path if not found
-            if (!content) {
-              const normalizedPath = filePath.replace(/\\/g, '/');
-              for (const [path, c] of fileContents.entries()) {
-                if (path.endsWith(normalizedPath) || normalizedPath.endsWith(path)) {
-                  content = c;
-                  break;
-                }
-              }
-            }
-
-            if (!content) {
-              return { error: `File not found: ${filePath}` };
-            }
-
-            const lines = content.split('\n');
-            const language = filePath.split('.').pop() || 'text';
-
-            // If line range specified, return only those lines
-            if (startLine !== undefined && endLine !== undefined) {
-              const slice = lines.slice(startLine - 1, endLine);
-              return {
-                filePath,
-                content: slice.join('\n'),
-                language,
-                lines: slice.length,
-              };
-            }
-
-            return {
-              filePath,
-              content,
-              language,
-              lines: lines.length,
-            };
-          }}
-        />
 
         {/* Icon buttons */}
         <button

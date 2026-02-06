@@ -24,18 +24,22 @@ export interface ToolDefinition {
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'analyze',
-    description: `Index or re-index the current repository.
+    description: `Index or re-index the current repository. Runs the full pipeline in-process.
 
 Creates .gitnexus/ in repo root with:
 - Knowledge graph (functions, classes, calls, imports)
-- BM25 search index
+- Full-text search indexes
 - Community detection (Leiden)
 - Process tracing
+- Embeddings for semantic search
 
 Run this when:
 - First time using GitNexus on a repo
 - After major code changes
-- When 'not indexed' error appears`,
+- When staleness warning appears in gitnexus://context
+- When 'not indexed' error appears
+
+Note: This may take 30-120 seconds for large repos.`,
     inputSchema: {
       type: 'object',
       properties: {

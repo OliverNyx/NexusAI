@@ -6,7 +6,6 @@ import { listCommand } from './list.js';
 import { statusCommand } from './status.js';
 import { mcpCommand } from './mcp.js';
 import { cleanCommand } from './clean.js';
-
 const program = new Command();
 
 program

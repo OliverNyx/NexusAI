@@ -12,7 +12,7 @@ import { findRepo, loadMeta } from '../storage/repo-manager.js';
 import { initKuzu, executeQuery } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
-import { loadBM25Index, searchBM25, isBM25Ready } from '../core/search/bm25-index.js';
+import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { semanticSearch } from '../core/embeddings/embedding-pipeline.js';
 import { isEmbedderReady } from '../core/embeddings/embedder.js';
@@ -131,28 +131,19 @@ export const createServer = async (port: number) => {
       return;
     }
     await initKuzu(repo.kuzuPath);
-    await loadBM25Index(repo.bm25Path);
 
     const query = req.body.query ?? '';
     const limit = req.body.limit ?? 10;
 
-    if (isBM25Ready() && isEmbedderReady()) {
+    if (isEmbedderReady()) {
       const results = await hybridSearch(query, limit, executeQuery, semanticSearch);
       res.json({ results });
       return;
     }
 
-    if (isBM25Ready()) {
-      res.json({ results: searchBM25(query, limit) });
-      return;
-    }
-
-    if (isEmbedderReady()) {
-      res.json({ results: await semanticSearch(executeQuery, query, limit) });
-      return;
-    }
-
-    res.json({ results: [] });
+    // FTS-only fallback when embeddings aren't loaded
+    const results = await searchFTSFromKuzu(query, limit);
+    res.json({ results });
   });
 
   // Read file

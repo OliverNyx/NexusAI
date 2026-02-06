@@ -8,8 +8,15 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { initKuzu, executeQuery, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
-import { loadBM25Index, searchBM25, isBM25Ready } from '../core/bm25-index.js';
 import { embedQuery, getEmbeddingDims, disposeEmbedder } from '../core/embedder.js';
+import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
+import {
+  getStoragePaths as getRepoStoragePaths,
+  saveMeta as saveRepoMeta,
+  loadMeta as loadRepoMeta,
+  addToGitignore,
+} from '../../storage/repo-manager.js';
+import { generateAIContextFiles } from '../../cli/ai-context.js';
 
 export interface RepoMeta {
   repoPath: string;
@@ -28,7 +35,6 @@ export interface IndexedRepo {
   repoPath: string;
   storagePath: string;
   kuzuPath: string;
-  bm25Path: string;
   metaPath: string;
   meta: RepoMeta;
 }
@@ -40,7 +46,6 @@ function getStoragePaths(repoPath: string) {
   return {
     storagePath,
     kuzuPath: path.join(storagePath, 'kuzu'),
-    bm25Path: path.join(storagePath, 'bm25.json'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
 }
@@ -143,7 +148,6 @@ export class LocalBackend {
     if (this.initialized || !this.repo) return;
     
     await initKuzu(this.repo.kuzuPath);
-    await loadBM25Index(this.repo.bm25Path);
     this.initialized = true;
   }
 
@@ -161,6 +165,10 @@ export class LocalBackend {
 
   get storagePath(): string | null {
     return this.repo?.storagePath || null;
+  }
+
+  get meta(): any {
+    return this.repo?.meta || null;
   }
 
   async callTool(method: string, params: any): Promise<any> {
@@ -269,12 +277,13 @@ export class LocalBackend {
   }
 
   /**
-   * BM25 keyword search helper
+   * BM25 keyword search helper - uses KuzuDB FTS for always-fresh results
    */
   private async bm25Search(query: string, limit: number): Promise<any[]> {
-    if (!isBM25Ready()) return [];
+    // Import dynamically to avoid circular dependency
+    const { searchFTSFromKuzu } = await import('../../core/search/bm25-index.js');
+    const bm25Results = await searchFTSFromKuzu(query, limit);
     
-    const bm25Results = searchBM25(query, limit);
     const results: any[] = [];
     
     for (const bm25Result of bm25Results) {
@@ -667,14 +676,153 @@ export class LocalBackend {
     };
   }
 
-  private async analyze(params: { path?: string; force?: boolean }): Promise<any> {
-    const targetPath = params.path ? path.resolve(params.path) : process.cwd();
-    
-    return {
-      action: 'analyze',
-      targetPath,
-      message: `To index this repository, run:\n\n  cd ${targetPath}\n  gitnexus analyze${params.force ? ' --force' : ''}\n\nThis will create a .gitnexus/ folder with the knowledge graph.`,
-    };
+  private async analyze(params: { path?: string; force?: boolean; skipEmbeddings?: boolean }): Promise<any> {
+    // Determine target repo path
+    let repoPath: string;
+    if (params.path) {
+      repoPath = path.resolve(params.path);
+    } else if (this.repo) {
+      repoPath = this.repo.repoPath;
+    } else {
+      const gitRoot = getGitRoot(process.cwd());
+      if (!gitRoot) {
+        return { error: 'Not inside a git repository' };
+      }
+      repoPath = gitRoot;
+    }
+
+    if (!isGitRepo(repoPath)) {
+      return { error: 'Not a git repository' };
+    }
+
+    const { storagePath, kuzuPath } = getRepoStoragePaths(repoPath);
+    const currentCommit = getCurrentCommit(repoPath);
+    const existingMeta = await loadRepoMeta(storagePath);
+
+    // Skip if already indexed at same commit (unless force)
+    if (existingMeta && !params.force && existingMeta.lastCommit === currentCommit) {
+      return { status: 'up_to_date', message: 'Repository already up to date.' };
+    }
+
+    // Close MCP's persistent connection before pipeline takes over
+    await closeKuzu();
+    this.initialized = false;
+
+    try {
+      // Import pipeline modules dynamically to avoid circular deps
+      const { runPipelineFromRepo } = await import('../../core/ingestion/pipeline.js');
+      const coreKuzu = await import('../../core/kuzu/kuzu-adapter.js');
+
+      // Run ingestion pipeline
+      console.error('GitNexus: Running indexing pipeline...');
+      const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
+        if (progress.percent % 20 === 0) {
+          console.error(`GitNexus: ${progress.phase} ${progress.percent}%`);
+        }
+      });
+
+      // Load graph into KuzuDB
+      console.error('GitNexus: Loading graph into KuzuDB...');
+      await coreKuzu.initKuzu(kuzuPath);
+      await coreKuzu.loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath);
+
+      // Create FTS indexes
+      console.error('GitNexus: Creating FTS indexes...');
+      try {
+        await coreKuzu.createFTSIndex('File', 'file_fts', ['name', 'content']);
+        await coreKuzu.createFTSIndex('Function', 'function_fts', ['name', 'content']);
+        await coreKuzu.createFTSIndex('Class', 'class_fts', ['name', 'content']);
+        await coreKuzu.createFTSIndex('Method', 'method_fts', ['name', 'content']);
+      } catch (e: any) {
+        console.error('GitNexus: Some FTS indexes may not have been created:', e.message);
+      }
+
+      // Generate embeddings (unless skipped)
+      if (!params.skipEmbeddings) {
+        try {
+          console.error('GitNexus: Generating embeddings...');
+          const { runEmbeddingPipeline } = await import('../../core/embeddings/embedding-pipeline.js');
+          await runEmbeddingPipeline(
+            coreKuzu.executeQuery,
+            coreKuzu.executeWithReusedStatement,
+            (progress) => {
+              if (progress.percent % 25 === 0) {
+                console.error(`GitNexus: Embeddings ${progress.percent}%`);
+              }
+            }
+          );
+        } catch (e: any) {
+          console.error('GitNexus: Embedding generation failed (non-fatal):', e.message);
+        }
+      }
+
+      // Save metadata
+      const stats = await coreKuzu.getKuzuStats();
+      await saveRepoMeta(storagePath, {
+        repoPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        stats: {
+          files: pipelineResult.fileContents.size,
+          nodes: stats.nodes,
+          edges: stats.edges,
+          communities: pipelineResult.communityResult?.stats.totalCommunities,
+          processes: pipelineResult.processResult?.stats.totalProcesses,
+        },
+      });
+
+      // Add .gitnexus to .gitignore
+      await addToGitignore(repoPath);
+
+      // Generate AI context files
+      const projectName = path.basename(repoPath);
+      await generateAIContextFiles(repoPath, storagePath, projectName, {
+        files: pipelineResult.fileContents.size,
+        nodes: stats.nodes,
+        edges: stats.edges,
+        communities: pipelineResult.communityResult?.stats.totalCommunities,
+        processes: pipelineResult.processResult?.stats.totalProcesses,
+      });
+
+      // Close core kuzu connection (pipeline is done)
+      await coreKuzu.closeKuzu();
+
+      // Re-init MCP state so next tool call reconnects
+      this.repo = await loadRepo(repoPath);
+      if (this.repo) {
+        const repoStats = this.repo.meta.stats || {};
+        this._context = {
+          projectName: path.basename(this.repo.repoPath),
+          stats: {
+            fileCount: repoStats.files || 0,
+            functionCount: repoStats.nodes || 0,
+            classCount: 0,
+            interfaceCount: 0,
+            methodCount: 0,
+            communityCount: repoStats.communities || 0,
+            processCount: repoStats.processes || 0,
+          },
+          hotspots: [],
+          folderTree: '',
+        };
+      }
+
+      console.error('GitNexus: Indexing complete!');
+      return {
+        status: 'success',
+        message: `Repository indexed successfully.`,
+        stats: {
+          files: pipelineResult.fileContents.size,
+          nodes: stats.nodes,
+          edges: stats.edges,
+          communities: pipelineResult.communityResult?.stats.totalCommunities,
+          processes: pipelineResult.processResult?.stats.totalProcesses,
+        },
+      };
+    } catch (e: any) {
+      console.error('GitNexus: Indexing failed:', e.message);
+      return { error: `Indexing failed: ${e.message}` };
+    }
   }
 
   async disconnect(): Promise<void> {

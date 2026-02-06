@@ -1,6 +1,12 @@
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /**
+ * Yield control to the event loop so spinners/progress can render.
+ * Call periodically in hot loops to prevent UI freezes.
+ */
+export const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+
+/**
  * Map file extension to SupportedLanguage enum
  */
 export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {

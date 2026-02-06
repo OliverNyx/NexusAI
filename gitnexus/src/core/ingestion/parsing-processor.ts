@@ -5,7 +5,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename } from './utils.js';
+import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -127,6 +127,9 @@ export const processParsing = async (
     
     // Report progress for each file
     onFileProgress?.(i + 1, total, file.path);
+    
+    // Yield to event loop periodically so spinner can update
+    if (i % 20 === 0) await yieldToEventLoop();
     
     const language = getLanguageFromFilename(file.path);
 

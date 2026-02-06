@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from './utils.js';
+import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
@@ -127,6 +127,7 @@ export const processImports = async (
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
 
     // 1. Check language support first
     const language = getLanguageFromFilename(file.path);

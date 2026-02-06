@@ -16,6 +16,37 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     }
   };
 
+  /**
+   * Remove a single node and all relationships involving it
+   */
+  const removeNode = (nodeId: string): boolean => {
+    if (!nodeMap.has(nodeId)) return false;
+    
+    nodeMap.delete(nodeId);
+    
+    // Remove all relationships involving this node
+    for (const [relId, rel] of relationshipMap) {
+      if (rel.sourceId === nodeId || rel.targetId === nodeId) {
+        relationshipMap.delete(relId);
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Remove all nodes (and their relationships) belonging to a file
+   */
+  const removeNodesByFile = (filePath: string): number => {
+    let removed = 0;
+    for (const [nodeId, node] of nodeMap) {
+      if (node.properties?.filePath === filePath) {
+        removeNode(nodeId);
+        removed++;
+      }
+    }
+    return removed;
+  };
+
   return{
     get nodes(){
       return Array.from(nodeMap.values())
@@ -36,6 +67,8 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
 
     addNode,
     addRelationship,
+    removeNode,
+    removeNodesByFile,
 
   };
 };

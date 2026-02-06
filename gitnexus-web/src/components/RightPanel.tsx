@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Square, Sparkles, User,
-  PanelRightClose, Loader2, AlertTriangle, Activity, GitBranch
+  PanelRightClose, Loader2, AlertTriangle, GitBranch
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
-import { ActivityFeed } from './ActivityFeed';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
 export const RightPanel = () => {
@@ -29,7 +28,7 @@ export const RightPanel = () => {
   } = useAppState();
 
   const [chatInput, setChatInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'activity' | 'processes'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -225,18 +224,6 @@ export const RightPanel = () => {
             <span>Nexus AI</span>
           </button>
 
-          {/* Activity Tab */}
-          <button
-            onClick={() => setActiveTab('activity')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'activity'
-              ? 'bg-accent/15 text-accent'
-              : 'text-text-muted hover:text-text-primary hover:bg-hover'
-              }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            <span>Activity</span>
-          </button>
-
           {/* Processes Tab */}
           <button
             onClick={() => setActiveTab('processes')}
@@ -262,13 +249,6 @@ export const RightPanel = () => {
           <PanelRightClose className="w-4 h-4" />
         </button>
       </div>
-
-      {/* Activity Feed Tab */}
-      {activeTab === 'activity' && (
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <ActivityFeed />
-        </div>
-      )}
 
       {/* Processes Tab */}
       {activeTab === 'processes' && (

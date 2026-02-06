@@ -6,6 +6,7 @@
  */
 
 import type { LocalBackend } from './local/local-backend.js';
+import { checkStaleness } from './staleness.js';
 
 export interface ResourceDefinition {
   uri: string;
@@ -113,27 +114,41 @@ async function getContextResource(backend: LocalBackend): Promise<string> {
     return 'error: No codebase loaded. Run: gitnexus analyze';
   }
   
+  // Check staleness
+  const repoPath = backend.repoPath;
+  const lastCommit = backend.meta?.lastCommit || 'HEAD';
+  const staleness = repoPath ? checkStaleness(repoPath, lastCommit) : { isStale: false, commitsBehind: 0 };
+  
   const lines: string[] = [
     `project: ${context.projectName}`,
-    'stats:',
-    `  files: ${context.stats.fileCount}`,
-    `  symbols: ${context.stats.functionCount}`,
-    `  clusters: ${context.stats.communityCount}`,
-    `  processes: ${context.stats.processCount}`,
-    '',
-    'tools_available:',
-    '  - search: Hybrid semantic + keyword search',
-    '  - explore: Deep dive on symbol/cluster/process',
-    '  - impact: Blast radius analysis',
-    '  - overview: List all clusters and processes',
-    '  - cypher: Raw graph queries',
-    '',
-    'resources_available:',
-    '  - gitnexus://clusters: All clusters',
-    '  - gitnexus://processes: All processes',
-    '  - gitnexus://cluster/{name}: Cluster details',
-    '  - gitnexus://process/{name}: Process trace',
   ];
+  
+  // Add staleness warning if index is behind
+  if (staleness.isStale && staleness.hint) {
+    lines.push('');
+    lines.push(`staleness: "${staleness.hint}"`);
+  }
+  
+  lines.push('');
+  lines.push('stats:');
+  lines.push(`  files: ${context.stats.fileCount}`);
+  lines.push(`  symbols: ${context.stats.functionCount}`);
+  lines.push(`  clusters: ${context.stats.communityCount}`);
+  lines.push(`  processes: ${context.stats.processCount}`);
+  lines.push('');
+  lines.push('tools_available:');
+  lines.push('  - search: Hybrid semantic + keyword search');
+  lines.push('  - explore: Deep dive on symbol/cluster/process');
+  lines.push('  - impact: Blast radius analysis');
+  lines.push('  - overview: List all clusters and processes');
+  lines.push('  - cypher: Raw graph queries');
+  lines.push('  - analyze: Re-index to update stale data');
+  lines.push('');
+  lines.push('resources_available:');
+  lines.push('  - gitnexus://clusters: All clusters');
+  lines.push('  - gitnexus://processes: All processes');
+  lines.push('  - gitnexus://cluster/{name}: Cluster details');
+  lines.push('  - gitnexus://process/{name}: Process trace');
   
   return lines.join('\n');
 }

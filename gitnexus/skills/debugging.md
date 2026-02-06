@@ -7,6 +7,7 @@ description: Trace bugs through call chains using knowledge graph
 
 ## Quick Start
 ```
+0. If "Index is stale" → gitnexus_analyze({})
 1. gitnexus_search({query})                → Find code related to error
 2. gitnexus_explore({name, type: "symbol"}) → Get callers and callees
 3. READ gitnexus://process/{name}           → Trace execution flow

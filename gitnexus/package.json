@@ -10,7 +10,8 @@
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "vendor"
   ],
   "scripts": {
     "build": "tsc",
@@ -25,17 +26,19 @@
     "express": "^4.19.2",
     "glob": "^11.0.0",
     "graphology": "^0.25.4",
-    "graphology-communities-louvain": "^2.0.1",
+    "graphology-indices": "^0.17.0",
+    "graphology-utils": "^2.3.0",
     "kuzu": "^0.11.3",
     "lru-cache": "^11.0.0",
-    "minisearch": "^7.2.0",
+    "mnemonist": "^0.39.0",
     "ora": "^8.0.0",
+    "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.0",
     "tree-sitter-c": "^0.21.0",
     "tree-sitter-c-sharp": "^0.21.0",
     "tree-sitter-cpp": "^0.22.0",
     "tree-sitter-go": "^0.21.0",
-    "tree-sitter-java": "^0.20.0",
+    "tree-sitter-java": "^0.21.0",
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-python": "^0.21.0",
     "tree-sitter-rust": "^0.21.0",

@@ -13,7 +13,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from './utils.js';
+import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 
 export const processHeritage = async (
   graph: KnowledgeGraph,
@@ -27,6 +27,7 @@ export const processHeritage = async (
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
 
     // 1. Check language support
     const language = getLanguageFromFilename(file.path);

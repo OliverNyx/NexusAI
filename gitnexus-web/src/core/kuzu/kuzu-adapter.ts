@@ -113,70 +113,61 @@ export const loadGraphToKuzu = async (
     }
     
     // 5. INSERT relations one by one (COPY doesn't work with multi-pair REL tables)
-    // Parse CSV format: "from","to","type",confidence,"reason"
+    // Build a set of valid table names for fast lookup
+    const validTables = new Set<string>(NODE_TABLES as readonly string[]);
+
+    const getNodeLabel = (nodeId: string): string => {
+      if (nodeId.startsWith('comm_')) return 'Community';
+      if (nodeId.startsWith('proc_')) return 'Process';
+      return nodeId.split(':')[0];
+    };
+
+    // All multi-language tables are created with backticks - must always reference them with backticks
+    const escapeLabel = (label: string): string => {
+      return BACKTICK_TABLES.has(label) ? `\`${label}\`` : label;
+    };
+
     let insertedRels = 0;
     let skippedRels = 0;
     const skippedRelStats = new Map<string, number>();
     for (const line of relLines) {
       try {
-        // Parse CSV - handle quoted fields and numeric confidence
-        // Parse CSV - handle quoted fields and numeric confidence
         // Format: "from","to","type",confidence,"reason",step
-        // Note: step is unquoted numeric
         const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
         if (!match) continue;
         
         const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+
+        const fromLabel = getNodeLabel(fromId);
+        const toLabel = getNodeLabel(toId);
+
+        // Skip relationships where either node's label doesn't have a table in KuzuDB
+        // Querying a non-existent table causes a fatal native crash
+        if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
+          skippedRels++;
+          continue;
+        }
+
         const confidence = parseFloat(confidenceStr) || 1.0;
         const step = parseInt(stepStr) || 0;
         
-        // Extract labels from node IDs
-        // Community nodes have IDs like "comm_14" (no colon)
-        // Other nodes have IDs like "Label:path:name"
-        const getNodeLabel = (nodeId: string): string => {
-          if (nodeId.startsWith('comm_')) {
-            return 'Community';
-          }
-          if (nodeId.startsWith('proc_')) {
-            return 'Process';
-          }
-          return nodeId.split(':')[0];
-        };
-        
-        // Reserved Cypher keywords need backtick escaping
-        const RESERVED_LABELS = ['Macro', 'Enum', 'Union', 'Const', 'Module', 'Struct'];
-        const escapeLabel = (label: string): string => {
-          return RESERVED_LABELS.includes(label) ? `\`${label}\`` : label;
-        };
-        
-        const fromLabel = escapeLabel(getNodeLabel(fromId));
-        const toLabel = escapeLabel(getNodeLabel(toId));
-        
-        // INSERT with explicit node matching (including confidence and reason)
         const insertQuery = `
-          MATCH (a:${fromLabel} {id: '${fromId.replace(/'/g, "''")}'}),
-                (b:${toLabel} {id: '${toId.replace(/'/g, "''")}'})
+          MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}'}),
+                (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}'})
           CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
         `;
         await conn.query(insertQuery);
         insertedRels++;
       } catch (err) {
-        // Skip failed insertions (nodes might not exist, or relation pair not allowed by schema)
         skippedRels++;
         const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
         if (match) {
           const [, fromId, toId, relType] = match;
-          const getNodeLabel = (nodeId: string): string => {
-            if (nodeId.startsWith('comm_')) return 'Community';
-            if (nodeId.startsWith('proc_')) return 'Process';
-            return nodeId.split(':')[0];
-          };
           const fromLabel = getNodeLabel(fromId);
           const toLabel = getNodeLabel(toId);
           const key = `${relType}:${fromLabel}->` + toLabel;
           skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
           
-          // Log each skipped relation
           if (import.meta.env.DEV) {
             console.warn(`⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -222,25 +213,41 @@ export const loadGraphToKuzu = async (
   }
 };
 
+// KuzuDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
+// Source code content is full of backslashes which confuse the auto-detection.
+// We MUST explicitly set ESCAPE='"' and disable auto_detect.
+const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
+
+// Multi-language table names created with backticks in CODE_ELEMENT_BASE
+const BACKTICK_TABLES = new Set([
+  'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
+  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation',
+  'Constructor', 'Template', 'Module',
+]);
+
+const escapeTableName = (table: string): string => {
+  return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
+};
+
 /**
  * Get the COPY query for a node table with correct column mapping
  */
 const getCopyQuery = (table: NodeTableName, path: string): string => {
-  // File and Folder have different columns than code elements
+  const t = escapeTableName(table);
   if (table === 'File') {
-    return `COPY File(id, name, filePath, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+    return `COPY ${t}(id, name, filePath, content) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
-    return `COPY Folder(id, name, filePath) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+    return `COPY ${t}(id, name, filePath) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Community') {
-    return `COPY Community(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+    return `COPY ${t}(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Process') {
-    return `COPY Process(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+    return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  // All code element tables: Function, Class, Interface, Method, CodeElement
-  return `COPY ${table}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" (HEADER=true, PARALLEL=false)`;
+  // Code element tables (Function, Class, Interface, Method, CodeElement, and multi-language)
+  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" ${COPY_CSV_OPTS}`;
 };
 
 /**

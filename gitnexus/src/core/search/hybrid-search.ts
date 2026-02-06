@@ -8,7 +8,7 @@
  * production search systems.
  */
 
-import { searchBM25, isBM25Ready, type BM25SearchResult } from './bm25-index.js';
+import { searchFTSFromKuzu, type BM25SearchResult } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
 
 /**
@@ -114,11 +114,11 @@ export const mergeWithRRF = (
 
 /**
  * Check if hybrid search is available
- * Requires BM25 index to be built
- * Note: Semantic search is optional - hybrid works with just BM25 if embeddings aren't ready
+ * KuzuDB FTS is always available once the database is initialized.
+ * Semantic search is optional - hybrid works with just FTS if embeddings aren't ready.
  */
 export const isHybridSearchReady = (): boolean => {
-  return isBM25Ready();
+  return true; // FTS is always available via KuzuDB when DB is open
 };
 
 /**
@@ -146,6 +146,7 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
 
 /**
  * Execute BM25 + semantic search and merge with RRF.
+ * Uses KuzuDB FTS for always-fresh BM25 results (no cached data).
  * The semanticSearch function is injected to keep this module environment-agnostic.
  */
 export const hybridSearch = async (
@@ -154,11 +155,8 @@ export const hybridSearch = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   semanticSearch: (executeQuery: (cypher: string) => Promise<any[]>, query: string, k?: number) => Promise<SemanticSearchResult[]>
 ): Promise<HybridSearchResult[]> => {
-  const bm25Results = isBM25Ready() ? searchBM25(query, limit) : [];
+  // Use KuzuDB FTS for always-fresh BM25 results
+  const bm25Results = await searchFTSFromKuzu(query, limit);
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };
-
-
-
-

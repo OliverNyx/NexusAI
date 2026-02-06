@@ -7,6 +7,7 @@ description: Analyze blast radius before making code changes
 
 ## Quick Start
 ```
+0. If "Index is stale" → gitnexus_analyze({})
 1. gitnexus_impact({target, direction: "upstream"}) → What depends on this
 2. READ gitnexus://clusters                         → Check affected areas
 3. READ gitnexus://processes                        → Affected execution flows

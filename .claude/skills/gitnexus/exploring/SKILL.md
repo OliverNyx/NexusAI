@@ -7,6 +7,7 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 
 ## Quick Start
 ```
+0. If "Index is stale" → gitnexus_analyze({})
 1. READ gitnexus://context        → Get codebase overview (~150 tokens)
 2. READ gitnexus://clusters       → See all functional clusters
 3. READ gitnexus://cluster/{name} → Deep dive on specific cluster

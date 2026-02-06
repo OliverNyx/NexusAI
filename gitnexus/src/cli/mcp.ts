@@ -61,6 +61,8 @@ export const mcpCommand = async () => {
       const local = new LocalBackend();
       await local.init(candidate);
       console.error(`GitNexus: Found index at ${repo.storagePath}`);
+      
+      // Start MCP server (no watcher daemon - staleness hints guide LLM to call analyze)
       await startMCPServer(local);
       return;
     }
