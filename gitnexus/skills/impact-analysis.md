@@ -3,74 +3,64 @@ name: gitnexus-impact-analysis
 description: Analyze blast radius before making code changes
 ---
 
-# Impact Analysis
-
-## Quick Start
-```
-0. READ gitnexus://repos                                    → Discover indexed repos
-1. If "Index is stale" → run `npx gitnexus analyze` in terminal
-2. gitnexus_impact({target, direction: "upstream", repo: "my-app"}) → What depends on this
-3. READ gitnexus://repo/my-app/clusters                     → Check affected areas
-4. READ gitnexus://repo/my-app/processes                    → Affected execution flows
-```
+# Impact Analysis with GitNexus
 
 ## When to Use
 - "Is it safe to change this function?"
 - "What will break if I modify X?"
 - "Show me the blast radius"
 - "Who uses this code?"
+- Before making non-trivial code changes
+
+## Workflow
+
+```
+1. gitnexus_impact({target: "X", direction: "upstream"})  → What depends on this
+2. READ gitnexus://repo/{name}/clusters                    → Check which areas are affected
+3. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
+4. Assess risk and report to user
+```
+
+> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+
+## Checklist
+
+```
+- [ ] gitnexus_impact({target, direction: "upstream"}) to find dependents
+- [ ] Review d=1 items first (these WILL BREAK)
+- [ ] Check high-confidence (>0.8) dependencies
+- [ ] READ clusters to understand which areas are affected
+- [ ] Count affected clusters (cross-cutting = higher risk)
+- [ ] READ processes to check affected execution flows
+- [ ] Assess risk level and report to user
+```
 
 ## Understanding Output
 
 | Depth | Risk Level | Meaning |
 |-------|-----------|---------|
-| d=1 | WILL BREAK | Direct callers/importers |
+| d=1 | **WILL BREAK** | Direct callers/importers |
 | d=2 | LIKELY AFFECTED | Indirect dependencies |
 | d=3 | MAY NEED TESTING | Transitive effects |
 
-## Workflow Checklist
-```
-Impact Analysis:
-- [ ] READ gitnexus://repos to find the right repo
-- [ ] gitnexus_impact(target, "upstream", repo) to find dependents
-- [ ] READ gitnexus://repo/{name}/clusters to understand affected areas
-- [ ] Check high-confidence (>0.8) dependencies first
-- [ ] Count affected clusters (cross-cutting = higher risk)
-- [ ] If >10 processes affected, consider splitting change
-```
+## Risk Assessment
 
-## Resource Reference
+| Affected | Risk |
+|----------|------|
+| <5 symbols, 1 cluster | LOW |
+| 5-15 symbols, 1-2 clusters | MEDIUM |
+| >15 symbols or 3+ clusters | HIGH |
+| Critical path (auth, payments) | CRITICAL |
 
-### gitnexus://repo/{name}/clusters
-Check which clusters might be affected:
-```yaml
-clusters:
-  - name: Auth
-    symbols: 47
-  - name: API
-    symbols: 32
-```
+## Tools
 
-### gitnexus://repo/{name}/processes
-Find which processes touch the target:
-```yaml
-processes:
-  - name: LoginFlow
-    type: cross_community
-    steps: 5
-```
-
-## Tool Reference
-
-### gitnexus_impact
-Analyze blast radius:
+**gitnexus_impact** — the primary tool:
 ```
 gitnexus_impact({
   target: "validateUser",
   direction: "upstream",
   minConfidence: 0.8,
-  maxDepth: 3,
-  repo: "my-app"
+  maxDepth: 3
 })
 
 → d=1 (WILL BREAK):
@@ -84,34 +74,15 @@ gitnexus_impact({
 → Risk: MEDIUM (3 processes)
 ```
 
-## Risk Assessment
-
-| Affected | Risk |
-|----------|------|
-| <5 symbols, 1 cluster | LOW |
-| 5-15 symbols, 1-2 clusters | MEDIUM |
-| >15 symbols or 3+ clusters | HIGH |
-| Critical path (auth, payments) | CRITICAL |
-
-## Pre-Change Checklist
-```
-Before Committing:
-- [ ] Run impact analysis
-- [ ] Review all d=1 (WILL BREAK) items
-- [ ] Verify test coverage for affected processes
-- [ ] If risk > MEDIUM, get code review
-- [ ] If cross-cluster, coordinate with other teams
-```
-
 ## Example: "What breaks if I change validateUser?"
 
 ```
-1. gitnexus_impact({target: "validateUser", direction: "upstream", repo: "my-app"})
-   → d=1: loginHandler, apiMiddleware
-   → d=2: authRouter, sessionManager
+1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+   → d=1: loginHandler, apiMiddleware (WILL BREAK)
+   → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 
 2. READ gitnexus://repo/my-app/clusters
-   → Auth and API clusters affected
+   → Auth and API clusters affected (2 clusters)
 
-3. Decision: 2 direct callers, 2 clusters = MEDIUM risk
+3. Risk: 2 direct callers, 2 clusters = MEDIUM
 ```

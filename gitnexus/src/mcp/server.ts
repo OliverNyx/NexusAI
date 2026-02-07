@@ -24,6 +24,55 @@ import { GITNEXUS_TOOLS } from './tools.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 
+/**
+ * Next-step hints appended to tool responses.
+ * 
+ * Agents often stop after one tool call. These hints guide them to the
+ * logical next action, creating a self-guiding workflow without hooks.
+ * 
+ * Design: Each hint is a short, actionable instruction (not a suggestion).
+ * The hint references the specific tool/resource to use next.
+ */
+function getNextStepHint(toolName: string, args: Record<string, any> | undefined): string {
+  const repo = args?.repo;
+  const repoParam = repo ? `, repo: "${repo}"` : '';
+  const repoPath = repo || '{name}';
+
+  switch (toolName) {
+    case 'list_repos':
+      return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
+
+    case 'search':
+      return `\n\n---\n**Next:** To understand a result in context, use explore({name: "<symbol_name>", type: "symbol"${repoParam}}) to see its callers, callees, and cluster membership.`;
+
+    case 'explore': {
+      const exploreType = args?.type || 'symbol';
+      if (exploreType === 'symbol') {
+        return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+      }
+      if (exploreType === 'cluster') {
+        return `\n\n---\n**Next:** To drill into a specific symbol, use explore({name: "<symbol_name>", type: "symbol"${repoParam}}). To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+      }
+      if (exploreType === 'process') {
+        return `\n\n---\n**Next:** To explore any step in detail, use explore({name: "<step_name>", type: "symbol"${repoParam}}).`;
+      }
+      return '';
+    }
+
+    case 'overview':
+      return `\n\n---\n**Next:** To drill into a cluster, READ gitnexus://repo/${repoPath}/cluster/{name} or use explore({name: "<cluster_name>", type: "cluster"${repoParam}}).`;
+
+    case 'impact':
+      return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+
+    case 'cypher':
+      return `\n\n---\n**Next:** To explore a result symbol, use explore({name: "<name>", type: "symbol"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
+
+    default:
+      return '';
+  }
+}
+
 export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = new Server(
     {
@@ -102,18 +151,20 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     })),
   }));
 
-  // Handle tool calls
+  // Handle tool calls — append next-step hints to guide agent workflow
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     try {
       const result = await backend.callTool(name, args);
+      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
 
       return {
         content: [
           {
             type: 'text',
-            text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+            text: resultText + hint,
           },
         ],
       };

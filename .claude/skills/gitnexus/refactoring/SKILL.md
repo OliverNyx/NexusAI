@@ -5,116 +5,98 @@ description: Plan safe refactors using blast radius and dependency mapping
 
 # Refactoring with GitNexus
 
-## Quick Start
-```
-0. READ gitnexus://repos                                    → Discover indexed repos
-1. If "Index is stale" → gitnexus_analyze({repo: "my-app"})
-2. gitnexus_impact({target, direction: "upstream", repo: "my-app"}) → Map all dependents
-3. READ gitnexus://repo/my-app/schema                       → Understand graph structure
-4. gitnexus_cypher({query: "...", repo: "my-app"})           → Find all references
-```
-
 ## When to Use
 - "Rename this function safely"
 - "Extract this into a module"
 - "Split this service"
-- "Refactor without breaking things"
+- "Move this to a new file"
+- Any task involving renaming, extracting, splitting, or restructuring code
+
+## Workflow
+
+```
+1. gitnexus_impact({target: "X", direction: "upstream"})  → Map all dependents
+2. gitnexus_search({query: "X"})                           → Find string/dynamic references
+3. READ gitnexus://repo/{name}/cluster/{name}              → Check cohesion impact
+4. Plan update order: interfaces → implementations → callers → tests
+```
+
+> If "Index is stale" → run `npx gitnexus analyze` in terminal.
 
 ## Checklists
 
 ### Rename Symbol
 ```
-Rename Refactoring:
-- [ ] gitnexus_impact({target: oldName, direction: "upstream", repo: "my-app"}) — find all callers
-- [ ] gitnexus_search({query: oldName, repo: "my-app"}) — find string literals
-- [ ] Check for reflection/dynamic references
-- [ ] Update in order: interface → implementation → usages
+- [ ] gitnexus_impact({target: oldName, direction: "upstream"}) — find all callers
+- [ ] gitnexus_search({query: oldName}) — find string literals and dynamic references
+- [ ] Check for reflection/dynamic invocation patterns
+- [ ] Plan update order: interface → implementation → callers → tests
+- [ ] Update all d=1 (WILL BREAK) items
 - [ ] Run tests for affected processes
 ```
 
 ### Extract Module
 ```
-Extract Module:
-- [ ] gitnexus_explore({name: target, type: "symbol", repo: "my-app"}) — map dependencies
-- [ ] gitnexus_impact({target, direction: "upstream", repo: "my-app"}) — find callers
-- [ ] READ gitnexus://repo/my-app/cluster/{name} — check cohesion
+- [ ] gitnexus_explore({name: target, type: "symbol"}) — map internal dependencies
+- [ ] gitnexus_impact({target, direction: "upstream"}) — find all external callers
+- [ ] READ cluster resource — check if extraction preserves cohesion
 - [ ] Define new module interface
-- [ ] Update imports across affected files
+- [ ] Extract code, update imports
+- [ ] Run tests for affected processes
 ```
 
-### Split Function
+### Split Function/Service
 ```
-Split Function:
-- [ ] gitnexus_explore({name: target, type: "symbol", repo: "my-app"}) — understand callees
-- [ ] Group related logic
-- [ ] gitnexus_impact — verify callers won't break
-- [ ] Create new functions
+- [ ] gitnexus_explore({name: target, type: "symbol"}) — understand all callees
+- [ ] Group callees by responsibility/domain
+- [ ] gitnexus_impact({target, direction: "upstream"}) — map callers to update
+- [ ] Create new functions/services
 - [ ] Update callers
+- [ ] Run tests for affected processes
 ```
 
-## Resource Reference
+## Tools
 
-### gitnexus://repo/{name}/schema
-Graph structure for Cypher queries:
-```yaml
-nodes: [Function, Class, Method, Community, Process]
-relationships: [CALLS, IMPORTS, EXTENDS, MEMBER_OF]
-
-example_queries:
-  find_callers: |
-    MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "X"})
-    RETURN caller.name
+**gitnexus_impact** — map all dependents first:
+```
+gitnexus_impact({target: "validateUser", direction: "upstream"})
+→ d=1: loginHandler, apiMiddleware, testUtils
+→ Affected Processes: LoginFlow, TokenRefresh
 ```
 
-### gitnexus://repo/{name}/cluster/{clusterName}
-Check if extraction preserves cohesion:
-```yaml
-name: Payment
-cohesion: 92%
-members: [processPayment, validateCard, PaymentService]
+**gitnexus_search** — find string/dynamic references impact() might miss:
+```
+gitnexus_search({query: "validateUser"})
+→ Found in: config.json (dynamic reference!), test fixtures
 ```
 
-## Tool Reference
-
-### Finding all references
+**gitnexus_cypher** — custom reference queries:
 ```cypher
 MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "validateUser"})
-RETURN caller.name, caller.filePath
-ORDER BY caller.filePath
+RETURN caller.name, caller.filePath ORDER BY caller.filePath
 ```
 
-### Finding imports of a module
-```cypher
-MATCH (importer)-[:CodeRelation {type: 'IMPORTS'}]->(f:File {name: "utils.ts"})
-RETURN importer.name, importer.filePath
-```
-
-## Example: Safely Rename `validateUser` to `authenticateUser`
-
-```
-1. gitnexus_impact({target: "validateUser", direction: "upstream", repo: "my-app"})
-   → loginHandler, apiMiddleware, testUtils
-
-2. gitnexus_search({query: "validateUser", repo: "my-app"})
-   → Found in: config.json (dynamic reference!)
-
-3. READ gitnexus://repo/my-app/processes
-   → LoginFlow, TokenRefresh, APIGateway
-
-4. Plan update order:
-   1. Update declaration in auth.ts
-   2. Update config.json string reference
-   3. Update loginHandler
-   4. Update apiMiddleware
-   5. Run tests for LoginFlow, TokenRefresh
-```
-
-## Refactoring Safety Rules
+## Risk Rules
 
 | Risk Factor | Mitigation |
 |-------------|------------|
 | Many callers (>5) | Update in small batches |
-| Cross-cluster | Coordinate with other teams |
-| String references | Search for dynamic usage |
-| Reflection | Check for dynamic invocation |
-| External exports | May break downstream repos |
+| Cross-cluster refs | Coordinate with affected areas |
+| String/dynamic refs | `gitnexus_search` to find them |
+| External/public API | Version and deprecate properly |
+
+## Example: Rename `validateUser` to `authenticateUser`
+
+```
+1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+   → d=1: loginHandler, apiMiddleware, testUtils
+
+2. gitnexus_search({query: "validateUser"})
+   → Found in: config.json (dynamic reference!)
+
+3. Plan update order:
+   1. Update declaration in src/auth/validator.ts
+   2. Update config.json string reference
+   3. Update loginHandler, apiMiddleware, testUtils
+   4. Run tests for LoginFlow, TokenRefresh
+```

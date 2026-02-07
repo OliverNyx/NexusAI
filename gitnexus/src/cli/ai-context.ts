@@ -27,89 +27,73 @@ const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
 
 /**
- * Generate the full GitNexus context content (resources-first approach)
+ * Generate the full GitNexus context content.
+ * 
+ * Design principles (learned from real agent behavior):
+ * - AGENTS.md is the ROUTER — it tells the agent WHICH skill to read
+ * - Skills contain the actual workflows — AGENTS.md does NOT duplicate them
+ * - Bold **IMPORTANT** block + "Skills — Read First" heading — agents skip soft suggestions
+ * - One-line quick start (read context resource) gives agents an entry point
+ * - Tools/Resources sections are labeled "Reference" — agents treat them as lookup, not workflow
  */
 function generateGitNexusContent(projectName: string, stats: RepoStats): string {
   const clusterCount = stats.clusters || stats.communities || 0;
   return `${GITNEXUS_START_MARKER}
 # GitNexus MCP
 
-This project is indexed as **${projectName}** by GitNexus, providing AI agents with deep code intelligence.
+This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${clusterCount} clusters, ${stats.processes || 0} processes).
 
-## Project: ${projectName}
+GitNexus provides a knowledge graph over this codebase — clusters, call chains, blast radius, execution flows, and semantic search.
 
-| Metric | Count |
-|--------|-------|
-| Files | ${stats.files || 0} |
-| Symbols | ${stats.nodes || 0} |
-| Relationships | ${stats.edges || 0} |
-| Clusters | ${clusterCount} |
-| Processes | ${stats.processes || 0} |
+## Always Start Here
 
-> **Staleness:** If the index is out of date, run \`npx gitnexus analyze\` in the terminal to refresh. The \`gitnexus://repo/${projectName}/context\` resource will warn you when the index is stale.
+For any task involving code understanding, debugging, impact analysis, or refactoring, you must:
 
-## Quick Start
+1. **Read \`gitnexus://repo/{name}/context\`** — codebase overview + check index freshness
+2. **Match your task to a skill below** and **read that skill file**
+3. **Follow the skill's workflow and checklist**
 
-\`\`\`
-1. READ gitnexus://repos                          → Discover all indexed repos
-2. READ gitnexus://repo/${projectName}/context     → Get codebase overview (~150 tokens)
-3. READ gitnexus://repo/${projectName}/clusters    → See all functional clusters
-4. gitnexus_search({query: "...", repo: "${projectName}"}) → Find code by query
-\`\`\`
+> If step 1 warns the index is stale, run \`npx gitnexus analyze\` in the terminal first.
 
-## Available Resources
+## Skills
 
-| Resource | Purpose |
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus/refactoring/SKILL.md\` |
+
+## Tools Reference
+
+| Tool | What it gives you |
+|------|-------------------|
+| \`search\` | Semantic + keyword code search with cluster context |
+| \`explore\` | Symbol deep dive — callers, callees, cluster membership, processes |
+| \`impact\` | Blast radius — what breaks at depth 1/2/3 with confidence scores |
+| \`overview\` | All clusters and processes at a glance |
+| \`cypher\` | Raw graph queries (read \`gitnexus://repo/{name}/schema\` first) |
+| \`list_repos\` | Discover indexed repos |
+
+## Resources Reference
+
+Lightweight reads (~100-500 tokens) for navigation:
+
+| Resource | Content |
 |----------|---------|
-| \`gitnexus://repos\` | List all indexed repositories |
-| \`gitnexus://repo/${projectName}/context\` | Codebase stats, tools, and resources overview |
-| \`gitnexus://repo/${projectName}/clusters\` | All clusters with symbol counts and cohesion |
-| \`gitnexus://repo/${projectName}/cluster/{name}\` | Cluster members and details |
-| \`gitnexus://repo/${projectName}/processes\` | All execution flows with types |
-| \`gitnexus://repo/${projectName}/process/{name}\` | Full process trace with steps |
-| \`gitnexus://repo/${projectName}/schema\` | Graph schema for Cypher queries |
-
-## Available Tools
-
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| \`list_repos\` | Discover indexed repos | First step with multiple repos |
-| \`search\` | Semantic + keyword search | Finding code by query |
-| \`overview\` | List clusters & processes | Understanding architecture |
-| \`explore\` | Deep dive on symbol/cluster/process | Detailed investigation |
-| \`impact\` | Blast radius analysis | Before making changes |
-| \`cypher\` | Raw graph queries | Complex analysis |
-
-> **Re-indexing:** To refresh a stale index, run \`npx gitnexus analyze\` in the terminal. Use \`--force\` only to rebuild from scratch. This is a CLI command, not an MCP tool.
-
-> **Multi-repo:** When multiple repos are indexed, pass \`repo: "${projectName}"\` to target this project.
-
-## Workflow Examples
-
-### Exploring the Codebase
-\`\`\`
-READ gitnexus://repos                            → Discover repos
-READ gitnexus://repo/${projectName}/context       → Stats and overview (check for staleness)
-READ gitnexus://repo/${projectName}/clusters      → Find relevant cluster by name
-READ gitnexus://repo/${projectName}/cluster/{name} → See members of that cluster
-gitnexus_explore({name: "<symbol_name>", type: "symbol", repo: "${projectName}"})
-\`\`\`
-
-### Planning a Change
-\`\`\`
-gitnexus_search({query: "<what you want to change>", repo: "${projectName}"})
-gitnexus_impact({target: "<symbol_name>", direction: "upstream", repo: "${projectName}"})
-READ gitnexus://repo/${projectName}/processes     → Check affected execution flows
-\`\`\`
+| \`gitnexus://repo/{name}/context\` | Stats, staleness check |
+| \`gitnexus://repo/{name}/clusters\` | All clusters with cohesion scores |
+| \`gitnexus://repo/{name}/cluster/{clusterName}\` | Cluster members |
+| \`gitnexus://repo/{name}/processes\` | All execution flows |
+| \`gitnexus://repo/{name}/process/{processName}\` | Step-by-step trace |
+| \`gitnexus://repo/{name}/schema\` | Graph schema for Cypher |
 
 ## Graph Schema
 
 **Nodes:** File, Function, Class, Interface, Method, Community, Process
-
-**Relationships:** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
+**Edges (via CodeRelation.type):** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
 
 \`\`\`cypher
-// Example: Find callers of a function
 MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunc"})
 RETURN caller.name, caller.filePath
 \`\`\`

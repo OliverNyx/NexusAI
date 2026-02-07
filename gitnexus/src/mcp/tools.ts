@@ -27,7 +27,9 @@ export const GITNEXUS_TOOLS: ToolDefinition[] = [
     description: `List all indexed repositories available to GitNexus.
 
 Returns each repo's name, path, indexed date, last commit, and stats.
-Use this to discover which repos are available before querying.
+
+WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
+AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
 
 When multiple repos are indexed, you MUST specify the "repo" parameter
 on other tools (search, explore, impact, etc.) to target the correct one.`,
@@ -42,7 +44,10 @@ on other tools (search, explore, impact, etc.) to target the correct one.`,
     description: `Hybrid search (keyword + semantic) across the codebase.
 Returns code nodes with cluster context and optional graph connections.
 
-BETTER THAN IDE search because:
+WHEN TO USE: Finding code by concept, name, or keyword. Use alongside grep/IDE search for richer results.
+AFTER THIS: Use explore() on interesting results to see callers/callees and cluster membership.
+
+Complements grep/IDE search by adding:
 - Cluster context (which functional area each result belongs to)
 - Relationship data (callers/callees with depth=full)
 - Hybrid ranking (BM25 + semantic via Reciprocal Rank Fusion)
@@ -62,6 +67,9 @@ RETURNS: Array of {name, type, filePath, cluster?, connections[]?, fusedScore, s
   {
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
+
+WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
+AFTER THIS: Use explore() on result symbols for deeper context.
 
 SCHEMA:
 - Nodes: File, Folder, Function, Class, Interface, Method, Community, Process
@@ -94,13 +102,16 @@ TIPS:
     name: 'explore',
     description: `Deep dive on a symbol, cluster, or process.
 
+WHEN TO USE: After search() to understand context, or to drill into a specific node.
+AFTER THIS (symbol): Use impact() if planning changes, or READ process resource to see execution flows.
+AFTER THIS (cluster): Use explore() on specific members, or READ processes resource.
+AFTER THIS (process): Use explore() on individual steps for detail.
+
 TYPE: symbol | cluster | process
 
 For SYMBOL: Shows cluster membership, process participation, callers/callees
 For CLUSTER: Shows members, cohesion score, processes touching it
-For PROCESS: Shows step-by-step trace, clusters traversed, entry/terminal points
-
-Use after search to understand context of a specific node.`,
+For PROCESS: Shows step-by-step trace, clusters traversed, entry/terminal points`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -115,12 +126,13 @@ Use after search to understand context of a specific node.`,
     name: 'overview',
     description: `Get codebase map showing all clusters and processes.
 
+WHEN TO USE: Understanding overall architecture. Prefer READ gitnexus://repo/{name}/clusters resource for a lighter-weight alternative.
+AFTER THIS: Drill into a specific cluster with explore({type: "cluster"}) or search() for specific code.
+
 Returns:
 - All communities (clusters) with member counts and cohesion scores
 - All processes with step counts and types (intra/cross-community)
-- High-level architectural view
-
-Use to understand overall codebase structure before diving deep.`,
+- High-level architectural view`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -137,7 +149,8 @@ Use to understand overall codebase structure before diving deep.`,
     description: `Analyze the impact of changing a code element.
 Returns all nodes affected by modifying the target, with distance, edge type, and confidence.
 
-USE BEFORE making changes to understand ripple effects.
+WHEN TO USE: Before making code changes, especially refactoring, renaming, or modifying shared code. Shows what would be affected.
+AFTER THIS: Review d=1 items (WILL BREAK). READ gitnexus://repo/{name}/processes to check affected flows. If risk > MEDIUM, warn the user.
 
 Output includes:
 - Affected processes (with step positions)
