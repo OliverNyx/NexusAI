@@ -19,6 +19,7 @@ interface RepoStats {
   nodes?: number;
   edges?: number;
   communities?: number;
+  clusters?: number;       // Aggregated cluster count (what tools show)
   processes?: number;
 }
 
@@ -29,10 +30,11 @@ const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
  * Generate the full GitNexus context content (resources-first approach)
  */
 function generateGitNexusContent(projectName: string, stats: RepoStats): string {
+  const clusterCount = stats.clusters || stats.communities || 0;
   return `${GITNEXUS_START_MARKER}
 # GitNexus MCP
 
-This project is indexed by GitNexus, providing AI agents with deep code intelligence.
+This project is indexed as **${projectName}** by GitNexus, providing AI agents with deep code intelligence.
 
 ## Project: ${projectName}
 
@@ -41,54 +43,63 @@ This project is indexed by GitNexus, providing AI agents with deep code intellig
 | Files | ${stats.files || 0} |
 | Symbols | ${stats.nodes || 0} |
 | Relationships | ${stats.edges || 0} |
-| Communities | ${stats.communities || 0} |
+| Clusters | ${clusterCount} |
 | Processes | ${stats.processes || 0} |
+
+> **Staleness:** If the index is out of date, run \`npx gitnexus analyze\` in the terminal to refresh. The \`gitnexus://repo/${projectName}/context\` resource will warn you when the index is stale.
 
 ## Quick Start
 
 \`\`\`
-1. READ gitnexus://context        → Get codebase overview (~150 tokens)
-2. READ gitnexus://clusters       → See all functional clusters
-3. READ gitnexus://cluster/{name} → Deep dive on specific cluster
-4. gitnexus_search(query)         → Find code by query
+1. READ gitnexus://repos                          → Discover all indexed repos
+2. READ gitnexus://repo/${projectName}/context     → Get codebase overview (~150 tokens)
+3. READ gitnexus://repo/${projectName}/clusters    → See all functional clusters
+4. gitnexus_search({query: "...", repo: "${projectName}"}) → Find code by query
 \`\`\`
 
 ## Available Resources
 
 | Resource | Purpose |
 |----------|---------|
-| \`gitnexus://context\` | Codebase stats, tools, and resources overview |
-| \`gitnexus://clusters\` | All clusters with symbol counts and cohesion |
-| \`gitnexus://cluster/{name}\` | Cluster members and details |
-| \`gitnexus://processes\` | All execution flows with types |
-| \`gitnexus://process/{name}\` | Full process trace with steps |
-| \`gitnexus://schema\` | Graph schema for Cypher queries |
+| \`gitnexus://repos\` | List all indexed repositories |
+| \`gitnexus://repo/${projectName}/context\` | Codebase stats, tools, and resources overview |
+| \`gitnexus://repo/${projectName}/clusters\` | All clusters with symbol counts and cohesion |
+| \`gitnexus://repo/${projectName}/cluster/{name}\` | Cluster members and details |
+| \`gitnexus://repo/${projectName}/processes\` | All execution flows with types |
+| \`gitnexus://repo/${projectName}/process/{name}\` | Full process trace with steps |
+| \`gitnexus://repo/${projectName}/schema\` | Graph schema for Cypher queries |
 
 ## Available Tools
 
 | Tool | Purpose | When to Use |
 |------|---------|-------------|
+| \`list_repos\` | Discover indexed repos | First step with multiple repos |
 | \`search\` | Semantic + keyword search | Finding code by query |
 | \`overview\` | List clusters & processes | Understanding architecture |
 | \`explore\` | Deep dive on symbol/cluster/process | Detailed investigation |
 | \`impact\` | Blast radius analysis | Before making changes |
 | \`cypher\` | Raw graph queries | Complex analysis |
 
+> **Re-indexing:** To refresh a stale index, run \`npx gitnexus analyze\` in the terminal. Use \`--force\` only to rebuild from scratch. This is a CLI command, not an MCP tool.
+
+> **Multi-repo:** When multiple repos are indexed, pass \`repo: "${projectName}"\` to target this project.
+
 ## Workflow Examples
 
 ### Exploring the Codebase
 \`\`\`
-READ gitnexus://context           → Stats and overview
-READ gitnexus://clusters          → Find relevant cluster
-READ gitnexus://cluster/Auth      → Explore Auth cluster
-gitnexus_explore("validateUser", "symbol") → Detailed symbol info
+READ gitnexus://repos                            → Discover repos
+READ gitnexus://repo/${projectName}/context       → Stats and overview (check for staleness)
+READ gitnexus://repo/${projectName}/clusters      → Find relevant cluster by name
+READ gitnexus://repo/${projectName}/cluster/{name} → See members of that cluster
+gitnexus_explore({name: "<symbol_name>", type: "symbol", repo: "${projectName}"})
 \`\`\`
 
 ### Planning a Change
 \`\`\`
-gitnexus_impact("UserService", "upstream") → See what breaks
-READ gitnexus://processes         → Check affected flows
-gitnexus_explore("LoginFlow", "process") → Trace execution
+gitnexus_search({query: "<what you want to change>", repo: "${projectName}"})
+gitnexus_impact({target: "<symbol_name>", direction: "upstream", repo: "${projectName}"})
+READ gitnexus://repo/${projectName}/processes     → Check affected execution flows
 \`\`\`
 
 ## Graph Schema

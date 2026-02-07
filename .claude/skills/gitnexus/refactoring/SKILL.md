@@ -7,10 +7,11 @@ description: Plan safe refactors using blast radius and dependency mapping
 
 ## Quick Start
 ```
-0. If "Index is stale" → gitnexus_analyze({})
-1. gitnexus_impact({target, direction: "upstream"}) → Map all dependents
-2. READ gitnexus://schema                           → Understand graph structure
-3. gitnexus_cypher                                  → Find all references
+0. READ gitnexus://repos                                    → Discover indexed repos
+1. If "Index is stale" → gitnexus_analyze({repo: "my-app"})
+2. gitnexus_impact({target, direction: "upstream", repo: "my-app"}) → Map all dependents
+3. READ gitnexus://repo/my-app/schema                       → Understand graph structure
+4. gitnexus_cypher({query: "...", repo: "my-app"})           → Find all references
 ```
 
 ## When to Use
@@ -24,8 +25,8 @@ description: Plan safe refactors using blast radius and dependency mapping
 ### Rename Symbol
 ```
 Rename Refactoring:
-- [ ] gitnexus_impact(oldName, "upstream") — find all callers
-- [ ] gitnexus_search(oldName) — find string literals
+- [ ] gitnexus_impact({target: oldName, direction: "upstream", repo: "my-app"}) — find all callers
+- [ ] gitnexus_search({query: oldName, repo: "my-app"}) — find string literals
 - [ ] Check for reflection/dynamic references
 - [ ] Update in order: interface → implementation → usages
 - [ ] Run tests for affected processes
@@ -34,9 +35,9 @@ Rename Refactoring:
 ### Extract Module
 ```
 Extract Module:
-- [ ] gitnexus_explore(target, "symbol") — map dependencies
-- [ ] gitnexus_impact(target, "upstream") — find callers
-- [ ] READ gitnexus://cluster/{name} — check cohesion
+- [ ] gitnexus_explore({name: target, type: "symbol", repo: "my-app"}) — map dependencies
+- [ ] gitnexus_impact({target, direction: "upstream", repo: "my-app"}) — find callers
+- [ ] READ gitnexus://repo/my-app/cluster/{name} — check cohesion
 - [ ] Define new module interface
 - [ ] Update imports across affected files
 ```
@@ -44,7 +45,7 @@ Extract Module:
 ### Split Function
 ```
 Split Function:
-- [ ] gitnexus_explore(target, "symbol") — understand callees
+- [ ] gitnexus_explore({name: target, type: "symbol", repo: "my-app"}) — understand callees
 - [ ] Group related logic
 - [ ] gitnexus_impact — verify callers won't break
 - [ ] Create new functions
@@ -53,7 +54,7 @@ Split Function:
 
 ## Resource Reference
 
-### gitnexus://schema
+### gitnexus://repo/{name}/schema
 Graph structure for Cypher queries:
 ```yaml
 nodes: [Function, Class, Method, Community, Process]
@@ -65,7 +66,7 @@ example_queries:
     RETURN caller.name
 ```
 
-### gitnexus://cluster/{name}
+### gitnexus://repo/{name}/cluster/{clusterName}
 Check if extraction preserves cohesion:
 ```yaml
 name: Payment
@@ -91,13 +92,13 @@ RETURN importer.name, importer.filePath
 ## Example: Safely Rename `validateUser` to `authenticateUser`
 
 ```
-1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+1. gitnexus_impact({target: "validateUser", direction: "upstream", repo: "my-app"})
    → loginHandler, apiMiddleware, testUtils
 
-2. gitnexus_search({query: "validateUser"})
+2. gitnexus_search({query: "validateUser", repo: "my-app"})
    → Found in: config.json (dynamic reference!)
 
-3. READ gitnexus://processes
+3. READ gitnexus://repo/my-app/processes
    → LoginFlow, TokenRefresh, APIGateway
 
 4. Plan update order:

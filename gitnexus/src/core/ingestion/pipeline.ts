@@ -105,7 +105,7 @@ export const runPipelineFromRepo = async (
         message: 'Resolving imports...',
         stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
       });
-    });
+    }, repoPath);
 
     if (isDev) {
       const importsCount = graph.relationships.filter(r => r.type === 'IMPORTS').length;
@@ -199,6 +199,10 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
+    // Dynamic process cap based on codebase size
+    const symbolCount = graph.nodes.filter(n => n.label !== 'File').length;
+    const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+
     const processResult = await processProcesses(
       graph,
       communityResult.memberships,
@@ -210,7 +214,8 @@ export const runPipelineFromRepo = async (
           message,
           stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
         });
-      }
+      },
+      { maxProcesses: dynamicMaxProcesses, minSteps: 3 }
     );
 
     if (isDev) {

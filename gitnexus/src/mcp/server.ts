@@ -1,12 +1,14 @@
 /**
- * MCP Server
+ * MCP Server (Multi-Repo)
  * 
  * Model Context Protocol server that runs on stdio.
  * External AI tools (Cursor, Claude) spawn this process and
  * communicate via stdin/stdout using the MCP protocol.
  * 
- * Tools: context, search, cypher, overview, explore, impact, analyze
- * Resources: context, clusters, processes, schema, cluster/{name}, process/{name}
+ * Supports multiple indexed repositories via the global registry.
+ * 
+ * Tools: list_repos, search, cypher, overview, explore, impact, analyze
+ * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -26,7 +28,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = new Server(
     {
       name: 'gitnexus',
-      version: '0.2.0',
+      version: '1.1.0',
     },
     {
       capabilities: {
@@ -38,13 +40,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const context = backend.context;
-    
-    if (!context) {
-      return { resources: [] };
-    }
-    
-    const resources = getResourceDefinitions(context.projectName);
+    const resources = getResourceDefinitions(backend);
     return {
       resources: resources.map(r => ({
         uri: r.uri,

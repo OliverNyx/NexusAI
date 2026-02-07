@@ -2,10 +2,13 @@
  * Repository Manager
  * 
  * Manages GitNexus index storage in .gitnexus/ at repo root.
+ * Also maintains a global registry at ~/.gitnexus/registry.json
+ * so the MCP server can discover indexed repos from any cwd.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 
 export interface RepoMeta {
   repoPath: string;
@@ -29,7 +32,21 @@ export interface IndexedRepo {
   meta: RepoMeta;
 }
 
+/**
+ * Shape of an entry in the global registry (~/.gitnexus/registry.json)
+ */
+export interface RegistryEntry {
+  name: string;
+  path: string;
+  storagePath: string;
+  indexedAt: string;
+  lastCommit: string;
+  stats?: RepoMeta['stats'];
+}
+
 const GITNEXUS_DIR = '.gitnexus';
+
+// ─── Local Storage Helpers ─────────────────────────────────────────────
 
 /**
  * Get the .gitnexus storage path for a repository
@@ -134,4 +151,114 @@ export const addToGitignore = async (repoPath: string): Promise<void> => {
     // .gitignore doesn't exist, create it
     await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
   }
+};
+
+// ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────
+
+/**
+ * Get the path to the global GitNexus directory
+ */
+export const getGlobalDir = (): string => {
+  return path.join(os.homedir(), '.gitnexus');
+};
+
+/**
+ * Get the path to the global registry file
+ */
+export const getGlobalRegistryPath = (): string => {
+  return path.join(getGlobalDir(), 'registry.json');
+};
+
+/**
+ * Read the global registry. Returns empty array if not found.
+ */
+export const readRegistry = async (): Promise<RegistryEntry[]> => {
+  try {
+    const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Write the global registry to disk
+ */
+const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
+  const dir = getGlobalDir();
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+};
+
+/**
+ * Register (add or update) a repo in the global registry.
+ * Called after `gitnexus analyze` completes.
+ */
+export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<void> => {
+  const resolved = path.resolve(repoPath);
+  const name = path.basename(resolved);
+  const { storagePath } = getStoragePaths(resolved);
+
+  const entries = await readRegistry();
+  const existing = entries.findIndex(
+    (e) => path.resolve(e.path) === resolved
+  );
+
+  const entry: RegistryEntry = {
+    name,
+    path: resolved,
+    storagePath,
+    indexedAt: meta.indexedAt,
+    lastCommit: meta.lastCommit,
+    stats: meta.stats,
+  };
+
+  if (existing >= 0) {
+    entries[existing] = entry;
+  } else {
+    entries.push(entry);
+  }
+
+  await writeRegistry(entries);
+};
+
+/**
+ * Remove a repo from the global registry.
+ * Called after `gitnexus clean`.
+ */
+export const unregisterRepo = async (repoPath: string): Promise<void> => {
+  const resolved = path.resolve(repoPath);
+  const entries = await readRegistry();
+  const filtered = entries.filter(
+    (e) => path.resolve(e.path) !== resolved
+  );
+  await writeRegistry(filtered);
+};
+
+/**
+ * List all registered repos from the global registry.
+ * Optionally validates that each entry's .gitnexus/ still exists.
+ */
+export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promise<RegistryEntry[]> => {
+  const entries = await readRegistry();
+  if (!opts?.validate) return entries;
+
+  // Validate each entry still has a .gitnexus/ directory
+  const valid: RegistryEntry[] = [];
+  for (const entry of entries) {
+    try {
+      await fs.access(path.join(entry.storagePath, 'meta.json'));
+      valid.push(entry);
+    } catch {
+      // Index no longer exists — skip
+    }
+  }
+
+  // If we pruned any entries, save the cleaned registry
+  if (valid.length !== entries.length) {
+    await writeRegistry(valid);
+  }
+
+  return valid;
 };

@@ -1,31 +1,34 @@
 /**
  * List Command
  * 
- * Shows info about the indexed repo in the current directory.
+ * Shows all indexed repositories from the global registry.
  */
 
-import path from 'path';
-import { findRepo } from '../storage/repo-manager.js';
+import { listRegisteredRepos } from '../storage/repo-manager.js';
 
 export const listCommand = async () => {
-  const cwd = process.cwd();
-  const repo = await findRepo(cwd);
+  const entries = await listRegisteredRepos({ validate: true });
 
-  if (!repo) {
-    console.log('No indexed repository found in this directory.');
-    console.log('Run `gitnexus analyze` to index your codebase.');
+  if (entries.length === 0) {
+    console.log('No indexed repositories found.');
+    console.log('Run `gitnexus analyze` in a git repo to index it.');
     return;
   }
 
-  const stats = repo.meta.stats || {};
-  const repoName = repo.repoPath.split(/[/\\]/).pop() || repo.repoPath;
-  const indexedDate = new Date(repo.meta.indexedAt).toLocaleString();
+  console.log(`\n  Indexed Repositories (${entries.length})\n`);
 
-  console.log(`\n📁 ${repoName}`);
-  console.log(`   Path: ${repo.repoPath}`);
-  console.log(`   Indexed: ${indexedDate}`);
-  console.log(`   Stats: ${stats.files ?? 0} files, ${stats.nodes ?? 0} nodes, ${stats.edges ?? 0} edges`);
-  console.log(`   Commit: ${repo.meta.lastCommit?.slice(0, 7) || 'unknown'}`);
-  if (stats.communities) console.log(`   Communities: ${stats.communities}`);
-  if (stats.processes) console.log(`   Processes: ${stats.processes}`);
+  for (const entry of entries) {
+    const indexedDate = new Date(entry.indexedAt).toLocaleString();
+    const stats = entry.stats || {};
+    const commitShort = entry.lastCommit?.slice(0, 7) || 'unknown';
+
+    console.log(`  ${entry.name}`);
+    console.log(`    Path:    ${entry.path}`);
+    console.log(`    Indexed: ${indexedDate}`);
+    console.log(`    Commit:  ${commitShort}`);
+    console.log(`    Stats:   ${stats.files ?? 0} files, ${stats.nodes ?? 0} symbols, ${stats.edges ?? 0} edges`);
+    if (stats.communities) console.log(`    Clusters:   ${stats.communities}`);
+    if (stats.processes) console.log(`    Processes:  ${stats.processes}`);
+    console.log('');
+  }
 };

@@ -1,12 +1,33 @@
 {
   "name": "gitnexus",
-  "version": "0.1.0",
-  "description": "GitNexus local CLI and MCP server",
+  "version": "1.1.6",
+  "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "homepage": "https://github.com/abhigyanpatwari/GitNexus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abhigyanpatwari/GitNexus.git",
+    "directory": "gitnexus"
+  },
+  "bugs": {
+    "url": "https://github.com/abhigyanpatwari/GitNexus/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-intelligence",
+    "knowledge-graph",
+    "cursor",
+    "claude",
+    "ai-agent",
+    "gitnexus",
+    "static-analysis",
+    "codebase-indexing"
+  ],
   "type": "module",
   "bin": {
-    "gitnexus": "./dist/cli/index.js"
+    "gitnexus": "dist/cli/index.js"
   },
   "files": [
     "dist",

@@ -1,8 +1,8 @@
 /**
- * MCP Resources
+ * MCP Resources (Multi-Repo)
  * 
  * Provides structured on-demand data to AI agents.
- * Resources complement tools by offering lightweight, cacheable data.
+ * All resources use repo-scoped URIs: gitnexus://repo/{name}/context
  */
 
 import type { LocalBackend } from './local/local-backend.js';
@@ -23,35 +23,48 @@ export interface ResourceTemplate {
 }
 
 /**
- * Static resources available when codebase is indexed
+ * Static resources — includes per-repo resources and the global repos list
  */
-export function getResourceDefinitions(projectName: string): ResourceDefinition[] {
-  return [
+export function getResourceDefinitions(backend: LocalBackend): ResourceDefinition[] {
+  const resources: ResourceDefinition[] = [
     {
-      uri: 'gitnexus://context',
-      name: `${projectName} Overview`,
-      description: 'Codebase stats, hotspots, and available tools',
-      mimeType: 'text/yaml',
-    },
-    {
-      uri: 'gitnexus://clusters',
-      name: 'All Clusters',
-      description: 'List of all functional clusters with stats',
-      mimeType: 'text/yaml',
-    },
-    {
-      uri: 'gitnexus://processes',
-      name: 'All Processes',
-      description: 'List of all execution flows with types',
-      mimeType: 'text/yaml',
-    },
-    {
-      uri: 'gitnexus://schema',
-      name: 'Graph Schema',
-      description: 'Node types and relationships for Cypher queries',
+      uri: 'gitnexus://repos',
+      name: 'All Indexed Repositories',
+      description: 'List of all indexed repos with stats. Read this first to discover available repos.',
       mimeType: 'text/yaml',
     },
   ];
+
+  // Add per-repo context resources
+  const repos = backend.listRepos();
+  for (const repo of repos) {
+    resources.push({
+      uri: `gitnexus://repo/${repo.name}/context`,
+      name: `${repo.name} Overview`,
+      description: `Codebase stats and available tools for ${repo.name}`,
+      mimeType: 'text/yaml',
+    });
+    resources.push({
+      uri: `gitnexus://repo/${repo.name}/clusters`,
+      name: `${repo.name} Clusters`,
+      description: `All functional clusters for ${repo.name}`,
+      mimeType: 'text/yaml',
+    });
+    resources.push({
+      uri: `gitnexus://repo/${repo.name}/processes`,
+      name: `${repo.name} Processes`,
+      description: `All execution flows for ${repo.name}`,
+      mimeType: 'text/yaml',
+    });
+    resources.push({
+      uri: `gitnexus://repo/${repo.name}/schema`,
+      name: `${repo.name} Schema`,
+      description: `Graph schema for Cypher queries on ${repo.name}`,
+      mimeType: 'text/yaml',
+    });
+  }
+
+  return resources;
 }
 
 /**
@@ -60,13 +73,13 @@ export function getResourceDefinitions(projectName: string): ResourceDefinition[
 export function getResourceTemplates(): ResourceTemplate[] {
   return [
     {
-      uriTemplate: 'gitnexus://cluster/{name}',
+      uriTemplate: 'gitnexus://repo/{name}/cluster/{clusterName}',
       name: 'Cluster Detail',
       description: 'Deep dive into a specific cluster',
       mimeType: 'text/yaml',
     },
     {
-      uriTemplate: 'gitnexus://process/{name}',
+      uriTemplate: 'gitnexus://repo/{name}/process/{processName}',
       name: 'Process Trace',
       description: 'Step-by-step execution trace',
       mimeType: 'text/yaml',
@@ -75,55 +88,126 @@ export function getResourceTemplates(): ResourceTemplate[] {
 }
 
 /**
- * Read a resource and return its content
+ * Parse a resource URI to extract the repo name and resource type.
  */
-export async function readResource(uri: string, backend: LocalBackend): Promise<string> {
-  // Static resources
-  if (uri === 'gitnexus://context') {
-    return getContextResource(backend);
+function parseUri(uri: string): { repoName?: string; resourceType: string; param?: string } {
+  if (uri === 'gitnexus://repos') return { resourceType: 'repos' };
+
+  // Repo-scoped: gitnexus://repo/{name}/context
+  const repoMatch = uri.match(/^gitnexus:\/\/repo\/([^/]+)\/(.+)$/);
+  if (repoMatch) {
+    const repoName = decodeURIComponent(repoMatch[1]);
+    const rest = repoMatch[2];
+
+    if (rest.startsWith('cluster/')) {
+      return { repoName, resourceType: 'cluster', param: decodeURIComponent(rest.replace('cluster/', '')) };
+    }
+    if (rest.startsWith('process/')) {
+      return { repoName, resourceType: 'process', param: decodeURIComponent(rest.replace('process/', '')) };
+    }
+
+    return { repoName, resourceType: rest };
   }
-  if (uri === 'gitnexus://clusters') {
-    return getClustersResource(backend);
-  }
-  if (uri === 'gitnexus://processes') {
-    return getProcessesResource(backend);
-  }
-  if (uri === 'gitnexus://schema') {
-    return getSchemaResource();
-  }
-  
-  // Dynamic resources
-  if (uri.startsWith('gitnexus://cluster/')) {
-    const name = uri.replace('gitnexus://cluster/', '');
-    return getClusterDetailResource(name, backend);
-  }
-  if (uri.startsWith('gitnexus://process/')) {
-    const name = uri.replace('gitnexus://process/', '');
-    return getProcessDetailResource(name, backend);
-  }
-  
-  throw new Error(`Unknown resource: ${uri}`);
+
+  throw new Error(`Unknown resource URI: ${uri}`);
 }
 
 /**
- * Context resource - codebase overview
+ * Read a resource and return its content
  */
-async function getContextResource(backend: LocalBackend): Promise<string> {
-  const context = backend.context;
+export async function readResource(uri: string, backend: LocalBackend): Promise<string> {
+  const parsed = parseUri(uri);
+
+  // Global repos list — no repo context needed
+  if (parsed.resourceType === 'repos') {
+    return getReposResource(backend);
+  }
+
+  const repoName = parsed.repoName;
+
+  switch (parsed.resourceType) {
+    case 'context':
+      return getContextResource(backend, repoName);
+    case 'clusters':
+      return getClustersResource(backend, repoName);
+    case 'processes':
+      return getProcessesResource(backend, repoName);
+    case 'schema':
+      return getSchemaResource();
+    case 'cluster':
+      return getClusterDetailResource(parsed.param!, backend, repoName);
+    case 'process':
+      return getProcessDetailResource(parsed.param!, backend, repoName);
+    default:
+      throw new Error(`Unknown resource: ${uri}`);
+  }
+}
+
+// ─── Resource Implementations ─────────────────────────────────────────
+
+/**
+ * Repos resource — list all indexed repositories
+ */
+function getReposResource(backend: LocalBackend): string {
+  const repos = backend.listRepos();
+
+  if (repos.length === 0) {
+    return 'repos: []\n# No repositories indexed. Run: gitnexus analyze';
+  }
+
+  const lines: string[] = ['repos:'];
+  for (const repo of repos) {
+    lines.push(`  - name: "${repo.name}"`);
+    lines.push(`    path: "${repo.path}"`);
+    lines.push(`    indexed: "${repo.indexedAt}"`);
+    lines.push(`    commit: "${repo.lastCommit?.slice(0, 7) || 'unknown'}"`);
+    if (repo.stats) {
+      lines.push(`    files: ${repo.stats.files || 0}`);
+      lines.push(`    symbols: ${repo.stats.nodes || 0}`);
+      lines.push(`    processes: ${repo.stats.processes || 0}`);
+    }
+  }
+
+  if (repos.length > 1) {
+    lines.push('');
+    lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
+    lines.push(`# gitnexus_search({query: "auth", repo: "${repos[0].name}"})`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Context resource — codebase overview for a specific repo
+ */
+async function getContextResource(backend: LocalBackend, repoName?: string): Promise<string> {
+  // Resolve repo
+  const repo = backend.resolveRepo(repoName);
+  const repoId = repo.name.toLowerCase();
+  const context = backend.getContext(repoId) || backend.getContext();
+
   if (!context) {
     return 'error: No codebase loaded. Run: gitnexus analyze';
   }
   
   // Check staleness
-  const repoPath = backend.repoPath;
-  const lastCommit = backend.meta?.lastCommit || 'HEAD';
+  const repoPath = repo.repoPath;
+  const lastCommit = repo.lastCommit || 'HEAD';
   const staleness = repoPath ? checkStaleness(repoPath, lastCommit) : { isStale: false, commitsBehind: 0 };
+
+  // Get aggregated cluster count (matches what overview/clusters resource shows)
+  let clusterCount = context.stats.communityCount;
+  try {
+    const overview = await backend.callTool('overview', { showClusters: true, showProcesses: false, limit: 100, repo: repoName });
+    if (overview.clusters) {
+      clusterCount = overview.clusters.length;
+    }
+  } catch { /* fall back to raw count */ }
   
   const lines: string[] = [
     `project: ${context.projectName}`,
   ];
   
-  // Add staleness warning if index is behind
   if (staleness.isStale && staleness.hint) {
     lines.push('');
     lines.push(`staleness: "${staleness.hint}"`);
@@ -133,46 +217,59 @@ async function getContextResource(backend: LocalBackend): Promise<string> {
   lines.push('stats:');
   lines.push(`  files: ${context.stats.fileCount}`);
   lines.push(`  symbols: ${context.stats.functionCount}`);
-  lines.push(`  clusters: ${context.stats.communityCount}`);
+  lines.push(`  clusters: ${clusterCount}`);
   lines.push(`  processes: ${context.stats.processCount}`);
   lines.push('');
   lines.push('tools_available:');
+  lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('  - search: Hybrid semantic + keyword search');
   lines.push('  - explore: Deep dive on symbol/cluster/process');
   lines.push('  - impact: Blast radius analysis');
   lines.push('  - overview: List all clusters and processes');
   lines.push('  - cypher: Raw graph queries');
-  lines.push('  - analyze: Re-index to update stale data');
+  lines.push('');
+  lines.push('re_index: Run `npx gitnexus analyze` in terminal if data is stale');
   lines.push('');
   lines.push('resources_available:');
-  lines.push('  - gitnexus://clusters: All clusters');
-  lines.push('  - gitnexus://processes: All processes');
-  lines.push('  - gitnexus://cluster/{name}: Cluster details');
-  lines.push('  - gitnexus://process/{name}: Process trace');
+  lines.push('  - gitnexus://repos: All indexed repositories');
+  lines.push(`  - gitnexus://repo/${context.projectName}/clusters: All clusters`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/processes: All processes`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/cluster/{name}: Cluster details`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/process/{name}: Process trace`);
   
   return lines.join('\n');
 }
 
 /**
- * Clusters resource - list all clusters
+ * Clusters resource
  */
-async function getClustersResource(backend: LocalBackend): Promise<string> {
+async function getClustersResource(backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('overview', { showClusters: true, showProcesses: false, limit: 50 });
+    // Request more than we display so aggregation has enough raw data
+    const result = await backend.callTool('overview', { showClusters: true, showProcesses: false, limit: 100, repo: repoName });
     
     if (!result.clusters || result.clusters.length === 0) {
       return 'clusters: []\n# No clusters detected. Run: gitnexus analyze';
     }
     
+    const displayLimit = 20;
     const lines: string[] = ['clusters:'];
+    const toShow = result.clusters.slice(0, displayLimit);
     
-    for (const cluster of result.clusters) {
+    for (const cluster of toShow) {
       const label = cluster.heuristicLabel || cluster.label || cluster.id;
       lines.push(`  - name: "${label}"`);
       lines.push(`    symbols: ${cluster.symbolCount || 0}`);
       if (cluster.cohesion) {
         lines.push(`    cohesion: ${(cluster.cohesion * 100).toFixed(0)}%`);
       }
+      if (cluster.subCommunities && cluster.subCommunities > 1) {
+        lines.push(`    sub_clusters: ${cluster.subCommunities}`);
+      }
+    }
+    
+    if (result.clusters.length > displayLimit) {
+      lines.push(`\n# Showing top ${displayLimit} of ${result.clusters.length} clusters. Use gitnexus_search or gitnexus_explore for more.`);
     }
     
     return lines.join('\n');
@@ -182,25 +279,31 @@ async function getClustersResource(backend: LocalBackend): Promise<string> {
 }
 
 /**
- * Processes resource - list all processes
+ * Processes resource
  */
-async function getProcessesResource(backend: LocalBackend): Promise<string> {
+async function getProcessesResource(backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('overview', { showClusters: false, showProcesses: true, limit: 50 });
+    const result = await backend.callTool('overview', { showClusters: false, showProcesses: true, limit: 50, repo: repoName });
     
     if (!result.processes || result.processes.length === 0) {
       return 'processes: []\n# No processes detected. Run: gitnexus analyze';
     }
     
+    const displayLimit = 20;
     const lines: string[] = ['processes:'];
+    const toShow = result.processes.slice(0, displayLimit);
     
-    for (const proc of result.processes) {
+    for (const proc of toShow) {
       const label = proc.heuristicLabel || proc.label || proc.id;
       lines.push(`  - name: "${label}"`);
       lines.push(`    type: ${proc.processType || 'unknown'}`);
       lines.push(`    steps: ${proc.stepCount || 0}`);
     }
     
+    if (result.processes.length > displayLimit) {
+      lines.push(`\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use gitnexus_explore for more.`);
+    }
+    
     return lines.join('\n');
   } catch (err: any) {
     return `error: ${err.message}`;
@@ -208,7 +311,7 @@ async function getProcessesResource(backend: LocalBackend): Promise<string> {
 }
 
 /**
- * Schema resource - graph structure for Cypher queries
+ * Schema resource — graph structure for Cypher queries
  */
 function getSchemaResource(): string {
   return `# GitNexus Graph Schema
@@ -252,9 +355,9 @@ example_queries:
 /**
  * Cluster detail resource
  */
-async function getClusterDetailResource(name: string, backend: LocalBackend): Promise<string> {
+async function getClusterDetailResource(name: string, backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('explore', { name, type: 'cluster' });
+    const result = await backend.callTool('explore', { name, type: 'cluster', repo: repoName });
     
     if (result.error) {
       return `error: ${result.error}`;
@@ -270,6 +373,9 @@ async function getClusterDetailResource(name: string, backend: LocalBackend): Pr
     
     if (cluster.cohesion) {
       lines.push(`cohesion: ${(cluster.cohesion * 100).toFixed(0)}%`);
+    }
+    if (cluster.subCommunities && cluster.subCommunities > 1) {
+      lines.push(`sub_clusters: ${cluster.subCommunities}`);
     }
     
     if (members.length > 0) {
@@ -294,9 +400,9 @@ async function getClusterDetailResource(name: string, backend: LocalBackend): Pr
 /**
  * Process detail resource
  */
-async function getProcessDetailResource(name: string, backend: LocalBackend): Promise<string> {
+async function getProcessDetailResource(name: string, backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('explore', { name, type: 'process' });
+    const result = await backend.callTool('explore', { name, type: 'process', repo: repoName });
     
     if (result.error) {
       return `error: ${result.error}`;

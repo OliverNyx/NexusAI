@@ -2,7 +2,7 @@
  * MCP Tool Definitions
  * 
  * Defines the tools that GitNexus exposes to external AI agents.
- * Only includes tools that provide unique value over native IDE capabilities.
+ * All tools support an optional `repo` parameter for multi-repo setups.
  */
 
 export interface ToolDefinition {
@@ -23,51 +23,38 @@ export interface ToolDefinition {
 
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
-    name: 'analyze',
-    description: `Index or re-index the current repository. Runs the full pipeline in-process.
+    name: 'list_repos',
+    description: `List all indexed repositories available to GitNexus.
 
-Creates .gitnexus/ in repo root with:
-- Knowledge graph (functions, classes, calls, imports)
-- Full-text search indexes
-- Community detection (Leiden)
-- Process tracing
-- Embeddings for semantic search
+Returns each repo's name, path, indexed date, last commit, and stats.
+Use this to discover which repos are available before querying.
 
-Run this when:
-- First time using GitNexus on a repo
-- After major code changes
-- When staleness warning appears in gitnexus://context
-- When 'not indexed' error appears
-
-Note: This may take 30-120 seconds for large repos.`,
+When multiple repos are indexed, you MUST specify the "repo" parameter
+on other tools (search, explore, impact, etc.) to target the correct one.`,
     inputSchema: {
       type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Repo path (default: current directory)' },
-        force: { type: 'boolean', description: 'Re-index even if exists', default: false },
-        skipEmbeddings: { type: 'boolean', description: 'Skip embedding generation (faster)', default: false },
-      },
+      properties: {},
       required: [],
     },
   },
   {
     name: 'search',
     description: `Hybrid search (keyword + semantic) across the codebase.
-Returns code nodes with their graph connections, grouped by process.
+Returns code nodes with cluster context and optional graph connections.
 
 BETTER THAN IDE search because:
-- Process-aware grouping (shows execution flows)
-- Cluster context (which functional area)
-- Relationship data (callers/callees)
+- Cluster context (which functional area each result belongs to)
+- Relationship data (callers/callees with depth=full)
+- Hybrid ranking (BM25 + semantic via Reciprocal Rank Fusion)
 
-RETURNS: Array of {name, type, filePath, code, connections[], cluster, processes[]}`,
+RETURNS: Array of {name, type, filePath, cluster?, connections[]?, fusedScore, searchSource}`,
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
         limit: { type: 'number', description: 'Max results to return', default: 10 },
         depth: { type: 'string', description: 'Result detail: "definitions" (symbols only) or "full" (with relationships)', enum: ['definitions', 'full'], default: 'definitions' },
-        groupByProcess: { type: 'boolean', description: 'Group results by process', default: true },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: ['query'],
     },
@@ -98,6 +85,7 @@ TIPS:
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Cypher query to execute' },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: ['query'],
     },
@@ -118,6 +106,7 @@ Use after search to understand context of a specific node.`,
       properties: {
         name: { type: 'string', description: 'Name of symbol, cluster, or process to explore' },
         type: { type: 'string', description: 'Type: symbol, cluster, or process' },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: ['name', 'type'],
     },
@@ -138,6 +127,7 @@ Use to understand overall codebase structure before diving deep.`,
         showProcesses: { type: 'boolean', description: 'Include process list', default: true },
         showClusters: { type: 'boolean', description: 'Include cluster list', default: true },
         limit: { type: 'number', description: 'Max items per category', default: 20 },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: [],
     },
@@ -171,6 +161,7 @@ Depth groups:
         relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS (default: usage-based)' },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
       },
       required: ['target', 'direction'],
     },

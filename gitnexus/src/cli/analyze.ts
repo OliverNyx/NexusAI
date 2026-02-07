@@ -9,9 +9,10 @@ import ora from 'ora';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
 import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex } from '../core/kuzu/kuzu-adapter.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { getStoragePaths, saveMeta, loadMeta, addToGitignore } from '../storage/repo-manager.js';
+import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
+import fs from 'fs/promises';
 
 export interface AnalyzeOptions {
   force?: boolean;
@@ -84,6 +85,7 @@ export const analyzeCommand = async (
     await createFTSIndex('Function', 'function_fts', ['name', 'content']);
     await createFTSIndex('Class', 'class_fts', ['name', 'content']);
     await createFTSIndex('Method', 'method_fts', ['name', 'content']);
+    await createFTSIndex('Interface', 'interface_fts', ['name', 'content']);
   } catch (e: any) {
     // FTS index creation may fail if tables are empty (no data for that type)
     console.error('Note: Some FTS indexes may not have been created:', e.message);
@@ -103,7 +105,7 @@ export const analyzeCommand = async (
 
   // Save metadata
   const stats = await getKuzuStats();
-  await saveMeta(storagePath, {
+  const meta = {
     repoPath,
     lastCommit: currentCommit,
     indexedAt: new Date().toISOString(),
@@ -114,18 +116,35 @@ export const analyzeCommand = async (
       communities: pipelineResult.communityResult?.stats.totalCommunities,
       processes: pipelineResult.processResult?.stats.totalProcesses,
     },
-  });
+  };
+  await saveMeta(storagePath, meta);
+
+  // Register in global registry
+  await registerRepo(repoPath, meta);
 
   // Add .gitnexus to .gitignore
   await addToGitignore(repoPath);
   
   // Generate AI context files
   const projectName = path.basename(repoPath);
+  // Compute aggregated cluster count (grouped by heuristicLabel, >=5 symbols)
+  // This matches the aggregation logic in local-backend.ts for tool output consistency.
+  let aggregatedClusterCount = 0;
+  if (pipelineResult.communityResult?.communities) {
+    const groups = new Map<string, number>();
+    for (const c of pipelineResult.communityResult.communities) {
+      const label = c.heuristicLabel || c.label || 'Unknown';
+      groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+    }
+    aggregatedClusterCount = Array.from(groups.values()).filter(count => count >= 5).length;
+  }
+
   const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
     files: pipelineResult.fileContents.size,
     nodes: stats.nodes,
     edges: stats.edges,
     communities: pipelineResult.communityResult?.stats.totalCommunities,
+    clusters: aggregatedClusterCount,
     processes: pipelineResult.processResult?.stats.totalProcesses,
   });
   
@@ -139,5 +158,14 @@ export const analyzeCommand = async (
   
   if (aiContext.files.length > 0) {
     console.log(`  AI Context: ${aiContext.files.join(', ')}`);
+  }
+
+  // Hint about setup if it hasn't been run
+  try {
+    await fs.access(getGlobalRegistryPath());
+  } catch {
+    // Registry didn't exist before this run — suggest setup
+    console.log('');
+    console.log('  Tip: Run `gitnexus setup` to configure MCP for your editor.');
   }
 };

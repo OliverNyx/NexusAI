@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: ProcessDetectionConfig = {
   maxTraceDepth: 10,
   maxBranching: 4,
   maxProcesses: 75,
-  minSteps: 2,
+  minSteps: 3,       // 3+ steps = genuine multi-hop flow (2-step is just "A calls B")
 };
 
 // ============================================================================
@@ -119,11 +119,16 @@ export const processProcesses = async (
   
   onProgress?.(`Found ${allTraces.length} traces, deduplicating...`, 60);
   
-  // Step 3: Deduplicate similar traces
+  // Step 3: Deduplicate similar traces (subset removal)
   const uniqueTraces = deduplicateTraces(allTraces);
   
+  // Step 3b: Deduplicate by entry+terminal pair (keep longest path per pair)
+  const endpointDeduped = deduplicateByEndpoints(uniqueTraces);
+  
+  onProgress?.(`Deduped ${uniqueTraces.length} → ${endpointDeduped.length} unique endpoint pairs`, 70);
+  
   // Step 4: Limit to max processes (prioritize longer traces)
-  const limitedTraces = uniqueTraces
+  const limitedTraces = endpointDeduped
     .sort((a, b) => b.length - a.length)
     .slice(0, cfg.maxProcesses);
   
@@ -206,11 +211,18 @@ export const processProcesses = async (
 
 type AdjacencyList = Map<string, string[]>;
 
+/**
+ * Minimum edge confidence for process tracing.
+ * Filters out ambiguous fuzzy-global matches (0.3) that cause
+ * traces to jump across unrelated code areas.
+ */
+const MIN_TRACE_CONFIDENCE = 0.5;
+
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
   
   graph.relationships.forEach(rel => {
-    if (rel.type === 'CALLS') {
+    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
       if (!adj.has(rel.sourceId)) {
         adj.set(rel.sourceId, []);
       }
@@ -225,7 +237,7 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
   
   graph.relationships.forEach(rel => {
-    if (rel.type === 'CALLS') {
+    if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
       if (!adj.has(rel.targetId)) {
         adj.set(rel.targetId, []);
       }
@@ -395,6 +407,31 @@ const deduplicateTraces = (traces: string[][]): string[][] => {
   }
   
   return unique;
+};
+
+// ============================================================================
+// HELPER: Deduplicate by entry+terminal endpoints
+// ============================================================================
+
+/**
+ * Keep only the longest trace per unique entry→terminal pair.
+ * Multiple paths between the same two endpoints are redundant for agents.
+ */
+const deduplicateByEndpoints = (traces: string[][]): string[][] => {
+  if (traces.length === 0) return [];
+  
+  const byEndpoints = new Map<string, string[]>();
+  // Sort longest first so the first seen per key is the longest
+  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  
+  for (const trace of sorted) {
+    const key = `${trace[0]}::${trace[trace.length - 1]}`;
+    if (!byEndpoints.has(key)) {
+      byEndpoints.set(key, trace);
+    }
+  }
+  
+  return Array.from(byEndpoints.values());
 };
 
 // ============================================================================

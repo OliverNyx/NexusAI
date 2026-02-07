@@ -6,12 +6,18 @@ import { listCommand } from './list.js';
 import { statusCommand } from './status.js';
 import { mcpCommand } from './mcp.js';
 import { cleanCommand } from './clean.js';
+import { setupCommand } from './setup.js';
 const program = new Command();
 
 program
   .name('gitnexus')
   .description('GitNexus local CLI and MCP server')
-  .version('0.1.0');
+  .version('1.1.1');
+
+program
+  .command('setup')
+  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode')
+  .action(setupCommand);
 
 program
   .command('analyze [path]')
@@ -28,12 +34,12 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio)')
+  .description('Start MCP server (stdio) — serves all indexed repos')
   .action(mcpCommand);
 
 program
   .command('list')
-  .description('List indexed repositories')
+  .description('List all indexed repositories')
   .action(listCommand);
 
 program
@@ -45,9 +51,7 @@ program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
+  .option('--all', 'Clean all indexed repos')
   .action(cleanCommand);
 
 program.parse(process.argv);
-
-
-

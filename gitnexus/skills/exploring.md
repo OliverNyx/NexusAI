@@ -7,10 +7,11 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 
 ## Quick Start
 ```
-0. If "Index is stale" → gitnexus_analyze({})
-1. READ gitnexus://context        → Get codebase overview (~150 tokens)
-2. READ gitnexus://clusters       → See all functional clusters
-3. READ gitnexus://cluster/{name} → Deep dive on specific cluster
+0. READ gitnexus://repos            → Discover indexed repos (use repo param if multiple)
+1. If "Index is stale" → run `npx gitnexus analyze` in terminal
+2. READ gitnexus://repo/{name}/context        → Get codebase overview (~150 tokens)
+3. READ gitnexus://repo/{name}/clusters       → See all functional clusters
+4. READ gitnexus://repo/{name}/cluster/{name} → Deep dive on specific cluster
 ```
 
 ## When to Use
@@ -22,17 +23,28 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 ## Workflow Checklist
 ```
 Exploration Progress:
-- [ ] READ gitnexus://context for codebase overview
-- [ ] READ gitnexus://clusters to list all clusters
+- [ ] READ gitnexus://repos to discover available repos
+- [ ] READ gitnexus://repo/{name}/context for codebase overview
+- [ ] READ gitnexus://repo/{name}/clusters to list all clusters
 - [ ] Identify the relevant cluster by name
-- [ ] READ gitnexus://cluster/{name} for cluster details
+- [ ] READ gitnexus://repo/{name}/cluster/{name} for cluster details
 - [ ] Use gitnexus_explore for specific symbols
 ```
 
 ## Resource Reference
 
-### gitnexus://context
-Codebase overview. **Read first.**
+### gitnexus://repos
+Discover all indexed repositories. **Read first.**
+```yaml
+repos:
+  - name: "my-app"
+    path: "/home/user/my-app"
+    files: 42
+    symbols: 918
+```
+
+### gitnexus://repo/{name}/context
+Codebase overview for a specific repo.
 ```yaml
 project: my-app
 stats:
@@ -40,11 +52,10 @@ stats:
   symbols: 918
   clusters: 12
   processes: 45
-tools_available: [search, explore, impact, overview, cypher]
-resources_available: [clusters, processes, cluster/{name}, process/{name}]
+tools_available: [list_repos, search, explore, impact, overview, cypher]
 ```
 
-### gitnexus://clusters
+### gitnexus://repo/{name}/clusters
 All functional clusters with cohesion scores.
 ```yaml
 clusters:
@@ -56,7 +67,7 @@ clusters:
     cohesion: 88%
 ```
 
-### gitnexus://cluster/{name}
+### gitnexus://repo/{name}/cluster/{clusterName}
 Members of a specific cluster.
 ```yaml
 name: Auth
@@ -68,7 +79,7 @@ members:
     file: src/auth/validator.ts
 ```
 
-### gitnexus://process/{name}
+### gitnexus://repo/{name}/process/{processName}
 Full execution trace.
 ```yaml
 name: LoginFlow
@@ -84,7 +95,7 @@ steps:
 ### gitnexus_explore
 For detailed symbol context with callers/callees:
 ```
-gitnexus_explore({name: "validateUser", type: "symbol"})
+gitnexus_explore({name: "validateUser", type: "symbol", repo: "my-app"})
 → Callers: loginHandler, apiMiddleware
 → Callees: checkToken, getUserById
 ```
@@ -92,21 +103,24 @@ gitnexus_explore({name: "validateUser", type: "symbol"})
 ### gitnexus_search
 For finding code by query:
 ```
-gitnexus_search({query: "payment validation", depth: "full"})
+gitnexus_search({query: "payment validation", depth: "full", repo: "my-app"})
 ```
 
 ## Example: "How does payment processing work?"
 
 ```
-1. READ gitnexus://context
+1. READ gitnexus://repos
+   → Repos: my-app (918 symbols)
+
+2. READ gitnexus://repo/my-app/context
    → 918 symbols, 12 clusters
 
-2. READ gitnexus://clusters
+3. READ gitnexus://repo/my-app/clusters
    → Clusters: Auth, Payment, Database, API...
 
-3. READ gitnexus://cluster/Payment
+4. READ gitnexus://repo/my-app/cluster/Payment
    → Members: processPayment, validateCard, PaymentService
 
-4. READ gitnexus://process/CheckoutFlow
+5. READ gitnexus://repo/my-app/process/CheckoutFlow
    → handleCheckout → validateCart → processPayment → sendConfirmation
 ```

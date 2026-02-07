@@ -7,10 +7,11 @@ description: Trace bugs through call chains using knowledge graph
 
 ## Quick Start
 ```
-0. If "Index is stale" → gitnexus_analyze({})
-1. gitnexus_search({query})                → Find code related to error
-2. gitnexus_explore({name, type: "symbol"}) → Get callers and callees
-3. READ gitnexus://process/{name}           → Trace execution flow
+0. READ gitnexus://repos                          → Discover indexed repos
+1. If "Index is stale" → gitnexus_analyze({repo: "my-app"})
+2. gitnexus_search({query: "...", repo: "my-app"})  → Find code related to error
+3. gitnexus_explore({name, type: "symbol", repo: "my-app"}) → Get callers and callees
+4. READ gitnexus://repo/my-app/process/{name}      → Trace execution flow
 ```
 
 ## When to Use
@@ -22,18 +23,19 @@ description: Trace bugs through call chains using knowledge graph
 ## Workflow Checklist
 ```
 Bug Investigation:
+- [ ] READ gitnexus://repos to find the right repo
 - [ ] Understand the symptom (error message, behavior)
 - [ ] gitnexus_search to find related code
 - [ ] Identify the suspect function
 - [ ] gitnexus_explore to see callers/callees
-- [ ] READ gitnexus://process/{name} if suspect is in a process
-- [ ] READ gitnexus://schema for Cypher query help
+- [ ] READ gitnexus://repo/{name}/process/{name} if suspect is in a process
+- [ ] READ gitnexus://repo/{name}/schema for Cypher query help
 - [ ] gitnexus_cypher for custom traces
 ```
 
 ## Resource Reference
 
-### gitnexus://schema
+### gitnexus://repo/{name}/schema
 Graph schema for writing Cypher queries:
 ```yaml
 nodes: [Function, Class, Method, File, Community, Process]
@@ -44,7 +46,7 @@ example_queries:
     RETURN caller.name
 ```
 
-### gitnexus://process/{name}
+### gitnexus://repo/{name}/process/{processName}
 Trace execution flow to find where bug might occur:
 ```yaml
 name: CheckoutFlow
@@ -60,13 +62,13 @@ trace:
 ### gitnexus_search
 Find code related to error or symptom:
 ```
-gitnexus_search({query: "payment validation error", depth: "full"})
+gitnexus_search({query: "payment validation error", depth: "full", repo: "my-app"})
 ```
 
 ### gitnexus_explore
 Get symbol context:
 ```
-gitnexus_explore({name: "validatePayment", type: "symbol"})
+gitnexus_explore({name: "validatePayment", type: "symbol", repo: "my-app"})
 → Callers: processCheckout, webhookHandler
 → Callees: verifyCard, fetchRates
 ```
@@ -82,13 +84,13 @@ RETURN [n IN nodes(path) | n.name] AS chain
 ## Example: "Payment endpoint returns 500 intermittently"
 
 ```
-1. gitnexus_search({query: "payment error handling"})
+1. gitnexus_search({query: "payment error handling", repo: "my-app"})
    → validatePayment, handlePaymentError, PaymentException
 
-2. gitnexus_explore({name: "validatePayment", type: "symbol"})
+2. gitnexus_explore({name: "validatePayment", type: "symbol", repo: "my-app"})
    → Callees: verifyCard, fetchRates (external API!)
 
-3. READ gitnexus://process/CheckoutFlow
+3. READ gitnexus://repo/my-app/process/CheckoutFlow
    → Step 3: validatePayment → calls external API
 
 4. Root cause: fetchRates calls external API without proper timeout

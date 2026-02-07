@@ -41,14 +41,22 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       
       for (const device of devicesToTry) {
         try {
-          embedderInstance = await (pipeline as any)(
-            'feature-extraction',
-            MODEL_ID,
-            {
-              device: device,
-              dtype: 'fp32',
-            }
-          );
+          // Silence stdout during model load — ONNX Runtime and transformers.js
+          // may write progress/init messages to stdout which corrupts MCP stdio protocol.
+          const origWrite = process.stdout.write;
+          process.stdout.write = (() => true) as any;
+          try {
+            embedderInstance = await (pipeline as any)(
+              'feature-extraction',
+              MODEL_ID,
+              {
+                device: device,
+                dtype: 'fp32',
+              }
+            );
+          } finally {
+            process.stdout.write = origWrite;
+          }
           console.error(`GitNexus: Embedding model loaded (${device})`);
           return embedderInstance!;
         } catch {

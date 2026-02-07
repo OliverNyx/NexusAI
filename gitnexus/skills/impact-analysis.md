@@ -7,10 +7,11 @@ description: Analyze blast radius before making code changes
 
 ## Quick Start
 ```
-0. If "Index is stale" → gitnexus_analyze({})
-1. gitnexus_impact({target, direction: "upstream"}) → What depends on this
-2. READ gitnexus://clusters                         → Check affected areas
-3. READ gitnexus://processes                        → Affected execution flows
+0. READ gitnexus://repos                                    → Discover indexed repos
+1. If "Index is stale" → run `npx gitnexus analyze` in terminal
+2. gitnexus_impact({target, direction: "upstream", repo: "my-app"}) → What depends on this
+3. READ gitnexus://repo/my-app/clusters                     → Check affected areas
+4. READ gitnexus://repo/my-app/processes                    → Affected execution flows
 ```
 
 ## When to Use
@@ -30,8 +31,9 @@ description: Analyze blast radius before making code changes
 ## Workflow Checklist
 ```
 Impact Analysis:
-- [ ] gitnexus_impact(target, "upstream") to find dependents
-- [ ] READ gitnexus://clusters to understand affected areas
+- [ ] READ gitnexus://repos to find the right repo
+- [ ] gitnexus_impact(target, "upstream", repo) to find dependents
+- [ ] READ gitnexus://repo/{name}/clusters to understand affected areas
 - [ ] Check high-confidence (>0.8) dependencies first
 - [ ] Count affected clusters (cross-cutting = higher risk)
 - [ ] If >10 processes affected, consider splitting change
@@ -39,7 +41,7 @@ Impact Analysis:
 
 ## Resource Reference
 
-### gitnexus://clusters
+### gitnexus://repo/{name}/clusters
 Check which clusters might be affected:
 ```yaml
 clusters:
@@ -49,7 +51,7 @@ clusters:
     symbols: 32
 ```
 
-### gitnexus://processes
+### gitnexus://repo/{name}/processes
 Find which processes touch the target:
 ```yaml
 processes:
@@ -67,7 +69,8 @@ gitnexus_impact({
   target: "validateUser",
   direction: "upstream",
   minConfidence: 0.8,
-  maxDepth: 3
+  maxDepth: 3,
+  repo: "my-app"
 })
 
 → d=1 (WILL BREAK):
@@ -103,11 +106,11 @@ Before Committing:
 ## Example: "What breaks if I change validateUser?"
 
 ```
-1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+1. gitnexus_impact({target: "validateUser", direction: "upstream", repo: "my-app"})
    → d=1: loginHandler, apiMiddleware
    → d=2: authRouter, sessionManager
 
-2. READ gitnexus://clusters
+2. READ gitnexus://repo/my-app/clusters
    → Auth and API clusters affected
 
 3. Decision: 2 direct callers, 2 clusters = MEDIUM risk

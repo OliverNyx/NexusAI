@@ -14,6 +14,39 @@ export interface BM25SearchResult {
 }
 
 /**
+ * Execute a single FTS query via a custom executor (for MCP connection pool).
+ * Returns the same shape as core queryFTS.
+ */
+async function queryFTSViaExecutor(
+  executor: (cypher: string) => Promise<any[]>,
+  tableName: string,
+  indexName: string,
+  query: string,
+  limit: number,
+): Promise<Array<{ filePath: string; score: number }>> {
+  const escapedQuery = query.replace(/'/g, "''");
+  const cypher = `
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := false)
+    RETURN node, score
+    ORDER BY score DESC
+    LIMIT ${limit}
+  `;
+  try {
+    const rows = await executor(cypher);
+    return rows.map((row: any) => {
+      const node = row.node || row[0] || {};
+      const score = row.score ?? row[1] ?? 0;
+      return {
+        filePath: node.filePath || '',
+        score: typeof score === 'number' ? score : parseFloat(score) || 0,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Search using KuzuDB's built-in FTS (always fresh, reads from disk)
  * 
  * Queries multiple node tables (File, Function, Class, Method) in parallel
@@ -21,16 +54,33 @@ export interface BM25SearchResult {
  * 
  * @param query - Search query string
  * @param limit - Maximum results
+ * @param repoId - If provided, queries will be routed via the MCP connection pool
  * @returns Ranked search results from FTS indexes
  */
-export const searchFTSFromKuzu = async (query: string, limit: number = 20): Promise<BM25SearchResult[]> => {
-  // Search multiple tables with searchable content
-  const [fileResults, functionResults, classResults, methodResults] = await Promise.all([
-    queryFTS('File', 'file_fts', query, limit, false).catch(() => []),
-    queryFTS('Function', 'function_fts', query, limit, false).catch(() => []),
-    queryFTS('Class', 'class_fts', query, limit, false).catch(() => []),
-    queryFTS('Method', 'method_fts', query, limit, false).catch(() => []),
-  ]);
+export const searchFTSFromKuzu = async (query: string, limit: number = 20, repoId?: string): Promise<BM25SearchResult[]> => {
+  let fileResults: any[], functionResults: any[], classResults: any[], methodResults: any[], interfaceResults: any[];
+
+  if (repoId) {
+    // Use MCP connection pool via dynamic import
+    const { executeQuery } = await import('../../mcp/core/kuzu-adapter.js');
+    const executor = (cypher: string) => executeQuery(repoId, cypher);
+    [fileResults, functionResults, classResults, methodResults, interfaceResults] = await Promise.all([
+      queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit),
+      queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit),
+      queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit),
+      queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit),
+      queryFTSViaExecutor(executor, 'Interface', 'interface_fts', query, limit),
+    ]);
+  } else {
+    // Use core kuzu adapter (CLI / pipeline context)
+    [fileResults, functionResults, classResults, methodResults, interfaceResults] = await Promise.all([
+      queryFTS('File', 'file_fts', query, limit, false).catch(() => []),
+      queryFTS('Function', 'function_fts', query, limit, false).catch(() => []),
+      queryFTS('Class', 'class_fts', query, limit, false).catch(() => []),
+      queryFTS('Method', 'method_fts', query, limit, false).catch(() => []),
+      queryFTS('Interface', 'interface_fts', query, limit, false).catch(() => []),
+    ]);
+  }
   
   // Merge results by filePath, summing scores for same file
   const merged = new Map<string, { filePath: string; score: number }>();
@@ -50,6 +100,7 @@ export const searchFTSFromKuzu = async (query: string, limit: number = 20): Prom
   addResults(functionResults);
   addResults(classResults);
   addResults(methodResults);
+  addResults(interfaceResults);
   
   // Sort by score descending and add rank
   const sorted = Array.from(merged.values())

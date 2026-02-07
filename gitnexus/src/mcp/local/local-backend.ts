@@ -1,99 +1,38 @@
 /**
- * Local Backend
+ * Local Backend (Multi-Repo)
  * 
- * Provides tool implementations using local .gitnexus/ index.
- * This enables MCP to work without the browser.
+ * Provides tool implementations using local .gitnexus/ indexes.
+ * Supports multiple indexed repositories via a global registry.
+ * KuzuDB connections are opened lazily per repo on first query.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import { initKuzu, executeQuery, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
 import { embedQuery, getEmbeddingDims, disposeEmbedder } from '../core/embedder.js';
-import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
+// git utilities available if needed
+// import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  getStoragePaths as getRepoStoragePaths,
-  saveMeta as saveRepoMeta,
-  loadMeta as loadRepoMeta,
-  addToGitignore,
+  listRegisteredRepos,
+  type RegistryEntry,
 } from '../../storage/repo-manager.js';
-import { generateAIContextFiles } from '../../cli/ai-context.js';
+// AI context generation is CLI-only (gitnexus analyze)
+// import { generateAIContextFiles } from '../../cli/ai-context.js';
 
-export interface RepoMeta {
-  repoPath: string;
-  lastCommit: string;
-  indexedAt: string;
-  stats?: {
-    files?: number;
-    nodes?: number;
-    edges?: number;
-    communities?: number;
-    processes?: number;
-  };
-}
-
-export interface IndexedRepo {
-  repoPath: string;
-  storagePath: string;
-  kuzuPath: string;
-  metaPath: string;
-  meta: RepoMeta;
-}
-
-const GITNEXUS_DIR = '.gitnexus';
-
-function getStoragePaths(repoPath: string) {
-  const storagePath = path.join(path.resolve(repoPath), GITNEXUS_DIR);
-  return {
-    storagePath,
-    kuzuPath: path.join(storagePath, 'kuzu'),
-    metaPath: path.join(storagePath, 'meta.json'),
-  };
-}
-
-async function loadMeta(storagePath: string): Promise<RepoMeta | null> {
-  try {
-    // Verify both meta.json and kuzu exist for a valid index
-    const metaPath = path.join(storagePath, 'meta.json');
-    const kuzuPath = path.join(storagePath, 'kuzu');
-    
-    // Check kuzu exists (can be file or directory depending on how it was saved)
-    try {
-      await fs.stat(kuzuPath);
-    } catch {
-      return null; // kuzu doesn't exist
-    }
-    
-    // Load and parse meta.json
-    const raw = await fs.readFile(metaPath, 'utf-8');
-    return JSON.parse(raw) as RepoMeta;
-  } catch {
-    return null;
-  }
-}
-
-async function loadRepo(repoPath: string): Promise<IndexedRepo | null> {
-  const paths = getStoragePaths(repoPath);
-  const meta = await loadMeta(paths.storagePath);
-  if (!meta) return null;
-  
-  return {
-    repoPath: path.resolve(repoPath),
-    ...paths,
-    meta,
-  };
-}
-
-export async function findRepo(startPath: string): Promise<IndexedRepo | null> {
-  let current = path.resolve(startPath);
-  const root = path.parse(current).root;
-  
-  while (current !== root) {
-    const repo = await loadRepo(current);
-    if (repo) return repo;
-    current = path.dirname(current);
-  }
-  
-  return null;
+/**
+ * Quick test-file detection for filtering impact results.
+ * Matches common test file patterns across all supported languages.
+ */
+function isTestFilePath(filePath: string): boolean {
+  const p = filePath.toLowerCase().replace(/\\/g, '/');
+  return (
+    p.includes('.test.') || p.includes('.spec.') ||
+    p.includes('__tests__/') || p.includes('__mocks__/') ||
+    p.includes('/test/') || p.includes('/tests/') ||
+    p.includes('/testing/') || p.includes('/fixtures/') ||
+    p.endsWith('_test.go') || p.endsWith('_test.py') ||
+    p.includes('/test_') || p.includes('/conftest.')
+  );
 }
 
 export interface CodebaseContext {
@@ -101,101 +40,203 @@ export interface CodebaseContext {
   stats: {
     fileCount: number;
     functionCount: number;
-    classCount: number;
-    interfaceCount: number;
-    methodCount: number;
     communityCount: number;
     processCount: number;
   };
-  hotspots: Array<{
-    name: string;
-    type: string;
-    filePath: string;
-    connections: number;
-  }>;
-  folderTree: string;
+}
+
+interface RepoHandle {
+  id: string;          // unique key = repo name (basename)
+  name: string;
+  repoPath: string;
+  storagePath: string;
+  kuzuPath: string;
+  indexedAt: string;
+  lastCommit: string;
+  stats?: RegistryEntry['stats'];
 }
 
 export class LocalBackend {
-  private repo: IndexedRepo | null = null;
-  private _context: CodebaseContext | null = null;
-  private initialized = false;
+  private repos: Map<string, RepoHandle> = new Map();
+  private contextCache: Map<string, CodebaseContext> = new Map();
+  private initializedRepos: Set<string> = new Set();
 
-  async init(cwd: string): Promise<boolean> {
-    this.repo = await findRepo(cwd);
-    if (!this.repo) return false;
-    
-    const stats = this.repo.meta.stats || {};
-    this._context = {
-      projectName: path.basename(this.repo.repoPath),
-      stats: {
-        fileCount: stats.files || 0,
-        functionCount: stats.nodes || 0,
-        classCount: 0,
-        interfaceCount: 0,
-        methodCount: 0,
-        communityCount: stats.communities || 0,
-        processCount: stats.processes || 0,
-      },
-      hotspots: [],
-      folderTree: '',
-    };
-    
-    return true;
+  // ─── Initialization ──────────────────────────────────────────────
+
+  /**
+   * Initialize from the global registry.
+   * Returns true if at least one repo is available.
+   */
+  async init(): Promise<boolean> {
+    const entries = await listRegisteredRepos({ validate: true });
+
+    for (const entry of entries) {
+      const id = this.repoId(entry.name, entry.path);
+      const storagePath = entry.storagePath;
+      const kuzuPath = path.join(storagePath, 'kuzu');
+
+      const handle: RepoHandle = {
+        id,
+        name: entry.name,
+        repoPath: entry.path,
+        storagePath,
+        kuzuPath,
+        indexedAt: entry.indexedAt,
+        lastCommit: entry.lastCommit,
+        stats: entry.stats,
+      };
+
+      this.repos.set(id, handle);
+
+      // Build lightweight context (no KuzuDB needed)
+      const s = entry.stats || {};
+      this.contextCache.set(id, {
+        projectName: entry.name,
+        stats: {
+          fileCount: s.files || 0,
+          functionCount: s.nodes || 0,
+          communityCount: s.communities || 0,
+          processCount: s.processes || 0,
+        },
+      });
+    }
+
+    return this.repos.size > 0;
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized || !this.repo) return;
-    
-    await initKuzu(this.repo.kuzuPath);
-    this.initialized = true;
+  /**
+   * Generate a stable repo ID from name + path.
+   * If names collide, append a hash of the path.
+   */
+  private repoId(name: string, repoPath: string): string {
+    const base = name.toLowerCase();
+    // Check for name collision with a different path
+    for (const [id, handle] of this.repos) {
+      if (id === base && handle.repoPath !== path.resolve(repoPath)) {
+        // Collision — use path hash
+        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
+        return `${base}-${hash}`;
+      }
+    }
+    return base;
   }
 
-  get context(): CodebaseContext | null {
-    return this._context;
+  // ─── Repo Resolution ─────────────────────────────────────────────
+
+  /**
+   * Resolve which repo to use.
+   * - If repoParam is given, match by name or path
+   * - If only 1 repo, use it
+   * - If 0 or multiple without param, throw with helpful message
+   */
+  resolveRepo(repoParam?: string): RepoHandle {
+    if (this.repos.size === 0) {
+      throw new Error('No indexed repositories. Run: gitnexus analyze');
+    }
+
+    if (repoParam) {
+      const paramLower = repoParam.toLowerCase();
+      // Match by id
+      if (this.repos.has(paramLower)) return this.repos.get(paramLower)!;
+      // Match by name (case-insensitive)
+      for (const handle of this.repos.values()) {
+        if (handle.name.toLowerCase() === paramLower) return handle;
+      }
+      // Match by path (substring)
+      const resolved = path.resolve(repoParam);
+      for (const handle of this.repos.values()) {
+        if (handle.repoPath === resolved) return handle;
+      }
+      // Match by partial name
+      for (const handle of this.repos.values()) {
+        if (handle.name.toLowerCase().includes(paramLower)) return handle;
+      }
+
+      const names = [...this.repos.values()].map(h => h.name);
+      throw new Error(`Repository "${repoParam}" not found. Available: ${names.join(', ')}`);
+    }
+
+    if (this.repos.size === 1) {
+      return this.repos.values().next().value!;
+    }
+
+    const names = [...this.repos.values()].map(h => h.name);
+    throw new Error(
+      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${names.join(', ')}`
+    );
   }
 
-  get isReady(): boolean {
-    return this.repo !== null;
+  // ─── Lazy KuzuDB Init ────────────────────────────────────────────
+
+  private async ensureInitialized(repoId: string): Promise<void> {
+    // Always check the actual pool — the idle timer may have evicted the connection
+    if (this.initializedRepos.has(repoId) && isKuzuReady(repoId)) return;
+
+    const handle = this.repos.get(repoId);
+    if (!handle) throw new Error(`Unknown repo: ${repoId}`);
+
+    await initKuzu(repoId, handle.kuzuPath);
+    this.initializedRepos.add(repoId);
   }
 
-  get repoPath(): string | null {
-    return this.repo?.repoPath || null;
+  // ─── Public Getters ──────────────────────────────────────────────
+
+  /**
+   * Get context for a specific repo (or the single repo if only one).
+   */
+  getContext(repoId?: string): CodebaseContext | null {
+    if (repoId && this.contextCache.has(repoId)) {
+      return this.contextCache.get(repoId)!;
+    }
+    if (this.repos.size === 1) {
+      return this.contextCache.values().next().value ?? null;
+    }
+    return null;
   }
 
-  get storagePath(): string | null {
-    return this.repo?.storagePath || null;
+  /**
+   * List all registered repos with their metadata.
+   */
+  listRepos(): Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }> {
+    return [...this.repos.values()].map(h => ({
+      name: h.name,
+      path: h.repoPath,
+      indexedAt: h.indexedAt,
+      lastCommit: h.lastCommit,
+      stats: h.stats,
+    }));
   }
 
-  get meta(): any {
-    return this.repo?.meta || null;
-  }
+  // ─── Tool Dispatch ───────────────────────────────────────────────
 
   async callTool(method: string, params: any): Promise<any> {
-    if (!this.repo) {
-      throw new Error('Repository not indexed. Run: gitnexus analyze');
+    if (method === 'list_repos') {
+      return this.listRepos();
     }
+
+    // Resolve repo from optional param
+    const repo = this.resolveRepo(params?.repo);
 
     switch (method) {
       case 'search':
-        return this.search(params);
+        return this.search(repo, params);
       case 'cypher':
-        return this.cypher(params);
+        return this.cypher(repo, params);
       case 'overview':
-        return this.overview(params);
+        return this.overview(repo, params);
       case 'explore':
-        return this.explore(params);
+        return this.explore(repo, params);
       case 'impact':
-        return this.impact(params);
-      case 'analyze':
-        return this.analyze(params);
+        return this.impact(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
   }
 
-  private async search(params: { query: string; limit?: number; depth?: string; groupByProcess?: boolean }): Promise<any> {
-    await this.ensureInitialized();
+  // ─── Tool Implementations ────────────────────────────────────────
+
+  private async search(repo: RepoHandle, params: { query: string; limit?: number; depth?: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     
     const limit = params.limit || 10;
     const query = params.query;
@@ -203,18 +244,20 @@ export class LocalBackend {
     
     // Run BM25 and semantic search in parallel
     const [bm25Results, semanticResults] = await Promise.all([
-      this.bm25Search(query, limit * 2),
-      this.semanticSearch(query, limit * 2),
+      this.bm25Search(repo, query, limit * 2),
+      this.semanticSearch(repo, query, limit * 2),
     ]);
     
     // Merge and deduplicate results using reciprocal rank fusion
+    // Key by nodeId (symbol-level) so semantic precision is preserved.
+    // Fall back to filePath for File-level results that lack a nodeId.
     const scoreMap = new Map<string, { score: number; source: string; data: any }>();
     
     // BM25 results
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
-      const key = result.filePath;
-      const rrfScore = 1 / (60 + i); // RRF formula with k=60
+      const key = result.nodeId || result.filePath;
+      const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
@@ -227,7 +270,7 @@ export class LocalBackend {
     // Semantic results
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
-      const key = result.filePath;
+      const key = result.nodeId || result.filePath;
       const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
       if (existing) {
@@ -251,15 +294,37 @@ export class LocalBackend {
       result.searchSource = item.source;
       result.fusedScore = item.score;
       
+      // Add cluster membership context for each result with a nodeId
+      if (result.nodeId) {
+        try {
+          const clusterQuery = `
+            MATCH (n {id: '${result.nodeId.replace(/'/g, "''")}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+            RETURN c.label AS label, c.heuristicLabel AS heuristicLabel
+            LIMIT 1
+          `;
+          const clusters = await executeQuery(repo.id, clusterQuery);
+          if (clusters.length > 0) {
+            result.cluster = {
+              label: clusters[0].label || clusters[0][0],
+              heuristicLabel: clusters[0].heuristicLabel || clusters[0][1],
+            };
+          }
+        } catch {
+          // Cluster lookup failed - continue without it
+        }
+      }
+      
       // Add relationships if depth is 'full' and we have a node ID
+      // Only include connections with actual name/path data (skip MEMBER_OF, STEP_IN_PROCESS noise)
       if (depth === 'full' && result.nodeId) {
         try {
           const relQuery = `
             MATCH (n {id: '${result.nodeId.replace(/'/g, "''")}'})-[r:CodeRelation]->(m)
+            WHERE r.type IN ['CALLS', 'IMPORTS', 'DEFINES', 'EXTENDS', 'IMPLEMENTS']
             RETURN r.type AS type, m.name AS targetName, m.filePath AS targetPath
             LIMIT 5
           `;
-          const rels = await executeQuery(relQuery);
+          const rels = await executeQuery(repo.id, relQuery);
           result.connections = rels.map((rel: any) => ({
             type: rel.type || rel[0],
             name: rel.targetName || rel[1],
@@ -279,23 +344,22 @@ export class LocalBackend {
   /**
    * BM25 keyword search helper - uses KuzuDB FTS for always-fresh results
    */
-  private async bm25Search(query: string, limit: number): Promise<any[]> {
-    // Import dynamically to avoid circular dependency
+  private async bm25Search(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     const { searchFTSFromKuzu } = await import('../../core/search/bm25-index.js');
-    const bm25Results = await searchFTSFromKuzu(query, limit);
+    const bm25Results = await searchFTSFromKuzu(query, limit, repo.id);
     
     const results: any[] = [];
     
     for (const bm25Result of bm25Results) {
-      const fileName = bm25Result.filePath.split('/').pop() || bm25Result.filePath;
+      const fullPath = bm25Result.filePath;
       try {
         const symbolQuery = `
           MATCH (n) 
-          WHERE n.filePath CONTAINS '${fileName.replace(/'/g, "''")}'
+          WHERE n.filePath = '${fullPath.replace(/'/g, "''")}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
           LIMIT 3
         `;
-        const symbols = await executeQuery(symbolQuery);
+        const symbols = await executeQuery(repo.id, symbolQuery);
         
         if (symbols.length > 0) {
           for (const sym of symbols) {
@@ -310,6 +374,7 @@ export class LocalBackend {
             });
           }
         } else {
+          const fileName = fullPath.split('/').pop() || fullPath;
           results.push({
             name: fileName,
             type: 'File',
@@ -318,6 +383,7 @@ export class LocalBackend {
           });
         }
       } catch {
+        const fileName = fullPath.split('/').pop() || fullPath;
         results.push({
           name: fileName,
           type: 'File',
@@ -333,14 +399,12 @@ export class LocalBackend {
   /**
    * Semantic vector search helper
    */
-  private async semanticSearch(query: string, limit: number): Promise<any[]> {
+  private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     try {
-      // Embed the query
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
       
-      // Query vector index
       const vectorQuery = `
         CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
           CAST(${queryVecStr} AS FLOAT[${dims}]), ${limit})
@@ -351,18 +415,16 @@ export class LocalBackend {
         ORDER BY distance
       `;
       
-      const embResults = await executeQuery(vectorQuery);
+      const embResults = await executeQuery(repo.id, vectorQuery);
       
       if (embResults.length === 0) return [];
       
-      // Get metadata for each result
       const results: any[] = [];
       
       for (const embRow of embResults) {
         const nodeId = embRow.nodeId ?? embRow[0];
         const distance = embRow.distance ?? embRow[1];
         
-        // Extract label from node ID
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
         
@@ -371,7 +433,7 @@ export class LocalBackend {
             ? `MATCH (n:File {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath`
             : `MATCH (n:${label} {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
           
-          const nodeRows = await executeQuery(nodeQuery);
+          const nodeRows = await executeQuery(repo.id, nodeQuery);
           if (nodeRows.length > 0) {
             const nodeRow = nodeRows[0];
             results.push({
@@ -389,53 +451,95 @@ export class LocalBackend {
       
       return results;
     } catch (err: any) {
-      // Semantic search unavailable (no embeddings or model not loaded)
       console.error('GitNexus: Semantic search unavailable -', err.message);
       return [];
     }
   }
 
-  private async cypher(params: { query: string }): Promise<any> {
-    await this.ensureInitialized();
+  private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     
-    if (!isKuzuReady()) {
+    if (!isKuzuReady(repo.id)) {
       return { error: 'KuzuDB not ready. Index may be corrupted.' };
     }
     
     try {
-      const result = await executeQuery(params.query);
+      const result = await executeQuery(repo.id, params.query);
       return result;
     } catch (err: any) {
       return { error: err.message || 'Query failed' };
     }
   }
 
-  private async overview(params: { showClusters?: boolean; showProcesses?: boolean; limit?: number }): Promise<any> {
-    await this.ensureInitialized();
+  /**
+   * Aggregate same-named clusters: group by heuristicLabel, sum symbols,
+   * weighted-average cohesion, filter out tiny clusters (<5 symbols).
+   * Raw communities stay intact in KuzuDB for Cypher queries.
+   */
+  private aggregateClusters(clusters: any[]): any[] {
+    const groups = new Map<string, { ids: string[]; totalSymbols: number; weightedCohesion: number; largest: any }>();
+
+    for (const c of clusters) {
+      const label = c.heuristicLabel || c.label || 'Unknown';
+      const symbols = c.symbolCount || 0;
+      const cohesion = c.cohesion || 0;
+      const existing = groups.get(label);
+
+      if (!existing) {
+        groups.set(label, { ids: [c.id], totalSymbols: symbols, weightedCohesion: cohesion * symbols, largest: c });
+      } else {
+        existing.ids.push(c.id);
+        existing.totalSymbols += symbols;
+        existing.weightedCohesion += cohesion * symbols;
+        if (symbols > (existing.largest.symbolCount || 0)) {
+          existing.largest = c;
+        }
+      }
+    }
+
+    return Array.from(groups.entries())
+      .map(([label, g]) => ({
+        id: g.largest.id,
+        label,
+        heuristicLabel: label,
+        symbolCount: g.totalSymbols,
+        cohesion: g.totalSymbols > 0 ? g.weightedCohesion / g.totalSymbols : 0,
+        subCommunities: g.ids.length,
+      }))
+      .filter(c => c.symbolCount >= 5)
+      .sort((a, b) => b.symbolCount - a.symbolCount);
+  }
+
+  private async overview(repo: RepoHandle, params: { showClusters?: boolean; showProcesses?: boolean; limit?: number }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     
     const limit = params.limit || 20;
     const result: any = {
-      repoPath: this.repo!.repoPath,
-      stats: this.repo!.meta.stats,
-      indexedAt: this.repo!.meta.indexedAt,
-      lastCommit: this.repo!.meta.lastCommit,
+      repo: repo.name,
+      repoPath: repo.repoPath,
+      stats: repo.stats,
+      indexedAt: repo.indexedAt,
+      lastCommit: repo.lastCommit,
     };
     
     if (params.showClusters !== false) {
       try {
-        const clusters = await executeQuery(`
+        // Fetch more raw communities than the display limit so aggregation has enough data
+        const rawLimit = Math.max(limit * 5, 200);
+        const clusters = await executeQuery(repo.id, `
           MATCH (c:Community)
           RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
           ORDER BY c.symbolCount DESC
-          LIMIT ${limit}
+          LIMIT ${rawLimit}
         `);
-        result.clusters = clusters.map((c: any) => ({
+        const rawClusters = clusters.map((c: any) => ({
           id: c.id || c[0],
           label: c.label || c[1],
           heuristicLabel: c.heuristicLabel || c[2],
           cohesion: c.cohesion || c[3],
           symbolCount: c.symbolCount || c[4],
         }));
+        result.clusters = this.aggregateClusters(rawClusters).slice(0, limit);
       } catch {
         result.clusters = [];
       }
@@ -443,7 +547,7 @@ export class LocalBackend {
     
     if (params.showProcesses !== false) {
       try {
-        const processes = await executeQuery(`
+        const processes = await executeQuery(repo.id, `
           MATCH (p:Process)
           RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
           ORDER BY p.stepCount DESC
@@ -464,50 +568,51 @@ export class LocalBackend {
     return result;
   }
 
-  private async explore(params: { name: string; type: 'symbol' | 'cluster' | 'process' }): Promise<any> {
-    await this.ensureInitialized();
+  private async explore(repo: RepoHandle, params: { name: string; type: 'symbol' | 'cluster' | 'process' }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     
     const { name, type } = params;
     
     if (type === 'symbol') {
-      // Find symbol and its context
-      const symbolQuery = `
-        MATCH (n)
-        WHERE n.name = '${name.replace(/'/g, "''")}'
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-        LIMIT 1
-      `;
-      const symbols = await executeQuery(symbolQuery);
+      // If name contains a path separator or ':', treat it as a qualified lookup
+      const isQualified = name.includes('/') || name.includes(':');
+      const symbolQuery = isQualified
+        ? `MATCH (n) WHERE n.id = '${name.replace(/'/g, "''")}' OR (n.name = '${name.replace(/'/g, "''")}')
+           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+           LIMIT 5`
+        : `MATCH (n) WHERE n.name = '${name.replace(/'/g, "''")}'
+           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+           LIMIT 5`;
+      
+      const symbols = await executeQuery(repo.id, symbolQuery);
       if (symbols.length === 0) return { error: `Symbol '${name}' not found` };
       
+      // Use the first match for detailed exploration
       const sym = symbols[0];
       const symId = sym.id || sym[0];
       
-      // Get callers
       const callersQuery = `
         MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n {id: '${symId}'})
         RETURN caller.name AS name, caller.filePath AS filePath
         LIMIT 10
       `;
-      const callers = await executeQuery(callersQuery);
+      const callers = await executeQuery(repo.id, callersQuery);
       
-      // Get callees
       const calleesQuery = `
         MATCH (n {id: '${symId}'})-[:CodeRelation {type: 'CALLS'}]->(callee)
         RETURN callee.name AS name, callee.filePath AS filePath
         LIMIT 10
       `;
-      const callees = await executeQuery(calleesQuery);
+      const callees = await executeQuery(repo.id, calleesQuery);
       
-      // Get community
       const communityQuery = `
         MATCH (n {id: '${symId}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         RETURN c.label AS label, c.heuristicLabel AS heuristicLabel
         LIMIT 1
       `;
-      const communities = await executeQuery(communityQuery);
+      const communities = await executeQuery(repo.id, communityQuery);
       
-      return {
+      const result: any = {
         symbol: {
           id: symId,
           name: sym.name || sym[1],
@@ -523,35 +628,66 @@ export class LocalBackend {
           heuristicLabel: communities[0].heuristicLabel || communities[0][1],
         } : null,
       };
+      
+      // If multiple symbols share the same name, show alternatives so the agent can disambiguate
+      if (symbols.length > 1) {
+        result.alternatives = symbols.slice(1).map((s: any) => ({
+          id: s.id || s[0],
+          type: s.type || s[2],
+          filePath: s.filePath || s[3],
+        }));
+        result.hint = `Multiple symbols named '${name}' found. Showing details for ${result.symbol.filePath}. Use the full node ID to explore a specific alternative.`;
+      }
+      
+      return result;
     }
     
     if (type === 'cluster') {
+      const escaped = name.replace(/'/g, "''");
+      
+      // Find ALL communities with this label (not just one)
       const clusterQuery = `
         MATCH (c:Community)
-        WHERE c.label = '${name.replace(/'/g, "''")}' OR c.heuristicLabel = '${name.replace(/'/g, "''")}'
+        WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-        LIMIT 1
       `;
-      const clusters = await executeQuery(clusterQuery);
+      const clusters = await executeQuery(repo.id, clusterQuery);
       if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
       
-      const cluster = clusters[0];
-      const clusterId = cluster.id || cluster[0];
+      const rawClusters = clusters.map((c: any) => ({
+        id: c.id || c[0],
+        label: c.label || c[1],
+        heuristicLabel: c.heuristicLabel || c[2],
+        cohesion: c.cohesion || c[3],
+        symbolCount: c.symbolCount || c[4],
+      }));
       
+      // Aggregate: sum symbols, weighted-average cohesion across sub-communities
+      let totalSymbols = 0;
+      let weightedCohesion = 0;
+      for (const c of rawClusters) {
+        const s = c.symbolCount || 0;
+        totalSymbols += s;
+        weightedCohesion += (c.cohesion || 0) * s;
+      }
+      
+      // Fetch members from ALL matching sub-communities (DISTINCT to avoid dupes)
       const membersQuery = `
-        MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c {id: '${clusterId}'})
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-        LIMIT 20
+        MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        LIMIT 30
       `;
-      const members = await executeQuery(membersQuery);
+      const members = await executeQuery(repo.id, membersQuery);
       
       return {
         cluster: {
-          id: clusterId,
-          label: cluster.label || cluster[1],
-          heuristicLabel: cluster.heuristicLabel || cluster[2],
-          cohesion: cluster.cohesion || cluster[3],
-          symbolCount: cluster.symbolCount || cluster[4],
+          id: rawClusters[0].id,
+          label: rawClusters[0].heuristicLabel || rawClusters[0].label,
+          heuristicLabel: rawClusters[0].heuristicLabel || rawClusters[0].label,
+          cohesion: totalSymbols > 0 ? weightedCohesion / totalSymbols : 0,
+          symbolCount: totalSymbols,
+          subCommunities: rawClusters.length,
         },
         members: members.map((m: any) => ({
           name: m.name || m[0],
@@ -568,7 +704,7 @@ export class LocalBackend {
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, p.entryPointId AS entryPointId, p.terminalId AS terminalId
         LIMIT 1
       `;
-      const processes = await executeQuery(processQuery);
+      const processes = await executeQuery(repo.id, processQuery);
       if (processes.length === 0) return { error: `Process '${name}' not found` };
       
       const proc = processes[0];
@@ -579,7 +715,7 @@ export class LocalBackend {
         RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
       `;
-      const steps = await executeQuery(stepsQuery);
+      const steps = await executeQuery(repo.id, stepsQuery);
       
       return {
         process: {
@@ -601,26 +737,39 @@ export class LocalBackend {
     return { error: 'Invalid type. Use: symbol, cluster, or process' };
   }
 
-  private async impact(params: { target: string; direction: 'upstream' | 'downstream'; maxDepth?: number }): Promise<any> {
-    await this.ensureInitialized();
+  private async impact(repo: RepoHandle, params: {
+    target: string;
+    direction: 'upstream' | 'downstream';
+    maxDepth?: number;
+    relationTypes?: string[];
+    includeTests?: boolean;
+    minConfidence?: number;
+  }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
+    const relationTypes = params.relationTypes && params.relationTypes.length > 0
+      ? params.relationTypes
+      : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+    const includeTests = params.includeTests ?? false;
+    const minConfidence = params.minConfidence ?? 0;
     
-    // Find target symbol
+    const relTypeFilter = relationTypes.map(t => `'${t}'`).join(', ');
+    const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
+    
     const targetQuery = `
       MATCH (n)
       WHERE n.name = '${target.replace(/'/g, "''")}'
       RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
       LIMIT 1
     `;
-    const targets = await executeQuery(targetQuery);
+    const targets = await executeQuery(repo.id, targetQuery);
     if (targets.length === 0) return { error: `Target '${target}' not found` };
     
     const sym = targets[0];
     const symId = sym.id || sym[0];
     
-    // BFS to find impacted nodes
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     let frontier = [symId];
@@ -630,13 +779,17 @@ export class LocalBackend {
       
       for (const nodeId of frontier) {
         const query = direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n {id: '${nodeId}'}) WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'] RETURN caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n {id: '${nodeId}'})-[r:CodeRelation]->(callee) WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'] RETURN callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n {id: '${nodeId}'}) WHERE r.type IN [${relTypeFilter}]${confidenceFilter} RETURN caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n {id: '${nodeId}'})-[r:CodeRelation]->(callee) WHERE r.type IN [${relTypeFilter}]${confidenceFilter} RETURN callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
         
-        const related = await executeQuery(query);
+        const related = await executeQuery(repo.id, query);
         
         for (const rel of related) {
           const relId = rel.id || rel[0];
+          const filePath = rel.filePath || rel[3] || '';
+          
+          if (!includeTests && isTestFilePath(filePath)) continue;
+          
           if (!visited.has(relId)) {
             visited.add(relId);
             nextFrontier.push(relId);
@@ -645,7 +798,7 @@ export class LocalBackend {
               id: relId,
               name: rel.name || rel[1],
               type: rel.type || rel[2],
-              filePath: rel.filePath || rel[3],
+              filePath,
               relationType: rel.relType || rel[4],
               confidence: rel.confidence || rel[5] || 1.0,
             });
@@ -656,7 +809,6 @@ export class LocalBackend {
       frontier = nextFrontier;
     }
     
-    // Group by depth
     const grouped: Record<number, any[]> = {};
     for (const item of impacted) {
       if (!grouped[item.depth]) grouped[item.depth] = [];
@@ -676,160 +828,11 @@ export class LocalBackend {
     };
   }
 
-  private async analyze(params: { path?: string; force?: boolean; skipEmbeddings?: boolean }): Promise<any> {
-    // Determine target repo path
-    let repoPath: string;
-    if (params.path) {
-      repoPath = path.resolve(params.path);
-    } else if (this.repo) {
-      repoPath = this.repo.repoPath;
-    } else {
-      const gitRoot = getGitRoot(process.cwd());
-      if (!gitRoot) {
-        return { error: 'Not inside a git repository' };
-      }
-      repoPath = gitRoot;
-    }
-
-    if (!isGitRepo(repoPath)) {
-      return { error: 'Not a git repository' };
-    }
-
-    const { storagePath, kuzuPath } = getRepoStoragePaths(repoPath);
-    const currentCommit = getCurrentCommit(repoPath);
-    const existingMeta = await loadRepoMeta(storagePath);
-
-    // Skip if already indexed at same commit (unless force)
-    if (existingMeta && !params.force && existingMeta.lastCommit === currentCommit) {
-      return { status: 'up_to_date', message: 'Repository already up to date.' };
-    }
-
-    // Close MCP's persistent connection before pipeline takes over
-    await closeKuzu();
-    this.initialized = false;
-
-    try {
-      // Import pipeline modules dynamically to avoid circular deps
-      const { runPipelineFromRepo } = await import('../../core/ingestion/pipeline.js');
-      const coreKuzu = await import('../../core/kuzu/kuzu-adapter.js');
-
-      // Run ingestion pipeline
-      console.error('GitNexus: Running indexing pipeline...');
-      const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
-        if (progress.percent % 20 === 0) {
-          console.error(`GitNexus: ${progress.phase} ${progress.percent}%`);
-        }
-      });
-
-      // Load graph into KuzuDB
-      console.error('GitNexus: Loading graph into KuzuDB...');
-      await coreKuzu.initKuzu(kuzuPath);
-      await coreKuzu.loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath);
-
-      // Create FTS indexes
-      console.error('GitNexus: Creating FTS indexes...');
-      try {
-        await coreKuzu.createFTSIndex('File', 'file_fts', ['name', 'content']);
-        await coreKuzu.createFTSIndex('Function', 'function_fts', ['name', 'content']);
-        await coreKuzu.createFTSIndex('Class', 'class_fts', ['name', 'content']);
-        await coreKuzu.createFTSIndex('Method', 'method_fts', ['name', 'content']);
-      } catch (e: any) {
-        console.error('GitNexus: Some FTS indexes may not have been created:', e.message);
-      }
-
-      // Generate embeddings (unless skipped)
-      if (!params.skipEmbeddings) {
-        try {
-          console.error('GitNexus: Generating embeddings...');
-          const { runEmbeddingPipeline } = await import('../../core/embeddings/embedding-pipeline.js');
-          await runEmbeddingPipeline(
-            coreKuzu.executeQuery,
-            coreKuzu.executeWithReusedStatement,
-            (progress) => {
-              if (progress.percent % 25 === 0) {
-                console.error(`GitNexus: Embeddings ${progress.percent}%`);
-              }
-            }
-          );
-        } catch (e: any) {
-          console.error('GitNexus: Embedding generation failed (non-fatal):', e.message);
-        }
-      }
-
-      // Save metadata
-      const stats = await coreKuzu.getKuzuStats();
-      await saveRepoMeta(storagePath, {
-        repoPath,
-        lastCommit: currentCommit,
-        indexedAt: new Date().toISOString(),
-        stats: {
-          files: pipelineResult.fileContents.size,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-      });
-
-      // Add .gitnexus to .gitignore
-      await addToGitignore(repoPath);
-
-      // Generate AI context files
-      const projectName = path.basename(repoPath);
-      await generateAIContextFiles(repoPath, storagePath, projectName, {
-        files: pipelineResult.fileContents.size,
-        nodes: stats.nodes,
-        edges: stats.edges,
-        communities: pipelineResult.communityResult?.stats.totalCommunities,
-        processes: pipelineResult.processResult?.stats.totalProcesses,
-      });
-
-      // Close core kuzu connection (pipeline is done)
-      await coreKuzu.closeKuzu();
-
-      // Re-init MCP state so next tool call reconnects
-      this.repo = await loadRepo(repoPath);
-      if (this.repo) {
-        const repoStats = this.repo.meta.stats || {};
-        this._context = {
-          projectName: path.basename(this.repo.repoPath),
-          stats: {
-            fileCount: repoStats.files || 0,
-            functionCount: repoStats.nodes || 0,
-            classCount: 0,
-            interfaceCount: 0,
-            methodCount: 0,
-            communityCount: repoStats.communities || 0,
-            processCount: repoStats.processes || 0,
-          },
-          hotspots: [],
-          folderTree: '',
-        };
-      }
-
-      console.error('GitNexus: Indexing complete!');
-      return {
-        status: 'success',
-        message: `Repository indexed successfully.`,
-        stats: {
-          files: pipelineResult.fileContents.size,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-      };
-    } catch (e: any) {
-      console.error('GitNexus: Indexing failed:', e.message);
-      return { error: `Indexing failed: ${e.message}` };
-    }
-  }
-
   async disconnect(): Promise<void> {
-    closeKuzu();
+    await closeKuzu(); // close all connections
     await disposeEmbedder();
-    this.repo = null;
-    this._context = null;
-    this.initialized = false;
+    this.repos.clear();
+    this.contextCache.clear();
+    this.initializedRepos.clear();
   }
 }
