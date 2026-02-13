@@ -11,7 +11,7 @@ import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepository } from './filesystem-walker.js';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV === 'development';
 
 export const runPipelineFromRepo = async (
   repoPath: string,

@@ -5,11 +5,12 @@
  */
 
 import path from 'path';
-import ora from 'ora';
+import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
 import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex } from '../core/kuzu/kuzu-adapter.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
+import { disposeEmbedder } from '../core/embeddings/embedder.js';
+import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, getGlobalDir } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
@@ -19,20 +20,31 @@ export interface AnalyzeOptions {
   skipEmbeddings?: boolean;
 }
 
+const PHASE_LABELS: Record<string, string> = {
+  extracting: 'Scanning files',
+  structure: 'Building structure',
+  parsing: 'Parsing code',
+  imports: 'Resolving imports',
+  calls: 'Tracing calls',
+  heritage: 'Extracting inheritance',
+  communities: 'Detecting communities',
+  processes: 'Detecting processes',
+  complete: 'Complete',
+};
+
 export const analyzeCommand = async (
   inputPath?: string,
   options?: AnalyzeOptions
 ) => {
-  const spinner = ora('Checking repository...').start();
+  console.log('\n  GitNexus Analyzer\n');
 
-  // If path provided, use it directly. Otherwise, find git root from cwd.
   let repoPath: string;
   if (inputPath) {
     repoPath = path.resolve(inputPath);
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      spinner.fail('Not inside a git repository');
+      console.log('  ✗ Not inside a git repository\n');
       process.exitCode = 1;
       return;
     }
@@ -40,7 +52,7 @@ export const analyzeCommand = async (
   }
 
   if (!isGitRepo(repoPath)) {
-    spinner.fail('Not a git repository');
+    console.log('  ✗ Not a git repository\n');
     process.exitCode = 1;
     return;
   }
@@ -49,25 +61,31 @@ export const analyzeCommand = async (
   const currentCommit = getCurrentCommit(repoPath);
   const existingMeta = await loadMeta(storagePath);
 
-  // Skip if already indexed at same commit
   if (existingMeta && !options?.force && existingMeta.lastCommit === currentCommit) {
-    spinner.succeed('Repository already up to date');
+    console.log('  ✓ Repository already up to date\n');
     return;
   }
 
-  // Run ingestion pipeline
-  spinner.text = 'Running ingestion pipeline...';
+  const multibar = new cliProgress.MultiBar({
+    format: '  {bar} {percentage}% | {phase}',
+    barCompleteChar: '█',
+    barIncompleteChar: '░',
+    hideCursor: true,
+    barGlue: '',
+    autopadding: true,
+  }, cliProgress.Presets.shades_grey);
+
+  const progressBar = multibar.create(100, 0, { phase: 'Initializing...' });
+
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
-    spinner.text = `${progress.phase}: ${progress.percent}%`;
+    const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
+    progressBar.update(progress.percent, { phase: phaseLabel });
   });
 
-  // Load graph into KuzuDB
-  // Always start fresh - remove existing kuzu DB to avoid stale/corrupt data
-  spinner.text = 'Loading graph into KuzuDB...';
+  progressBar.update(100, { phase: 'Loading graph into KuzuDB...' });
+  
   await closeKuzu();
   
-  // Kuzu 0.11 stores databases as: <name> (main file) + <name>.wal (WAL file)
-  // BOTH must be deleted or kuzu will find the orphaned WAL and corrupt the database
   const fsClean = await import('fs/promises');
   const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
   for (const f of kuzuFiles) {
@@ -77,9 +95,8 @@ export const analyzeCommand = async (
   await initKuzu(kuzuPath);
   await loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath);
 
-  // Create FTS indexes for keyword search
-  // Indexes searchable content on: File, Function, Class, Method
-  spinner.text = 'Creating FTS indexes...';
+  progressBar.update(100, { phase: 'Creating search indexes...' });
+
   try {
     await createFTSIndex('File', 'file_fts', ['name', 'content']);
     await createFTSIndex('Function', 'function_fts', ['name', 'content']);
@@ -87,23 +104,20 @@ export const analyzeCommand = async (
     await createFTSIndex('Method', 'method_fts', ['name', 'content']);
     await createFTSIndex('Interface', 'interface_fts', ['name', 'content']);
   } catch (e: any) {
-    // FTS index creation may fail if tables are empty (no data for that type)
-    console.error('Note: Some FTS indexes may not have been created:', e.message);
+    console.error('  Note: Some FTS indexes may not have been created:', e.message);
   }
 
-  // Generate embeddings
   if (!options?.skipEmbeddings) {
-    spinner.text = 'Generating embeddings...';
+    progressBar.update(100, { phase: 'Generating embeddings...' });
     await runEmbeddingPipeline(
       executeQuery,
       executeWithReusedStatement,
       (progress) => {
-        spinner.text = `Embeddings: ${progress.percent}%`;
+        progressBar.update(progress.percent, { phase: `Embeddings ${progress.percent}%` });
       }
     );
   }
 
-  // Save metadata
   const stats = await getKuzuStats();
   const meta = {
     repoPath,
@@ -119,16 +133,11 @@ export const analyzeCommand = async (
   };
   await saveMeta(storagePath, meta);
 
-  // Register in global registry
   await registerRepo(repoPath, meta);
 
-  // Add .gitnexus to .gitignore
   await addToGitignore(repoPath);
   
-  // Generate AI context files
   const projectName = path.basename(repoPath);
-  // Compute aggregated cluster count (grouped by heuristicLabel, >=5 symbols)
-  // This matches the aggregation logic in local-backend.ts for tool output consistency.
   let aggregatedClusterCount = 0;
   if (pipelineResult.communityResult?.communities) {
     const groups = new Map<string, number>();
@@ -148,24 +157,27 @@ export const analyzeCommand = async (
     processes: pipelineResult.processResult?.stats.totalProcesses,
   });
   
-  // Close database
   await closeKuzu();
 
-  spinner.succeed('Repository indexed successfully');
-  console.log(`  Path: ${repoPath}`);
-  console.log(`  Storage: ${storagePath}`);
-  console.log(`  Stats: ${stats.nodes} nodes, ${stats.edges} edges`);
+  await disposeEmbedder();
+
+  multibar.stop();
+
+  console.log('\n  ✓ Repository indexed successfully\n');
+  console.log(`  Path:     ${repoPath}`);
+  console.log(`  Storage:  ${storagePath}`);
+  console.log(`  Registry: ${getGlobalDir()}`);
+  console.log(`  Stats:    ${stats.nodes} nodes, ${stats.edges} edges, ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters, ${pipelineResult.processResult?.stats.totalProcesses || 0} processes`);
   
   if (aiContext.files.length > 0) {
-    console.log(`  AI Context: ${aiContext.files.join(', ')}`);
+    console.log(`  Context:  ${aiContext.files.join(', ')}`);
   }
 
-  // Hint about setup if it hasn't been run
   try {
     await fs.access(getGlobalRegistryPath());
   } catch {
-    // Registry didn't exist before this run — suggest setup
-    console.log('');
-    console.log('  Tip: Run `gitnexus setup` to configure MCP for your editor.');
+    console.log('\n  Tip: Run `gitnexus setup` to configure MCP for your editor.');
   }
+
+  console.log('');
 };

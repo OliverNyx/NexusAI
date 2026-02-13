@@ -14,7 +14,7 @@ import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../grap
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV === 'development';
 
 // ============================================================================
 // CONFIGURATION

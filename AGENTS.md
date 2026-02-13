@@ -3,9 +3,9 @@
 <!-- gitnexus:start -->
 # GitNexus MCP
 
-This project is indexed by GitNexus as **GitnexusV2** (940 symbols, 2298 relationships, 13 clusters, 67 processes).
+This project is indexed by GitNexus as **GitnexusV2** (1023 symbols, 2503 relationships, 78 execution flows).
 
-GitNexus provides a knowledge graph over this codebase — clusters, call chains, blast radius, execution flows, and semantic search.
+GitNexus provides a knowledge graph over this codebase — call chains, blast radius, execution flows, and semantic search.
 
 ## Always Start Here
 
@@ -30,10 +30,11 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 | Tool | What it gives you |
 |------|-------------------|
-| `search` | Semantic + keyword code search with cluster context |
-| `explore` | Symbol deep dive — callers, callees, cluster membership, processes |
-| `impact` | Blast radius — what breaks at depth 1/2/3 with confidence scores |
-| `overview` | All clusters and processes at a glance |
+| `query` | Process-grouped code intelligence — execution flows related to a concept |
+| `context` | 360-degree symbol view — categorized refs, processes it participates in |
+| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |
+| `detect_changes` | Git-diff impact — what do your current changes affect |
+| `rename` | Multi-file coordinated rename with confidence-tagged edits |
 | `cypher` | Raw graph queries (read `gitnexus://repo/{name}/schema` first) |
 | `list_repos` | Discover indexed repos |
 
@@ -44,8 +45,8 @@ Lightweight reads (~100-500 tokens) for navigation:
 | Resource | Content |
 |----------|---------|
 | `gitnexus://repo/{name}/context` | Stats, staleness check |
-| `gitnexus://repo/{name}/clusters` | All clusters with cohesion scores |
-| `gitnexus://repo/{name}/cluster/{clusterName}` | Cluster members |
+| `gitnexus://repo/{name}/clusters` | All functional areas with cohesion scores |
+| `gitnexus://repo/{name}/cluster/{clusterName}` | Area members |
 | `gitnexus://repo/{name}/processes` | All execution flows |
 | `gitnexus://repo/{name}/process/{processName}` | Step-by-step trace |
 | `gitnexus://repo/{name}/schema` | Graph schema for Cypher |

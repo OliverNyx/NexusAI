@@ -43,6 +43,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "cli-progress": "^3.12.0",
     "commander": "^12.0.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
@@ -53,7 +54,6 @@
     "kuzu": "^0.11.3",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",
-    "ora": "^8.0.0",
     "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.0",
     "tree-sitter-c": "^0.21.0",
@@ -69,6 +69,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",

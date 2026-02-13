@@ -11,6 +11,8 @@ import {
 } from './schema.js';
 import { generateAllCSVs } from './csv-generator.js';
 
+const isDev = process.env.NODE_ENV === 'development';
+
 let db: kuzu.Database | null = null;
 let conn: kuzu.Connection | null = null;
 
@@ -88,23 +90,24 @@ export const loadGraphToKuzu = async (
     const normalizedPath = normalizeCopyPath(filePath);
     const copyQuery = getCopyQuery(table, normalizedPath);
     
-    // Log CSV stats for diagnostics
-    const csvContent = await fs.readFile(filePath, 'utf-8');
-    const csvLines = csvContent.split('\n').length;
-    console.log(`  COPY ${table}: ${csvLines - 1} rows`);
+    if (isDev) {
+      const csvContent = await fs.readFile(filePath, 'utf-8');
+      const csvLines = csvContent.split('\n').length;
+      console.log(`  COPY ${table}: ${csvLines - 1} rows`);
+    }
     
     try {
       await conn.query(copyQuery);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`⚠️ COPY failed for ${table} (${csvLines - 1} rows): ${errMsg}`);
+      console.warn(`⚠️ COPY failed for ${table}: ${errMsg.slice(0, 100)}`);
       
-      // Retry with IGNORE_ERRORS=true to skip malformed rows
-      console.log(`  Retrying ${table} with IGNORE_ERRORS=true...`);
       try {
         const retryQuery = copyQuery.replace('auto_detect=false)', 'auto_detect=false, IGNORE_ERRORS=true)');
         await conn.query(retryQuery);
-        console.log(`  ✅ ${table} loaded with IGNORE_ERRORS (some rows may have been skipped)`);
+        if (isDev) {
+          console.log(`  ✅ ${table} loaded with IGNORE_ERRORS (some rows may have been skipped)`);
+        }
       } catch (retryErr) {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         console.error(`❌ COPY failed for ${table} even with IGNORE_ERRORS: ${retryMsg}`);
@@ -113,7 +116,9 @@ export const loadGraphToKuzu = async (
     }
   }
 
-  console.log('✅ All COPY commands succeeded. Starting relationship insertion...');
+  if (isDev) {
+    console.log('✅ All COPY commands succeeded. Starting relationship insertion...');
+  }
 
   // Build a set of valid table names for fast lookup
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);

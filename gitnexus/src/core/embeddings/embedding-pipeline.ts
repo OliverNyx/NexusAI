@@ -21,7 +21,7 @@ import {
   EMBEDDABLE_LABELS,
 } from './types.js';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV === 'development';
 
 /**
  * Progress callback type

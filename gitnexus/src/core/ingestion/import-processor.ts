@@ -9,7 +9,7 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV === 'development';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from

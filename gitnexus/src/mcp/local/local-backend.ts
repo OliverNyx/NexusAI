@@ -35,6 +35,14 @@ function isTestFilePath(filePath: string): boolean {
   );
 }
 
+/** Valid KuzuDB node labels for safe Cypher query construction */
+const VALID_NODE_LABELS = new Set([
+  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement',
+  'Community', 'Process', 'Struct', 'Enum', 'Macro', 'Typedef', 'Union',
+  'Namespace', 'Trait', 'Impl', 'TypeAlias', 'Const', 'Static', 'Property',
+  'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
+]);
+
 export interface CodebaseContext {
   projectName: string;
   stats: {
@@ -260,12 +268,16 @@ export class LocalBackend {
     max_symbols?: number;
     include_content?: boolean;
   }): Promise<any> {
+    if (!params.query?.trim()) {
+      return { error: 'query parameter is required and cannot be empty.' };
+    }
+    
     await this.ensureInitialized(repo.id);
     
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query;
+    const searchQuery = params.query.trim();
     
     // Step 1: Run hybrid search to get matching symbols
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
@@ -453,7 +465,13 @@ export class LocalBackend {
    */
   private async bm25Search(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     const { searchFTSFromKuzu } = await import('../../core/search/bm25-index.js');
-    const bm25Results = await searchFTSFromKuzu(query, limit, repo.id);
+    let bm25Results;
+    try {
+      bm25Results = await searchFTSFromKuzu(query, limit, repo.id);
+    } catch (err: any) {
+      console.error('GitNexus: BM25/FTS search failed (FTS indexes may not exist) -', err.message);
+      return [];
+    }
     
     const results: any[] = [];
     
@@ -535,10 +553,14 @@ export class LocalBackend {
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
         
+        // Validate label against known node types to prevent Cypher injection
+        if (!VALID_NODE_LABELS.has(label)) continue;
+        
         try {
+          const escapedId = nodeId.replace(/'/g, "''");
           const nodeQuery = label === 'File'
-            ? `MATCH (n:File {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath`
-            : `MATCH (n:${label} {id: '${nodeId.replace(/'/g, "''")}'}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+            ? `MATCH (n:File {id: '${escapedId}'}) RETURN n.name AS name, n.filePath AS filePath`
+            : `MATCH (n:\`${label}\` {id: '${escapedId}'}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
           
           const nodeRows = await executeQuery(repo.id, nodeQuery);
           if (nodeRows.length > 0) {
@@ -1201,16 +1223,18 @@ export class LocalBackend {
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
       
-      for (const nodeId of frontier) {
-        const query = direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n {id: '${nodeId}'}) WHERE r.type IN [${relTypeFilter}]${confidenceFilter} RETURN caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n {id: '${nodeId}'})-[r:CodeRelation]->(callee) WHERE r.type IN [${relTypeFilter}]${confidenceFilter} RETURN callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
-        
+      // Batch frontier nodes into a single Cypher query per depth level
+      const idList = frontier.map(id => `'${id.replace(/'/g, "''")}'`).join(', ');
+      const query = direction === 'upstream'
+        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+      
+      try {
         const related = await executeQuery(repo.id, query);
         
         for (const rel of related) {
-          const relId = rel.id || rel[0];
-          const filePath = rel.filePath || rel[3] || '';
+          const relId = rel.id || rel[1];
+          const filePath = rel.filePath || rel[4] || '';
           
           if (!includeTests && isTestFilePath(filePath)) continue;
           
@@ -1220,15 +1244,15 @@ export class LocalBackend {
             impacted.push({
               depth,
               id: relId,
-              name: rel.name || rel[1],
-              type: rel.type || rel[2],
+              name: rel.name || rel[2],
+              type: rel.type || rel[3],
               filePath,
-              relationType: rel.relType || rel[4],
-              confidence: rel.confidence || rel[5] || 1.0,
+              relationType: rel.relType || rel[5],
+              confidence: rel.confidence || rel[6] || 1.0,
             });
           }
         }
-      }
+      } catch { /* query failed for this depth level */ }
       
       frontier = nextFrontier;
     }

@@ -64,7 +64,7 @@ export const initEmbedder = async (
       // Configure transformers.js environment
       env.allowLocalModels = false;
       
-      const isDev = process.env.NODE_ENV !== 'production';
+      const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
         console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
       }
