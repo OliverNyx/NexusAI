@@ -16,8 +16,8 @@ description: Plan safe refactors using blast radius and dependency mapping
 
 ```
 1. gitnexus_impact({target: "X", direction: "upstream"})  → Map all dependents
-2. gitnexus_search({query: "X"})                           → Find string/dynamic references
-3. READ gitnexus://repo/{name}/cluster/{name}              → Check cohesion impact
+2. gitnexus_query({query: "X"})                            → Find execution flows involving X
+3. gitnexus_context({name: "X"})                           → See all incoming/outgoing refs
 4. Plan update order: interfaces → implementations → callers → tests
 ```
 
@@ -27,35 +27,43 @@ description: Plan safe refactors using blast radius and dependency mapping
 
 ### Rename Symbol
 ```
-- [ ] gitnexus_impact({target: oldName, direction: "upstream"}) — find all callers
-- [ ] gitnexus_search({query: oldName}) — find string literals and dynamic references
-- [ ] Check for reflection/dynamic invocation patterns
-- [ ] Plan update order: interface → implementation → callers → tests
-- [ ] Update all d=1 (WILL BREAK) items
+- [ ] gitnexus_rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview all edits
+- [ ] Review graph edits (high confidence) and ast_search edits (review carefully)
+- [ ] If satisfied: gitnexus_rename({..., dry_run: false}) — apply edits
+- [ ] gitnexus_detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
 ```
 
 ### Extract Module
 ```
-- [ ] gitnexus_explore({name: target, type: "symbol"}) — map internal dependencies
+- [ ] gitnexus_context({name: target}) — see all incoming/outgoing refs
 - [ ] gitnexus_impact({target, direction: "upstream"}) — find all external callers
-- [ ] READ cluster resource — check if extraction preserves cohesion
 - [ ] Define new module interface
 - [ ] Extract code, update imports
+- [ ] gitnexus_detect_changes() — verify affected scope
 - [ ] Run tests for affected processes
 ```
 
 ### Split Function/Service
 ```
-- [ ] gitnexus_explore({name: target, type: "symbol"}) — understand all callees
-- [ ] Group callees by responsibility/domain
+- [ ] gitnexus_context({name: target}) — understand all callees
+- [ ] Group callees by responsibility
 - [ ] gitnexus_impact({target, direction: "upstream"}) — map callers to update
 - [ ] Create new functions/services
 - [ ] Update callers
+- [ ] gitnexus_detect_changes() — verify affected scope
 - [ ] Run tests for affected processes
 ```
 
 ## Tools
+
+**gitnexus_rename** — automated multi-file rename:
+```
+gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: true})
+→ 12 edits across 8 files
+→ 10 graph edits (high confidence), 2 ast_search edits (review)
+→ Changes: [{file_path, edits: [{line, old_text, new_text, confidence}]}]
+```
 
 **gitnexus_impact** — map all dependents first:
 ```
@@ -64,10 +72,12 @@ gitnexus_impact({target: "validateUser", direction: "upstream"})
 → Affected Processes: LoginFlow, TokenRefresh
 ```
 
-**gitnexus_search** — find string/dynamic references impact() might miss:
+**gitnexus_detect_changes** — verify your changes after refactoring:
 ```
-gitnexus_search({query: "validateUser"})
-→ Found in: config.json (dynamic reference!), test fixtures
+gitnexus_detect_changes({scope: "all"})
+→ Changed: 8 files, 12 symbols
+→ Affected processes: LoginFlow, TokenRefresh
+→ Risk: MEDIUM
 ```
 
 **gitnexus_cypher** — custom reference queries:
@@ -80,23 +90,24 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 
 | Risk Factor | Mitigation |
 |-------------|------------|
-| Many callers (>5) | Update in small batches |
-| Cross-cluster refs | Coordinate with affected areas |
-| String/dynamic refs | `gitnexus_search` to find them |
+| Many callers (>5) | Use gitnexus_rename for automated updates |
+| Cross-area refs | Use detect_changes after to verify scope |
+| String/dynamic refs | gitnexus_query to find them |
 | External/public API | Version and deprecate properly |
 
 ## Example: Rename `validateUser` to `authenticateUser`
 
 ```
-1. gitnexus_impact({target: "validateUser", direction: "upstream"})
-   → d=1: loginHandler, apiMiddleware, testUtils
+1. gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: true})
+   → 12 edits: 10 graph (safe), 2 ast_search (review)
+   → Files: validator.ts, login.ts, middleware.ts, config.json...
 
-2. gitnexus_search({query: "validateUser"})
-   → Found in: config.json (dynamic reference!)
+2. Review ast_search edits (config.json: dynamic reference!)
 
-3. Plan update order:
-   1. Update declaration in src/auth/validator.ts
-   2. Update config.json string reference
-   3. Update loginHandler, apiMiddleware, testUtils
-   4. Run tests for LoginFlow, TokenRefresh
+3. gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: false})
+   → Applied 12 edits across 8 files
+
+4. gitnexus_detect_changes({scope: "all"})
+   → Affected: LoginFlow, TokenRefresh
+   → Risk: MEDIUM — run tests for these flows
 ```

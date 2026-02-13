@@ -25,46 +25,21 @@ export interface ResourceTemplate {
 /**
  * Static resources — includes per-repo resources and the global repos list
  */
-export function getResourceDefinitions(backend: LocalBackend): ResourceDefinition[] {
-  const resources: ResourceDefinition[] = [
+export function getResourceDefinitions(): ResourceDefinition[] {
+  return [
     {
       uri: 'gitnexus://repos',
       name: 'All Indexed Repositories',
       description: 'List of all indexed repos with stats. Read this first to discover available repos.',
       mimeType: 'text/yaml',
     },
+    {
+      uri: 'gitnexus://setup',
+      name: 'GitNexus Setup Content',
+      description: 'Returns AGENTS.md content for all indexed repos. Useful for setup/onboarding.',
+      mimeType: 'text/markdown',
+    },
   ];
-
-  // Add per-repo context resources
-  const repos = backend.listRepos();
-  for (const repo of repos) {
-    resources.push({
-      uri: `gitnexus://repo/${repo.name}/context`,
-      name: `${repo.name} Overview`,
-      description: `Codebase stats and available tools for ${repo.name}`,
-      mimeType: 'text/yaml',
-    });
-    resources.push({
-      uri: `gitnexus://repo/${repo.name}/clusters`,
-      name: `${repo.name} Clusters`,
-      description: `All functional clusters for ${repo.name}`,
-      mimeType: 'text/yaml',
-    });
-    resources.push({
-      uri: `gitnexus://repo/${repo.name}/processes`,
-      name: `${repo.name} Processes`,
-      description: `All execution flows for ${repo.name}`,
-      mimeType: 'text/yaml',
-    });
-    resources.push({
-      uri: `gitnexus://repo/${repo.name}/schema`,
-      name: `${repo.name} Schema`,
-      description: `Graph schema for Cypher queries on ${repo.name}`,
-      mimeType: 'text/yaml',
-    });
-  }
-
-  return resources;
 }
 
 /**
@@ -73,9 +48,33 @@ export function getResourceDefinitions(backend: LocalBackend): ResourceDefinitio
 export function getResourceTemplates(): ResourceTemplate[] {
   return [
     {
+      uriTemplate: 'gitnexus://repo/{name}/context',
+      name: 'Repo Overview',
+      description: 'Codebase stats, staleness check, and available tools',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/clusters',
+      name: 'Repo Modules',
+      description: 'All functional areas (Leiden clusters)',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/processes',
+      name: 'Repo Processes',
+      description: 'All execution flows',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://repo/{name}/schema',
+      name: 'Graph Schema',
+      description: 'Node/edge schema for Cypher queries',
+      mimeType: 'text/yaml',
+    },
+    {
       uriTemplate: 'gitnexus://repo/{name}/cluster/{clusterName}',
-      name: 'Cluster Detail',
-      description: 'Deep dive into a specific cluster',
+      name: 'Module Detail',
+      description: 'Deep dive into a specific functional area',
       mimeType: 'text/yaml',
     },
     {
@@ -92,6 +91,7 @@ export function getResourceTemplates(): ResourceTemplate[] {
  */
 function parseUri(uri: string): { repoName?: string; resourceType: string; param?: string } {
   if (uri === 'gitnexus://repos') return { resourceType: 'repos' };
+  if (uri === 'gitnexus://setup') return { resourceType: 'setup' };
 
   // Repo-scoped: gitnexus://repo/{name}/context
   const repoMatch = uri.match(/^gitnexus:\/\/repo\/([^/]+)\/(.+)$/);
@@ -121,6 +121,11 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
   // Global repos list — no repo context needed
   if (parsed.resourceType === 'repos') {
     return getReposResource(backend);
+  }
+  
+  // Setup resource — returns AGENTS.md content for all repos
+  if (parsed.resourceType === 'setup') {
+    return getSetupResource(backend);
   }
 
   const repoName = parsed.repoName;
@@ -194,15 +199,6 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   const repoPath = repo.repoPath;
   const lastCommit = repo.lastCommit || 'HEAD';
   const staleness = repoPath ? checkStaleness(repoPath, lastCommit) : { isStale: false, commitsBehind: 0 };
-
-  // Get aggregated cluster count (matches what overview/clusters resource shows)
-  let clusterCount = context.stats.communityCount;
-  try {
-    const overview = await backend.callTool('overview', { showClusters: true, showProcesses: false, limit: 100, repo: repoName });
-    if (overview.clusters) {
-      clusterCount = overview.clusters.length;
-    }
-  } catch { /* fall back to raw count */ }
   
   const lines: string[] = [
     `project: ${context.projectName}`,
@@ -217,45 +213,44 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('stats:');
   lines.push(`  files: ${context.stats.fileCount}`);
   lines.push(`  symbols: ${context.stats.functionCount}`);
-  lines.push(`  clusters: ${clusterCount}`);
   lines.push(`  processes: ${context.stats.processCount}`);
   lines.push('');
   lines.push('tools_available:');
-  lines.push('  - list_repos: Discover all indexed repositories');
-  lines.push('  - search: Hybrid semantic + keyword search');
-  lines.push('  - explore: Deep dive on symbol/cluster/process');
-  lines.push('  - impact: Blast radius analysis');
-  lines.push('  - overview: List all clusters and processes');
+  lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');
+  lines.push('  - context: 360-degree symbol view (categorized refs, process participation)');
+  lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
+  lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
+  lines.push('  - rename: Multi-file coordinated rename with confidence tags');
   lines.push('  - cypher: Raw graph queries');
+  lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('');
   lines.push('re_index: Run `npx gitnexus analyze` in terminal if data is stale');
   lines.push('');
   lines.push('resources_available:');
   lines.push('  - gitnexus://repos: All indexed repositories');
-  lines.push(`  - gitnexus://repo/${context.projectName}/clusters: All clusters`);
-  lines.push(`  - gitnexus://repo/${context.projectName}/processes: All processes`);
-  lines.push(`  - gitnexus://repo/${context.projectName}/cluster/{name}: Cluster details`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/clusters: All functional areas`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/processes: All execution flows`);
+  lines.push(`  - gitnexus://repo/${context.projectName}/cluster/{name}: Module details`);
   lines.push(`  - gitnexus://repo/${context.projectName}/process/{name}: Process trace`);
   
   return lines.join('\n');
 }
 
 /**
- * Clusters resource
+ * Clusters resource — queries graph directly via backend.queryClusters()
  */
 async function getClustersResource(backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    // Request more than we display so aggregation has enough raw data
-    const result = await backend.callTool('overview', { showClusters: true, showProcesses: false, limit: 100, repo: repoName });
-    
+    const result = await backend.queryClusters(repoName, 100);
+
     if (!result.clusters || result.clusters.length === 0) {
-      return 'clusters: []\n# No clusters detected. Run: gitnexus analyze';
+      return 'modules: []\n# No functional areas detected. Run: gitnexus analyze';
     }
-    
+
     const displayLimit = 20;
-    const lines: string[] = ['clusters:'];
+    const lines: string[] = ['modules:'];
     const toShow = result.clusters.slice(0, displayLimit);
-    
+
     for (const cluster of toShow) {
       const label = cluster.heuristicLabel || cluster.label || cluster.id;
       lines.push(`  - name: "${label}"`);
@@ -263,15 +258,12 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
       if (cluster.cohesion) {
         lines.push(`    cohesion: ${(cluster.cohesion * 100).toFixed(0)}%`);
       }
-      if (cluster.subCommunities && cluster.subCommunities > 1) {
-        lines.push(`    sub_clusters: ${cluster.subCommunities}`);
-      }
     }
-    
+
     if (result.clusters.length > displayLimit) {
-      lines.push(`\n# Showing top ${displayLimit} of ${result.clusters.length} clusters. Use gitnexus_search or gitnexus_explore for more.`);
+      lines.push(`\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use gitnexus_query for deeper search.`);
     }
-    
+
     return lines.join('\n');
   } catch (err: any) {
     return `error: ${err.message}`;
@@ -279,31 +271,31 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 }
 
 /**
- * Processes resource
+ * Processes resource — queries graph directly via backend.queryProcesses()
  */
 async function getProcessesResource(backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('overview', { showClusters: false, showProcesses: true, limit: 50, repo: repoName });
-    
+    const result = await backend.queryProcesses(repoName, 50);
+
     if (!result.processes || result.processes.length === 0) {
       return 'processes: []\n# No processes detected. Run: gitnexus analyze';
     }
-    
+
     const displayLimit = 20;
     const lines: string[] = ['processes:'];
     const toShow = result.processes.slice(0, displayLimit);
-    
+
     for (const proc of toShow) {
       const label = proc.heuristicLabel || proc.label || proc.id;
       lines.push(`  - name: "${label}"`);
       lines.push(`    type: ${proc.processType || 'unknown'}`);
       lines.push(`    steps: ${proc.stepCount || 0}`);
     }
-    
+
     if (result.processes.length > displayLimit) {
-      lines.push(`\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use gitnexus_explore for more.`);
+      lines.push(`\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use gitnexus_query for deeper search.`);
     }
-    
+
     return lines.join('\n');
   } catch (err: any) {
     return `error: ${err.message}`;
@@ -318,21 +310,28 @@ function getSchemaResource(): string {
 
 nodes:
   - File: Source code files
+  - Folder: Directory containers
   - Function: Functions and arrow functions
   - Class: Class definitions
   - Interface: Interface/type definitions
   - Method: Class methods
-  - Community: Functional cluster (Leiden algorithm)
+  - CodeElement: Catch-all for other code elements
+  - Community: Auto-detected functional area (Leiden algorithm)
   - Process: Execution flow trace
 
+additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Constructor, Template, Module (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
+
 relationships:
+  - CONTAINS: File/Folder contains child
+  - DEFINES: File defines a symbol
   - CALLS: Function/method invocation
   - IMPORTS: Module imports
   - EXTENDS: Class inheritance
   - IMPLEMENTS: Interface implementation
-  - DEFINES: File defines symbol
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
+
+relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)"
 
 example_queries:
   find_callers: |
@@ -353,31 +352,28 @@ example_queries:
 }
 
 /**
- * Cluster detail resource
+ * Cluster detail resource — queries graph directly via backend.queryClusterDetail()
  */
 async function getClusterDetailResource(name: string, backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('explore', { name, type: 'cluster', repo: repoName });
-    
+    const result = await backend.queryClusterDetail(name, repoName);
+
     if (result.error) {
       return `error: ${result.error}`;
     }
-    
+
     const cluster = result.cluster;
     const members = result.members || [];
-    
+
     const lines: string[] = [
-      `name: "${cluster.heuristicLabel || cluster.label || cluster.id}"`,
+      `module: "${cluster.heuristicLabel || cluster.label || cluster.id}"`,
       `symbols: ${cluster.symbolCount || members.length}`,
     ];
-    
+
     if (cluster.cohesion) {
       lines.push(`cohesion: ${(cluster.cohesion * 100).toFixed(0)}%`);
     }
-    if (cluster.subCommunities && cluster.subCommunities > 1) {
-      lines.push(`sub_clusters: ${cluster.subCommunities}`);
-    }
-    
+
     if (members.length > 0) {
       lines.push('');
       lines.push('members:');
@@ -390,7 +386,7 @@ async function getClusterDetailResource(name: string, backend: LocalBackend, rep
         lines.push(`  # ... and ${members.length - 20} more`);
       }
     }
-    
+
     return lines.join('\n');
   } catch (err: any) {
     return `error: ${err.message}`;
@@ -398,25 +394,25 @@ async function getClusterDetailResource(name: string, backend: LocalBackend, rep
 }
 
 /**
- * Process detail resource
+ * Process detail resource — queries graph directly via backend.queryProcessDetail()
  */
 async function getProcessDetailResource(name: string, backend: LocalBackend, repoName?: string): Promise<string> {
   try {
-    const result = await backend.callTool('explore', { name, type: 'process', repo: repoName });
-    
+    const result = await backend.queryProcessDetail(name, repoName);
+
     if (result.error) {
       return `error: ${result.error}`;
     }
-    
+
     const proc = result.process;
     const steps = result.steps || [];
-    
+
     const lines: string[] = [
       `name: "${proc.heuristicLabel || proc.label || proc.id}"`,
       `type: ${proc.processType || 'unknown'}`,
       `step_count: ${proc.stepCount || steps.length}`,
     ];
-    
+
     if (steps.length > 0) {
       lines.push('');
       lines.push('trace:');
@@ -424,9 +420,54 @@ async function getProcessDetailResource(name: string, backend: LocalBackend, rep
         lines.push(`  ${step.step}: ${step.name} (${step.filePath})`);
       }
     }
-    
+
     return lines.join('\n');
   } catch (err: any) {
     return `error: ${err.message}`;
   }
+}
+
+/**
+ * Setup resource — generates AGENTS.md content for all indexed repos.
+ * Useful for `gitnexus setup` onboarding or dynamic content injection.
+ */
+async function getSetupResource(backend: LocalBackend): Promise<string> {
+  const repos = backend.listRepos();
+  
+  if (repos.length === 0) {
+    return '# GitNexus\n\nNo repositories indexed. Run: `npx gitnexus analyze` in a repository.';
+  }
+  
+  const sections: string[] = [];
+  
+  for (const repo of repos) {
+    const stats = repo.stats || {};
+    const lines = [
+      `# GitNexus MCP — ${repo.name}`,
+      '',
+      `This project is indexed by GitNexus as **${repo.name}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows).`,
+      '',
+      '## Tools',
+      '',
+      '| Tool | What it gives you |',
+      '|------|-------------------|',
+      '| `query` | Process-grouped code intelligence — execution flows related to a concept |',
+      '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
+      '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
+      '| `detect_changes` | Git-diff impact — what do your current changes affect |',
+      '| `rename` | Multi-file coordinated rename with confidence-tagged edits |',
+      '| `cypher` | Raw graph queries |',
+      '| `list_repos` | Discover indexed repos |',
+      '',
+      '## Resources',
+      '',
+      `- \`gitnexus://repo/${repo.name}/context\` — Stats, staleness check`,
+      `- \`gitnexus://repo/${repo.name}/clusters\` — All functional areas`,
+      `- \`gitnexus://repo/${repo.name}/processes\` — All execution flows`,
+      `- \`gitnexus://repo/${repo.name}/schema\` — Graph schema for Cypher`,
+    ];
+    sections.push(lines.join('\n'));
+  }
+  
+  return sections.join('\n\n---\n\n');
 }

@@ -9,7 +9,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { getGlobalDir } from '../storage/repo-manager.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface SetupResult {
   configured: string[];
@@ -95,8 +99,6 @@ async function setupCursor(result: SetupResult): Promise<void> {
 }
 
 async function setupClaudeCode(result: SetupResult): Promise<void> {
-  // Claude Code uses `claude mcp add` — we just print the command
-  // Check for common Claude Code indicators
   const claudeDir = path.join(os.homedir(), '.claude');
   const hasClaude = await dirExists(claudeDir);
 
@@ -107,11 +109,90 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
 
   // Claude Code uses a JSON settings file at ~/.claude.json or claude mcp add
   console.log('');
-  console.log('  Claude Code detected. Run this command to add GitNexus:');
+  console.log('  Claude Code detected. Run this command to add GitNexus MCP:');
   console.log('');
   console.log('    claude mcp add gitnexus -- npx -y gitnexus mcp');
   console.log('');
-  result.configured.push('Claude Code (manual step printed)');
+  result.configured.push('Claude Code (MCP manual step printed)');
+}
+
+/**
+ * Install GitNexus skills to ~/.claude/skills/ for Claude Code.
+ */
+async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
+  const claudeDir = path.join(os.homedir(), '.claude');
+  if (!(await dirExists(claudeDir))) return;
+
+  const skillsDir = path.join(claudeDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Claude Code skills (${installed.length} skills → ~/.claude/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Claude Code skills: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus hooks to ~/.claude/settings.json for Claude Code.
+ * Merges hook config without overwriting existing hooks.
+ */
+async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
+  const claudeDir = path.join(os.homedir(), '.claude');
+  if (!(await dirExists(claudeDir))) return;
+
+  const settingsPath = path.join(claudeDir, 'settings.json');
+
+  // Source hooks bundled within the gitnexus package (hooks/claude/)
+  const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
+
+  // Copy unified hook script to ~/.claude/hooks/gitnexus/
+  const destHooksDir = path.join(claudeDir, 'hooks', 'gitnexus');
+
+  try {
+    await fs.mkdir(destHooksDir, { recursive: true });
+
+    const src = path.join(pluginHooksPath, 'gitnexus-hook.js');
+    const dest = path.join(destHooksDir, 'gitnexus-hook.js');
+    try {
+      const content = await fs.readFile(src, 'utf-8');
+      await fs.writeFile(dest, content, 'utf-8');
+    } catch {
+      // Script not found in source — skip
+    }
+
+    const hookCmd = `node "${path.join(destHooksDir, 'gitnexus-hook.js').replace(/\\/g, '/')}"`;
+
+    // Merge hook config into ~/.claude/settings.json
+    const existing = await readJsonFile(settingsPath) || {};
+    if (!existing.hooks) existing.hooks = {};
+
+    // NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
+    // Session context is delivered via CLAUDE.md / skills instead.
+
+    // Add PreToolUse hook if not already present
+    if (!existing.hooks.PreToolUse) existing.hooks.PreToolUse = [];
+    const hasPreToolHook = existing.hooks.PreToolUse.some(
+      (h: any) => h.hooks?.some((hh: any) => hh.command?.includes('gitnexus'))
+    );
+    if (!hasPreToolHook) {
+      existing.hooks.PreToolUse.push({
+        matcher: 'Grep|Glob|Bash',
+        hooks: [{
+          type: 'command',
+          command: hookCmd,
+          timeout: 10,
+          statusMessage: 'Enriching with GitNexus graph context...',
+        }],
+      });
+    }
+
+    await writeJsonFile(settingsPath, existing);
+    result.configured.push('Claude Code hooks (PreToolUse)');
+  } catch (err: any) {
+    result.errors.push(`Claude Code hooks: ${err.message}`);
+  }
 }
 
 async function setupOpenCode(result: SetupResult): Promise<void> {
@@ -134,6 +215,72 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
   }
 }
 
+// ─── Skill Installation ───────────────────────────────────────────
+
+const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring'];
+
+/**
+ * Install GitNexus skills to a target directory.
+ * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
+ * following the Agent Skills standard (both Cursor and Claude Code).
+ */
+async function installSkillsTo(targetDir: string): Promise<string[]> {
+  const installed: string[] = [];
+  
+  for (const skillName of SKILL_NAMES) {
+    const sourcePath = path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
+    const skillDir = path.join(targetDir, `gitnexus-${skillName}`);
+    const destPath = path.join(skillDir, 'SKILL.md');
+    
+    try {
+      const content = await fs.readFile(sourcePath, 'utf-8');
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(destPath, content, 'utf-8');
+      installed.push(skillName);
+    } catch {
+      // Source skill file not found — skip
+    }
+  }
+  
+  return installed;
+}
+
+/**
+ * Install global Cursor skills to ~/.cursor/skills/gitnexus/
+ */
+async function installCursorSkills(result: SetupResult): Promise<void> {
+  const cursorDir = path.join(os.homedir(), '.cursor');
+  if (!(await dirExists(cursorDir))) return;
+  
+  const skillsDir = path.join(cursorDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Cursor skills (${installed.length} skills → ~/.cursor/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Cursor skills: ${err.message}`);
+  }
+}
+
+/**
+ * Install global OpenCode skills to ~/.config/opencode/skill/gitnexus/
+ */
+async function installOpenCodeSkills(result: SetupResult): Promise<void> {
+  const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
+  if (!(await dirExists(opencodeDir))) return;
+  
+  const skillsDir = path.join(opencodeDir, 'skill');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`OpenCode skills (${installed.length} skills → ~/.config/opencode/skill/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`OpenCode skills: ${err.message}`);
+  }
+}
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -152,10 +299,16 @@ export const setupCommand = async () => {
     errors: [],
   };
 
-  // Detect and configure each editor
+  // Detect and configure each editor's MCP
   await setupCursor(result);
   await setupClaudeCode(result);
   await setupOpenCode(result);
+  
+  // Install global skills for platforms that support them
+  await installClaudeCodeSkills(result);
+  await installClaudeCodeHooks(result);
+  await installCursorSkills(result);
+  await installOpenCodeSkills(result);
 
   // Print results
   if (result.configured.length > 0) {
@@ -181,6 +334,10 @@ export const setupCommand = async () => {
     }
   }
 
+  console.log('');
+  console.log('  Summary:');
+  console.log(`    MCP configured for: ${result.configured.filter(c => !c.includes('skills')).join(', ') || 'none'}`);
+  console.log(`    Skills installed to: ${result.configured.filter(c => c.includes('skills')).length > 0 ? result.configured.filter(c => c.includes('skills')).join(', ') : 'none'}`);
   console.log('');
   console.log('  Next steps:');
   console.log('    1. cd into any git repo');

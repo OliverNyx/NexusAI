@@ -17,9 +17,9 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 ```
 1. READ gitnexus://repos                          → Discover indexed repos
 2. READ gitnexus://repo/{name}/context             → Codebase overview, check staleness
-3. READ gitnexus://repo/{name}/clusters            → See all functional areas
-4. READ gitnexus://repo/{name}/cluster/{name}      → Drill into relevant cluster
-5. gitnexus_explore({name, type: "symbol"})        → Deep dive on specific symbol
+3. gitnexus_query({query: "<what you want to understand>"})  → Find related execution flows
+4. gitnexus_context({name: "<symbol>"})            → Deep dive on specific symbol
+5. READ gitnexus://repo/{name}/process/{name}      → Trace full execution flow
 ```
 
 > If step 2 says "Index is stale" → run `npx gitnexus analyze` in terminal.
@@ -27,12 +27,11 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 ## Checklist
 
 ```
-- [ ] READ gitnexus://repos
 - [ ] READ gitnexus://repo/{name}/context
-- [ ] READ gitnexus://repo/{name}/clusters
-- [ ] Identify the relevant cluster
-- [ ] READ gitnexus://repo/{name}/cluster/{name}
-- [ ] gitnexus_explore for key symbols
+- [ ] gitnexus_query for the concept you want to understand
+- [ ] Review returned processes (execution flows)
+- [ ] gitnexus_context on key symbols for callers/callees
+- [ ] READ process resource for full execution traces
 - [ ] Read source files for implementation details
 ```
 
@@ -41,33 +40,36 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 | Resource | What you get |
 |----------|-------------|
 | `gitnexus://repo/{name}/context` | Stats, staleness warning (~150 tokens) |
-| `gitnexus://repo/{name}/clusters` | All clusters with cohesion scores (~300 tokens) |
-| `gitnexus://repo/{name}/cluster/{name}` | Cluster members with file paths (~500 tokens) |
+| `gitnexus://repo/{name}/clusters` | All functional areas with cohesion scores (~300 tokens) |
+| `gitnexus://repo/{name}/cluster/{name}` | Area members with file paths (~500 tokens) |
 | `gitnexus://repo/{name}/process/{name}` | Step-by-step execution trace (~200 tokens) |
 
 ## Tools
 
-**gitnexus_explore** — symbol context with callers/callees:
+**gitnexus_query** — find execution flows related to a concept:
 ```
-gitnexus_explore({name: "validateUser", type: "symbol"})
-→ Callers: loginHandler, apiMiddleware
-→ Callees: checkToken, getUserById
-→ Cluster: Auth (92% cohesion)
+gitnexus_query({query: "payment processing"})
+→ Processes: CheckoutFlow, RefundFlow, WebhookHandler
+→ Symbols grouped by flow with file locations
 ```
 
-**gitnexus_search** — find code by query when you don't know the cluster:
+**gitnexus_context** — 360-degree view of a symbol:
 ```
-gitnexus_search({query: "payment validation", depth: "full"})
+gitnexus_context({name: "validateUser"})
+→ Incoming calls: loginHandler, apiMiddleware
+→ Outgoing calls: checkToken, getUserById
+→ Processes: LoginFlow (step 2/5), TokenRefresh (step 1/3)
 ```
 
 ## Example: "How does payment processing work?"
 
 ```
-1. READ gitnexus://repo/my-app/context       → 918 symbols, 12 clusters
-2. READ gitnexus://repo/my-app/clusters       → Auth, Payment, Database, API...
-3. READ gitnexus://repo/my-app/cluster/Payment → processPayment, validateCard, PaymentService
-4. gitnexus_explore({name: "processPayment", type: "symbol"})
-   → Callers: checkoutHandler, webhookHandler
-   → Callees: validateCard, chargeStripe, saveTransaction
-5. Read src/payments/processor.ts for implementation details
+1. READ gitnexus://repo/my-app/context       → 918 symbols, 45 processes
+2. gitnexus_query({query: "payment processing"})
+   → CheckoutFlow: processPayment → validateCard → chargeStripe
+   → RefundFlow: initiateRefund → calculateRefund → processRefund
+3. gitnexus_context({name: "processPayment"})
+   → Incoming: checkoutHandler, webhookHandler
+   → Outgoing: validateCard, chargeStripe, saveTransaction
+4. Read src/payments/processor.ts for implementation details
 ```

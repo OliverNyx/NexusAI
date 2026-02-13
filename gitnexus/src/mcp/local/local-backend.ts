@@ -218,16 +218,25 @@ export class LocalBackend {
     const repo = this.resolveRepo(params?.repo);
 
     switch (method) {
-      case 'search':
-        return this.search(repo, params);
+      case 'query':
+        return this.query(repo, params);
       case 'cypher':
         return this.cypher(repo, params);
-      case 'overview':
-        return this.overview(repo, params);
-      case 'explore':
-        return this.explore(repo, params);
+      case 'context':
+        return this.context(repo, params);
       case 'impact':
         return this.impact(repo, params);
+      case 'detect_changes':
+        return this.detectChanges(repo, params);
+      case 'rename':
+        return this.rename(repo, params);
+      // Legacy aliases for backwards compatibility
+      case 'search':
+        return this.query(repo, params);
+      case 'explore':
+        return this.context(repo, { name: params?.name, ...params });
+      case 'overview':
+        return this.overview(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -235,25 +244,39 @@ export class LocalBackend {
 
   // ─── Tool Implementations ────────────────────────────────────────
 
-  private async search(repo: RepoHandle, params: { query: string; limit?: number; depth?: string }): Promise<any> {
+  /**
+   * Query tool — process-grouped search.
+   * 
+   * 1. Hybrid search (BM25 + semantic) to find matching symbols
+   * 2. Trace each match to its process(es) via STEP_IN_PROCESS
+   * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
+   * 4. Return: { processes, process_symbols, definitions }
+   */
+  private async query(repo: RepoHandle, params: {
+    query: string;
+    task_context?: string;
+    goal?: string;
+    limit?: number;
+    max_symbols?: number;
+    include_content?: boolean;
+  }): Promise<any> {
     await this.ensureInitialized(repo.id);
     
-    const limit = params.limit || 10;
-    const query = params.query;
-    const depth = params.depth || 'definitions';
+    const processLimit = params.limit || 5;
+    const maxSymbolsPerProcess = params.max_symbols || 10;
+    const includeContent = params.include_content ?? false;
+    const searchQuery = params.query;
     
-    // Run BM25 and semantic search in parallel
+    // Step 1: Run hybrid search to get matching symbols
+    const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const [bm25Results, semanticResults] = await Promise.all([
-      this.bm25Search(repo, query, limit * 2),
-      this.semanticSearch(repo, query, limit * 2),
+      this.bm25Search(repo, searchQuery, searchLimit),
+      this.semanticSearch(repo, searchQuery, searchLimit),
     ]);
     
-    // Merge and deduplicate results using reciprocal rank fusion
-    // Key by nodeId (symbol-level) so semantic precision is preserved.
-    // Fall back to filePath for File-level results that lack a nodeId.
-    const scoreMap = new Map<string, { score: number; source: string; data: any }>();
+    // Merge via reciprocal rank fusion
+    const scoreMap = new Map<string, { score: number; data: any }>();
     
-    // BM25 results
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
       const key = result.nodeId || result.filePath;
@@ -261,13 +284,11 @@ export class LocalBackend {
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
-        existing.source = 'hybrid';
       } else {
-        scoreMap.set(key, { score: rrfScore, source: 'bm25', data: result });
+        scoreMap.set(key, { score: rrfScore, data: result });
       }
     }
     
-    // Semantic results
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
@@ -275,70 +296,156 @@ export class LocalBackend {
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
-        existing.source = 'hybrid';
       } else {
-        scoreMap.set(key, { score: rrfScore, source: 'semantic', data: result });
+        scoreMap.set(key, { score: rrfScore, data: result });
       }
     }
     
-    // Sort by fused score and take top results
     const merged = Array.from(scoreMap.entries())
       .sort((a, b) => b[1].score - a[1].score)
-      .slice(0, limit);
+      .slice(0, searchLimit);
     
-    // Enrich with graph data
-    const results: any[] = [];
+    // Step 2: For each match with a nodeId, trace to process(es)
+    const processMap = new Map<string, { id: string; label: string; heuristicLabel: string; processType: string; stepCount: number; totalScore: number; cohesionBoost: number; symbols: any[] }>();
+    const definitions: any[] = []; // standalone symbols not in any process
     
     for (const [_, item] of merged) {
-      const result = item.data;
-      result.searchSource = item.source;
-      result.fusedScore = item.score;
+      const sym = item.data;
+      if (!sym.nodeId) {
+        // File-level results go to definitions
+        definitions.push({
+          name: sym.name,
+          type: sym.type || 'File',
+          filePath: sym.filePath,
+        });
+        continue;
+      }
       
-      // Add cluster membership context for each result with a nodeId
-      if (result.nodeId) {
+      const escaped = sym.nodeId.replace(/'/g, "''");
+      
+      // Find processes this symbol participates in
+      let processRows: any[] = [];
+      try {
+        processRows = await executeQuery(repo.id, `
+          MATCH (n {id: '${escaped}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+        `);
+      } catch { /* symbol might not be in any process */ }
+      
+      // Get cluster cohesion as internal ranking signal (never exposed)
+      let cohesion = 0;
+      try {
+        const cohesionRows = await executeQuery(repo.id, `
+          MATCH (n {id: '${escaped}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+          RETURN c.cohesion AS cohesion
+          LIMIT 1
+        `);
+        if (cohesionRows.length > 0) {
+          cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
+        }
+      } catch { /* no cluster info */ }
+      
+      // Optionally fetch content
+      let content: string | undefined;
+      if (includeContent) {
         try {
-          const clusterQuery = `
-            MATCH (n {id: '${result.nodeId.replace(/'/g, "''")}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-            RETURN c.label AS label, c.heuristicLabel AS heuristicLabel
-            LIMIT 1
-          `;
-          const clusters = await executeQuery(repo.id, clusterQuery);
-          if (clusters.length > 0) {
-            result.cluster = {
-              label: clusters[0].label || clusters[0][0],
-              heuristicLabel: clusters[0].heuristicLabel || clusters[0][1],
-            };
+          const contentRows = await executeQuery(repo.id, `
+            MATCH (n {id: '${escaped}'})
+            RETURN n.content AS content
+          `);
+          if (contentRows.length > 0) {
+            content = contentRows[0].content ?? contentRows[0][0];
           }
-        } catch {
-          // Cluster lookup failed - continue without it
-        }
+        } catch { /* skip */ }
       }
       
-      // Add relationships if depth is 'full' and we have a node ID
-      // Only include connections with actual name/path data (skip MEMBER_OF, STEP_IN_PROCESS noise)
-      if (depth === 'full' && result.nodeId) {
-        try {
-          const relQuery = `
-            MATCH (n {id: '${result.nodeId.replace(/'/g, "''")}'})-[r:CodeRelation]->(m)
-            WHERE r.type IN ['CALLS', 'IMPORTS', 'DEFINES', 'EXTENDS', 'IMPLEMENTS']
-            RETURN r.type AS type, m.name AS targetName, m.filePath AS targetPath
-            LIMIT 5
-          `;
-          const rels = await executeQuery(repo.id, relQuery);
-          result.connections = rels.map((rel: any) => ({
-            type: rel.type || rel[0],
-            name: rel.targetName || rel[1],
-            path: rel.targetPath || rel[2],
-          }));
-        } catch {
-          result.connections = [];
+      const symbolEntry = {
+        id: sym.nodeId,
+        name: sym.name,
+        type: sym.type,
+        filePath: sym.filePath,
+        startLine: sym.startLine,
+        endLine: sym.endLine,
+        ...(includeContent && content ? { content } : {}),
+      };
+      
+      if (processRows.length === 0) {
+        // Symbol not in any process — goes to definitions
+        definitions.push(symbolEntry);
+      } else {
+        // Add to each process it belongs to
+        for (const row of processRows) {
+          const pid = row.pid ?? row[0];
+          const label = row.label ?? row[1];
+          const hLabel = row.heuristicLabel ?? row[2];
+          const pType = row.processType ?? row[3];
+          const stepCount = row.stepCount ?? row[4];
+          const step = row.step ?? row[5];
+          
+          if (!processMap.has(pid)) {
+            processMap.set(pid, {
+              id: pid,
+              label,
+              heuristicLabel: hLabel,
+              processType: pType,
+              stepCount,
+              totalScore: 0,
+              cohesionBoost: 0,
+              symbols: [],
+            });
+          }
+          
+          const proc = processMap.get(pid)!;
+          proc.totalScore += item.score;
+          proc.cohesionBoost = Math.max(proc.cohesionBoost, cohesion);
+          proc.symbols.push({
+            ...symbolEntry,
+            process_id: pid,
+            step_index: step,
+          });
         }
       }
-      
-      results.push(result);
     }
     
-    return results;
+    // Step 3: Rank processes by aggregate score + internal cohesion boost
+    const rankedProcesses = Array.from(processMap.values())
+      .map(p => ({
+        ...p,
+        priority: p.totalScore + (p.cohesionBoost * 0.1), // cohesion as subtle ranking signal
+      }))
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, processLimit);
+    
+    // Step 4: Build response
+    const processes = rankedProcesses.map(p => ({
+      id: p.id,
+      summary: p.heuristicLabel || p.label,
+      priority: Math.round(p.priority * 1000) / 1000,
+      symbol_count: p.symbols.length,
+      process_type: p.processType,
+      step_count: p.stepCount,
+    }));
+    
+    const processSymbols = rankedProcesses.flatMap(p =>
+      p.symbols.slice(0, maxSymbolsPerProcess).map(s => ({
+        ...s,
+        // remove internal fields
+      }))
+    );
+    
+    // Deduplicate process_symbols by id
+    const seen = new Set<string>();
+    const dedupedSymbols = processSymbols.filter(s => {
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+    
+    return {
+      processes,
+      process_symbols: dedupedSymbols,
+      definitions: definitions.slice(0, 20), // cap standalone definitions
+    };
   }
 
   /**
@@ -568,84 +675,157 @@ export class LocalBackend {
     return result;
   }
 
-  private async explore(repo: RepoHandle, params: { name: string; type: 'symbol' | 'cluster' | 'process' }): Promise<any> {
+  /**
+   * Context tool — 360-degree symbol view with categorized refs.
+   * Disambiguation when multiple symbols share a name.
+   * UID-based direct lookup. No cluster in output.
+   */
+  private async context(repo: RepoHandle, params: {
+    name?: string;
+    uid?: string;
+    file_path?: string;
+    include_content?: boolean;
+  }): Promise<any> {
     await this.ensureInitialized(repo.id);
     
+    const { name, uid, file_path, include_content } = params;
+    
+    if (!name && !uid) {
+      return { error: 'Either "name" or "uid" parameter is required.' };
+    }
+    
+    // Step 1: Find the symbol
+    let symbols: any[];
+    
+    if (uid) {
+      const escaped = uid.replace(/'/g, "''");
+      symbols = await executeQuery(repo.id, `
+        MATCH (n {id: '${escaped}'})
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
+        LIMIT 1
+      `);
+    } else {
+      const escaped = name!.replace(/'/g, "''");
+      const isQualified = name!.includes('/') || name!.includes(':');
+      
+      let whereClause: string;
+      if (file_path) {
+        const fpEscaped = file_path.replace(/'/g, "''");
+        whereClause = `WHERE n.name = '${escaped}' AND n.filePath CONTAINS '${fpEscaped}'`;
+      } else if (isQualified) {
+        whereClause = `WHERE n.id = '${escaped}' OR n.name = '${escaped}'`;
+      } else {
+        whereClause = `WHERE n.name = '${escaped}'`;
+      }
+      
+      symbols = await executeQuery(repo.id, `
+        MATCH (n) ${whereClause}
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
+        LIMIT 10
+      `);
+    }
+    
+    if (symbols.length === 0) {
+      return { error: `Symbol '${name || uid}' not found` };
+    }
+    
+    // Step 2: Disambiguation
+    if (symbols.length > 1 && !uid) {
+      return {
+        status: 'ambiguous',
+        message: `Found ${symbols.length} symbols matching '${name}'. Use uid or file_path to disambiguate.`,
+        candidates: symbols.map((s: any) => ({
+          uid: s.id || s[0],
+          name: s.name || s[1],
+          kind: s.type || s[2],
+          filePath: s.filePath || s[3],
+          line: s.startLine || s[4],
+        })),
+      };
+    }
+    
+    // Step 3: Build full context
+    const sym = symbols[0];
+    const symId = (sym.id || sym[0]).replace(/'/g, "''");
+    
+    // Categorized incoming refs
+    const incomingRows = await executeQuery(repo.id, `
+      MATCH (caller)-[r:CodeRelation]->(n {id: '${symId}'})
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
+      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      LIMIT 30
+    `);
+    
+    // Categorized outgoing refs
+    const outgoingRows = await executeQuery(repo.id, `
+      MATCH (n {id: '${symId}'})-[r:CodeRelation]->(target)
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
+      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      LIMIT 30
+    `);
+    
+    // Process participation
+    let processRows: any[] = [];
+    try {
+      processRows = await executeQuery(repo.id, `
+        MATCH (n {id: '${symId}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
+      `);
+    } catch { /* no process info */ }
+    
+    // Helper to categorize refs
+    const categorize = (rows: any[]) => {
+      const cats: Record<string, any[]> = {};
+      for (const row of rows) {
+        const relType = (row.relType || row[0] || '').toLowerCase();
+        const entry = {
+          uid: row.uid || row[1],
+          name: row.name || row[2],
+          filePath: row.filePath || row[3],
+          kind: row.kind || row[4],
+        };
+        if (!cats[relType]) cats[relType] = [];
+        cats[relType].push(entry);
+      }
+      return cats;
+    };
+    
+    return {
+      status: 'found',
+      symbol: {
+        uid: sym.id || sym[0],
+        name: sym.name || sym[1],
+        kind: sym.type || sym[2],
+        filePath: sym.filePath || sym[3],
+        startLine: sym.startLine || sym[4],
+        endLine: sym.endLine || sym[5],
+        ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
+      },
+      incoming: categorize(incomingRows),
+      outgoing: categorize(outgoingRows),
+      processes: processRows.map((r: any) => ({
+        id: r.pid || r[0],
+        name: r.label || r[1],
+        step_index: r.step || r[2],
+        step_count: r.stepCount || r[3],
+      })),
+    };
+  }
+
+  /**
+   * Legacy explore — kept for backwards compatibility with resources.ts.
+   * Routes cluster/process types to direct graph queries.
+   */
+  private async explore(repo: RepoHandle, params: { name: string; type: 'symbol' | 'cluster' | 'process' }): Promise<any> {
+    await this.ensureInitialized(repo.id);
     const { name, type } = params;
     
     if (type === 'symbol') {
-      // If name contains a path separator or ':', treat it as a qualified lookup
-      const isQualified = name.includes('/') || name.includes(':');
-      const symbolQuery = isQualified
-        ? `MATCH (n) WHERE n.id = '${name.replace(/'/g, "''")}' OR (n.name = '${name.replace(/'/g, "''")}')
-           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-           LIMIT 5`
-        : `MATCH (n) WHERE n.name = '${name.replace(/'/g, "''")}'
-           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-           LIMIT 5`;
-      
-      const symbols = await executeQuery(repo.id, symbolQuery);
-      if (symbols.length === 0) return { error: `Symbol '${name}' not found` };
-      
-      // Use the first match for detailed exploration
-      const sym = symbols[0];
-      const symId = sym.id || sym[0];
-      
-      const callersQuery = `
-        MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n {id: '${symId}'})
-        RETURN caller.name AS name, caller.filePath AS filePath
-        LIMIT 10
-      `;
-      const callers = await executeQuery(repo.id, callersQuery);
-      
-      const calleesQuery = `
-        MATCH (n {id: '${symId}'})-[:CodeRelation {type: 'CALLS'}]->(callee)
-        RETURN callee.name AS name, callee.filePath AS filePath
-        LIMIT 10
-      `;
-      const callees = await executeQuery(repo.id, calleesQuery);
-      
-      const communityQuery = `
-        MATCH (n {id: '${symId}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        RETURN c.label AS label, c.heuristicLabel AS heuristicLabel
-        LIMIT 1
-      `;
-      const communities = await executeQuery(repo.id, communityQuery);
-      
-      const result: any = {
-        symbol: {
-          id: symId,
-          name: sym.name || sym[1],
-          type: sym.type || sym[2],
-          filePath: sym.filePath || sym[3],
-          startLine: sym.startLine || sym[4],
-          endLine: sym.endLine || sym[5],
-        },
-        callers: callers.map((c: any) => ({ name: c.name || c[0], filePath: c.filePath || c[1] })),
-        callees: callees.map((c: any) => ({ name: c.name || c[0], filePath: c.filePath || c[1] })),
-        community: communities.length > 0 ? {
-          label: communities[0].label || communities[0][0],
-          heuristicLabel: communities[0].heuristicLabel || communities[0][1],
-        } : null,
-      };
-      
-      // If multiple symbols share the same name, show alternatives so the agent can disambiguate
-      if (symbols.length > 1) {
-        result.alternatives = symbols.slice(1).map((s: any) => ({
-          id: s.id || s[0],
-          type: s.type || s[2],
-          filePath: s.filePath || s[3],
-        }));
-        result.hint = `Multiple symbols named '${name}' found. Showing details for ${result.symbol.filePath}. Use the full node ID to explore a specific alternative.`;
-      }
-      
-      return result;
+      return this.context(repo, { name });
     }
     
     if (type === 'cluster') {
       const escaped = name.replace(/'/g, "''");
-      
-      // Find ALL communities with this label (not just one)
       const clusterQuery = `
         MATCH (c:Community)
         WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
@@ -655,30 +835,23 @@ export class LocalBackend {
       if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
       
       const rawClusters = clusters.map((c: any) => ({
-        id: c.id || c[0],
-        label: c.label || c[1],
-        heuristicLabel: c.heuristicLabel || c[2],
-        cohesion: c.cohesion || c[3],
-        symbolCount: c.symbolCount || c[4],
+        id: c.id || c[0], label: c.label || c[1], heuristicLabel: c.heuristicLabel || c[2],
+        cohesion: c.cohesion || c[3], symbolCount: c.symbolCount || c[4],
       }));
       
-      // Aggregate: sum symbols, weighted-average cohesion across sub-communities
-      let totalSymbols = 0;
-      let weightedCohesion = 0;
+      let totalSymbols = 0, weightedCohesion = 0;
       for (const c of rawClusters) {
         const s = c.symbolCount || 0;
         totalSymbols += s;
         weightedCohesion += (c.cohesion || 0) * s;
       }
       
-      // Fetch members from ALL matching sub-communities (DISTINCT to avoid dupes)
-      const membersQuery = `
+      const members = await executeQuery(repo.id, `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
         RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
-      `;
-      const members = await executeQuery(repo.id, membersQuery);
+      `);
       
       return {
         cluster: {
@@ -690,51 +863,302 @@ export class LocalBackend {
           subCommunities: rawClusters.length,
         },
         members: members.map((m: any) => ({
-          name: m.name || m[0],
-          type: m.type || m[1],
-          filePath: m.filePath || m[2],
+          name: m.name || m[0], type: m.type || m[1], filePath: m.filePath || m[2],
         })),
       };
     }
     
     if (type === 'process') {
-      const processQuery = `
+      const processes = await executeQuery(repo.id, `
         MATCH (p:Process)
         WHERE p.label = '${name.replace(/'/g, "''")}' OR p.heuristicLabel = '${name.replace(/'/g, "''")}'
-        RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, p.entryPointId AS entryPointId, p.terminalId AS terminalId
+        RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
         LIMIT 1
-      `;
-      const processes = await executeQuery(repo.id, processQuery);
+      `);
       if (processes.length === 0) return { error: `Process '${name}' not found` };
       
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      
-      const stepsQuery = `
+      const steps = await executeQuery(repo.id, `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: '${procId}'})
         RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
-      `;
-      const steps = await executeQuery(repo.id, stepsQuery);
+      `);
       
       return {
         process: {
-          id: procId,
-          label: proc.label || proc[1],
-          heuristicLabel: proc.heuristicLabel || proc[2],
-          processType: proc.processType || proc[3],
-          stepCount: proc.stepCount || proc[4],
+          id: procId, label: proc.label || proc[1], heuristicLabel: proc.heuristicLabel || proc[2],
+          processType: proc.processType || proc[3], stepCount: proc.stepCount || proc[4],
         },
         steps: steps.map((s: any) => ({
-          step: s.step || s[3],
-          name: s.name || s[0],
-          type: s.type || s[1],
-          filePath: s.filePath || s[2],
+          step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
         })),
       };
     }
     
     return { error: 'Invalid type. Use: symbol, cluster, or process' };
+  }
+
+  /**
+   * Detect changes — git-diff based impact analysis.
+   * Maps changed lines to indexed symbols, then finds affected processes.
+   */
+  private async detectChanges(repo: RepoHandle, params: {
+    scope?: string;
+    base_ref?: string;
+  }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    
+    const scope = params.scope || 'unstaged';
+    const { execSync } = await import('child_process');
+    
+    // Build git diff command based on scope
+    let diffCmd: string;
+    switch (scope) {
+      case 'staged':
+        diffCmd = 'git diff --staged --name-only';
+        break;
+      case 'all':
+        diffCmd = 'git diff HEAD --name-only';
+        break;
+      case 'compare':
+        if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
+        diffCmd = `git diff ${params.base_ref} --name-only`;
+        break;
+      case 'unstaged':
+      default:
+        diffCmd = 'git diff --name-only';
+        break;
+    }
+    
+    let changedFiles: string[];
+    try {
+      const output = execSync(diffCmd, { cwd: repo.repoPath, encoding: 'utf-8' });
+      changedFiles = output.trim().split('\n').filter(f => f.length > 0);
+    } catch (err: any) {
+      return { error: `Git diff failed: ${err.message}` };
+    }
+    
+    if (changedFiles.length === 0) {
+      return {
+        summary: { changed_count: 0, affected_count: 0, risk_level: 'none', message: 'No changes detected.' },
+        changed_symbols: [],
+        affected_processes: [],
+      };
+    }
+    
+    // Map changed files to indexed symbols
+    const changedSymbols: any[] = [];
+    for (const file of changedFiles) {
+      const escaped = file.replace(/\\/g, '/').replace(/'/g, "''");
+      try {
+        const symbols = await executeQuery(repo.id, `
+          MATCH (n) WHERE n.filePath CONTAINS '${escaped}'
+          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          LIMIT 20
+        `);
+        for (const sym of symbols) {
+          changedSymbols.push({
+            id: sym.id || sym[0],
+            name: sym.name || sym[1],
+            type: sym.type || sym[2],
+            filePath: sym.filePath || sym[3],
+            change_type: 'Modified',
+          });
+        }
+      } catch { /* skip */ }
+    }
+    
+    // Find affected processes
+    const affectedProcesses = new Map<string, any>();
+    for (const sym of changedSymbols) {
+      const escaped = (sym.id as string).replace(/'/g, "''");
+      try {
+        const procs = await executeQuery(repo.id, `
+          MATCH (n {id: '${escaped}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+        `);
+        for (const proc of procs) {
+          const pid = proc.pid || proc[0];
+          if (!affectedProcesses.has(pid)) {
+            affectedProcesses.set(pid, {
+              id: pid,
+              name: proc.label || proc[1],
+              process_type: proc.processType || proc[2],
+              step_count: proc.stepCount || proc[3],
+              changed_steps: [],
+            });
+          }
+          affectedProcesses.get(pid)!.changed_steps.push({
+            symbol: sym.name,
+            step: proc.step || proc[4],
+          });
+        }
+      } catch { /* skip */ }
+    }
+    
+    const processCount = affectedProcesses.size;
+    const risk = processCount === 0 ? 'low' : processCount <= 5 ? 'medium' : processCount <= 15 ? 'high' : 'critical';
+    
+    return {
+      summary: {
+        changed_count: changedSymbols.length,
+        affected_count: processCount,
+        changed_files: changedFiles.length,
+        risk_level: risk,
+      },
+      changed_symbols: changedSymbols,
+      affected_processes: Array.from(affectedProcesses.values()),
+    };
+  }
+
+  /**
+   * Rename tool — multi-file coordinated rename using graph + text search.
+   * Graph refs are tagged "graph" (high confidence).
+   * Additional refs found via text search are tagged "text_search" (lower confidence).
+   */
+  private async rename(repo: RepoHandle, params: {
+    symbol_name?: string;
+    symbol_uid?: string;
+    new_name: string;
+    file_path?: string;
+    dry_run?: boolean;
+  }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    
+    const { new_name, file_path } = params;
+    const dry_run = params.dry_run ?? true;
+    
+    if (!params.symbol_name && !params.symbol_uid) {
+      return { error: 'Either symbol_name or symbol_uid is required.' };
+    }
+    
+    // Step 1: Find the target symbol (reuse context's lookup)
+    const lookupResult = await this.context(repo, {
+      name: params.symbol_name,
+      uid: params.symbol_uid,
+      file_path,
+    });
+    
+    if (lookupResult.status === 'ambiguous') {
+      return lookupResult; // pass disambiguation through
+    }
+    if (lookupResult.error) {
+      return lookupResult;
+    }
+    
+    const sym = lookupResult.symbol;
+    const oldName = sym.name;
+    
+    if (oldName === new_name) {
+      return { error: 'New name is the same as the current name.' };
+    }
+    
+    // Step 2: Collect edits from graph (high confidence)
+    const changes = new Map<string, { file_path: string; edits: any[] }>();
+    
+    const addEdit = (filePath: string, line: number, oldText: string, newText: string, confidence: string) => {
+      if (!changes.has(filePath)) {
+        changes.set(filePath, { file_path: filePath, edits: [] });
+      }
+      changes.get(filePath)!.edits.push({ line, old_text: oldText, new_text: newText, confidence });
+    };
+    
+    // The definition itself
+    if (sym.filePath && sym.startLine) {
+      try {
+        const content = await fs.readFile(path.join(repo.repoPath, sym.filePath), 'utf-8');
+        const lines = content.split('\n');
+        const lineIdx = sym.startLine - 1;
+        if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
+          addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(oldName, new_name).trim(), 'graph');
+        }
+      } catch { /* skip */ }
+    }
+    
+    // All incoming refs from graph (callers, importers, etc.)
+    const allIncoming = [
+      ...(lookupResult.incoming.calls || []),
+      ...(lookupResult.incoming.imports || []),
+      ...(lookupResult.incoming.extends || []),
+      ...(lookupResult.incoming.implements || []),
+    ];
+    
+    let graphEdits = changes.size > 0 ? 1 : 0; // count definition edit
+    
+    for (const ref of allIncoming) {
+      if (!ref.filePath) continue;
+      try {
+        const content = await fs.readFile(path.join(repo.repoPath, ref.filePath), 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(oldName)) {
+            addEdit(ref.filePath, i + 1, lines[i].trim(), lines[i].replace(new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), new_name).trim(), 'graph');
+            graphEdits++;
+            break; // one edit per file from graph refs
+          }
+        }
+      } catch { /* skip */ }
+    }
+    
+    // Step 3: Text search for refs the graph might have missed
+    let astSearchEdits = 0;
+    const graphFiles = new Set([sym.filePath, ...allIncoming.map(r => r.filePath)].filter(Boolean));
+    
+    // Simple text search across the repo for the old name (in files not already covered by graph)
+    try {
+      const { execSync } = await import('child_process');
+      const rgCmd = `rg -l --type-add "code:*.{ts,tsx,js,jsx,py,go,rs,java}" -t code "\\b${oldName}\\b" .`;
+      const output = execSync(rgCmd, { cwd: repo.repoPath, encoding: 'utf-8', timeout: 5000 });
+      const files = output.trim().split('\n').filter(f => f.length > 0);
+      
+      for (const file of files) {
+        const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
+        if (graphFiles.has(normalizedFile)) continue; // already covered by graph
+        
+        try {
+          const content = await fs.readFile(path.join(repo.repoPath, normalizedFile), 'utf-8');
+          const lines = content.split('\n');
+          const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+          for (let i = 0; i < lines.length; i++) {
+            if (regex.test(lines[i])) {
+              addEdit(normalizedFile, i + 1, lines[i].trim(), lines[i].replace(regex, new_name).trim(), 'text_search');
+              astSearchEdits++;
+              regex.lastIndex = 0; // reset regex
+            }
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* rg not available or no additional matches */ }
+    
+    // Step 4: Apply or preview
+    const allChanges = Array.from(changes.values());
+    const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
+    
+    if (!dry_run) {
+      // Apply edits to files
+      for (const change of allChanges) {
+        try {
+          const fullPath = path.join(repo.repoPath, change.file_path);
+          let content = await fs.readFile(fullPath, 'utf-8');
+          const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+          content = content.replace(regex, new_name);
+          await fs.writeFile(fullPath, content, 'utf-8');
+        } catch { /* skip failed files */ }
+      }
+    }
+    
+    return {
+      status: 'success',
+      old_name: oldName,
+      new_name,
+      files_affected: allChanges.length,
+      total_edits: totalEdits,
+      graph_edits: graphEdits,
+      text_search_edits: astSearchEdits,
+      changes: allChanges,
+      applied: !dry_run,
+    };
   }
 
   private async impact(repo: RepoHandle, params: {
@@ -825,6 +1249,153 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       byDepth: grouped,
+    };
+  }
+
+  // ─── Direct Graph Queries (for resources.ts) ────────────────────
+
+  /**
+   * Query clusters (communities) directly from graph.
+   * Used by getClustersResource — avoids legacy overview() dispatch.
+   */
+  async queryClusters(repoName?: string, limit = 100): Promise<{ clusters: any[] }> {
+    const repo = this.resolveRepo(repoName);
+    await this.ensureInitialized(repo.id);
+
+    try {
+      const rawLimit = Math.max(limit * 5, 200);
+      const clusters = await executeQuery(repo.id, `
+        MATCH (c:Community)
+        RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
+        ORDER BY c.symbolCount DESC
+        LIMIT ${rawLimit}
+      `);
+      const rawClusters = clusters.map((c: any) => ({
+        id: c.id || c[0],
+        label: c.label || c[1],
+        heuristicLabel: c.heuristicLabel || c[2],
+        cohesion: c.cohesion || c[3],
+        symbolCount: c.symbolCount || c[4],
+      }));
+      return { clusters: this.aggregateClusters(rawClusters).slice(0, limit) };
+    } catch {
+      return { clusters: [] };
+    }
+  }
+
+  /**
+   * Query processes directly from graph.
+   * Used by getProcessesResource — avoids legacy overview() dispatch.
+   */
+  async queryProcesses(repoName?: string, limit = 50): Promise<{ processes: any[] }> {
+    const repo = this.resolveRepo(repoName);
+    await this.ensureInitialized(repo.id);
+
+    try {
+      const processes = await executeQuery(repo.id, `
+        MATCH (p:Process)
+        RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
+        ORDER BY p.stepCount DESC
+        LIMIT ${limit}
+      `);
+      return {
+        processes: processes.map((p: any) => ({
+          id: p.id || p[0],
+          label: p.label || p[1],
+          heuristicLabel: p.heuristicLabel || p[2],
+          processType: p.processType || p[3],
+          stepCount: p.stepCount || p[4],
+        })),
+      };
+    } catch {
+      return { processes: [] };
+    }
+  }
+
+  /**
+   * Query cluster detail (members) directly from graph.
+   * Used by getClusterDetailResource.
+   */
+  async queryClusterDetail(name: string, repoName?: string): Promise<any> {
+    const repo = this.resolveRepo(repoName);
+    await this.ensureInitialized(repo.id);
+
+    const escaped = name.replace(/'/g, "''");
+    const clusterQuery = `
+      MATCH (c:Community)
+      WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+      RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
+    `;
+    const clusters = await executeQuery(repo.id, clusterQuery);
+    if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
+
+    const rawClusters = clusters.map((c: any) => ({
+      id: c.id || c[0], label: c.label || c[1], heuristicLabel: c.heuristicLabel || c[2],
+      cohesion: c.cohesion || c[3], symbolCount: c.symbolCount || c[4],
+    }));
+
+    let totalSymbols = 0, weightedCohesion = 0;
+    for (const c of rawClusters) {
+      const s = c.symbolCount || 0;
+      totalSymbols += s;
+      weightedCohesion += (c.cohesion || 0) * s;
+    }
+
+    const members = await executeQuery(repo.id, `
+      MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+      WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+      RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+      LIMIT 30
+    `);
+
+    return {
+      cluster: {
+        id: rawClusters[0].id,
+        label: rawClusters[0].heuristicLabel || rawClusters[0].label,
+        heuristicLabel: rawClusters[0].heuristicLabel || rawClusters[0].label,
+        cohesion: totalSymbols > 0 ? weightedCohesion / totalSymbols : 0,
+        symbolCount: totalSymbols,
+        subCommunities: rawClusters.length,
+      },
+      members: members.map((m: any) => ({
+        name: m.name || m[0], type: m.type || m[1], filePath: m.filePath || m[2],
+      })),
+    };
+  }
+
+  /**
+   * Query process detail (steps) directly from graph.
+   * Used by getProcessDetailResource.
+   */
+  async queryProcessDetail(name: string, repoName?: string): Promise<any> {
+    const repo = this.resolveRepo(repoName);
+    await this.ensureInitialized(repo.id);
+
+    const escaped = name.replace(/'/g, "''");
+    const processes = await executeQuery(repo.id, `
+      MATCH (p:Process)
+      WHERE p.label = '${escaped}' OR p.heuristicLabel = '${escaped}'
+      RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
+      LIMIT 1
+    `);
+    if (processes.length === 0) return { error: `Process '${name}' not found` };
+
+    const proc = processes[0];
+    const procId = proc.id || proc[0];
+    const steps = await executeQuery(repo.id, `
+      MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: '${procId}'})
+      RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
+      ORDER BY r.step
+    `);
+
+    return {
+      process: {
+        id: procId, label: proc.label || proc[1], heuristicLabel: proc.heuristicLabel || proc[2],
+        processType: proc.processType || proc[3], stepCount: proc.stepCount || proc[4],
+      },
+      steps: steps.map((s: any) => ({
+        step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
+      })),
     };
   }
 

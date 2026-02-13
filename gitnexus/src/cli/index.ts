@@ -7,6 +7,7 @@ import { statusCommand } from './status.js';
 import { mcpCommand } from './mcp.js';
 import { cleanCommand } from './clean.js';
 import { setupCommand } from './setup.js';
+import { augmentCommand } from './augment.js';
 const program = new Command();
 
 program
@@ -53,5 +54,10 @@ program
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .action(cleanCommand);
+
+program
+  .command('augment <pattern>')
+  .description('Augment a search pattern with knowledge graph context (used by hooks)')
+  .action(augmentCommand);
 
 program.parse(process.argv);

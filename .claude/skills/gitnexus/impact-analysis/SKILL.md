@@ -11,13 +11,14 @@ description: Analyze blast radius before making code changes
 - "Show me the blast radius"
 - "Who uses this code?"
 - Before making non-trivial code changes
+- Before committing — to understand what your changes affect
 
 ## Workflow
 
 ```
 1. gitnexus_impact({target: "X", direction: "upstream"})  → What depends on this
-2. READ gitnexus://repo/{name}/clusters                    → Check which areas are affected
-3. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
+2. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
+3. gitnexus_detect_changes()                               → Map current git changes to affected flows
 4. Assess risk and report to user
 ```
 
@@ -29,9 +30,8 @@ description: Analyze blast radius before making code changes
 - [ ] gitnexus_impact({target, direction: "upstream"}) to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
-- [ ] READ clusters to understand which areas are affected
-- [ ] Count affected clusters (cross-cutting = higher risk)
 - [ ] READ processes to check affected execution flows
+- [ ] gitnexus_detect_changes() for pre-commit check
 - [ ] Assess risk level and report to user
 ```
 
@@ -47,14 +47,14 @@ description: Analyze blast radius before making code changes
 
 | Affected | Risk |
 |----------|------|
-| <5 symbols, 1 cluster | LOW |
-| 5-15 symbols, 1-2 clusters | MEDIUM |
-| >15 symbols or 3+ clusters | HIGH |
+| <5 symbols, few processes | LOW |
+| 5-15 symbols, 2-5 processes | MEDIUM |
+| >15 symbols or many processes | HIGH |
 | Critical path (auth, payments) | CRITICAL |
 
 ## Tools
 
-**gitnexus_impact** — the primary tool:
+**gitnexus_impact** — the primary tool for symbol blast radius:
 ```
 gitnexus_impact({
   target: "validateUser",
@@ -69,9 +69,15 @@ gitnexus_impact({
 
 → d=2 (LIKELY AFFECTED):
   - authRouter (src/routes/auth.ts:22) [CALLS, 95%]
+```
 
-→ Affected Processes: LoginFlow, TokenRefresh
-→ Risk: MEDIUM (3 processes)
+**gitnexus_detect_changes** — git-diff based impact analysis:
+```
+gitnexus_detect_changes({scope: "staged"})
+
+→ Changed: 5 symbols in 3 files
+→ Affected: LoginFlow, TokenRefresh, APIMiddlewarePipeline
+→ Risk: MEDIUM
 ```
 
 ## Example: "What breaks if I change validateUser?"
@@ -81,8 +87,8 @@ gitnexus_impact({
    → d=1: loginHandler, apiMiddleware (WILL BREAK)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 
-2. READ gitnexus://repo/my-app/clusters
-   → Auth and API clusters affected (2 clusters)
+2. READ gitnexus://repo/my-app/processes
+   → LoginFlow and TokenRefresh touch validateUser
 
-3. Risk: 2 direct callers, 2 clusters = MEDIUM
+3. Risk: 2 direct callers, 2 processes = MEDIUM
 ```

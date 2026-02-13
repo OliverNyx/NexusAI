@@ -7,7 +7,7 @@
  * 
  * Supports multiple indexed repositories via the global registry.
  * 
- * Tools: list_repos, search, cypher, overview, explore, impact, analyze
+ * Tools: list_repos, query, cypher, context, impact, detect_changes, rename
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
@@ -19,6 +19,8 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
   ListResourceTemplatesRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
 import type { LocalBackend } from './local/local-backend.js';
@@ -42,31 +44,31 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     case 'list_repos':
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
 
-    case 'search':
-      return `\n\n---\n**Next:** To understand a result in context, use explore({name: "<symbol_name>", type: "symbol"${repoParam}}) to see its callers, callees, and cluster membership.`;
+    case 'query':
+      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
 
-    case 'explore': {
-      const exploreType = args?.type || 'symbol';
-      if (exploreType === 'symbol') {
-        return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
-      }
-      if (exploreType === 'cluster') {
-        return `\n\n---\n**Next:** To drill into a specific symbol, use explore({name: "<symbol_name>", type: "symbol"${repoParam}}). To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
-      }
-      if (exploreType === 'process') {
-        return `\n\n---\n**Next:** To explore any step in detail, use explore({name: "<step_name>", type: "symbol"${repoParam}}).`;
-      }
-      return '';
-    }
-
-    case 'overview':
-      return `\n\n---\n**Next:** To drill into a cluster, READ gitnexus://repo/${repoPath}/cluster/{name} or use explore({name: "<cluster_name>", type: "cluster"${repoParam}}).`;
+    case 'context':
+      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
     case 'impact':
       return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
+    case 'detect_changes':
+      return `\n\n---\n**Next:** Review affected processes. Use context() on high-risk changed symbols. READ gitnexus://repo/${repoPath}/process/{name} for full execution traces.`;
+
+    case 'rename':
+      return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
+
     case 'cypher':
-      return `\n\n---\n**Next:** To explore a result symbol, use explore({name: "<name>", type: "symbol"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
+      return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
+
+    // Legacy tool names — still return useful hints
+    case 'search':
+      return `\n\n---\n**Next:** To understand a result in context, use context({name: "<symbol_name>"${repoParam}}).`;
+    case 'explore':
+      return `\n\n---\n**Next:** If planning changes, use impact({target: "<name>", direction: "upstream"${repoParam}}).`;
+    case 'overview':
+      return `\n\n---\n**Next:** To drill into an area, READ gitnexus://repo/${repoPath}/cluster/{name}. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
     default:
       return '';
@@ -83,13 +85,14 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
       capabilities: {
         tools: {},
         resources: {},
+        prompts: {},
       },
     }
   );
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const resources = getResourceDefinitions(backend);
+    const resources = getResourceDefinitions();
     return {
       resources: resources.map(r => ({
         uri: r.uri,
@@ -180,6 +183,81 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
         isError: true,
       };
     }
+  });
+
+  // Handle list prompts request
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: [
+      {
+        name: 'detect_impact',
+        description: 'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
+        arguments: [
+          { name: 'scope', description: 'What to analyze: unstaged, staged, all, or compare', required: false },
+          { name: 'base_ref', description: 'Branch/commit for compare scope', required: false },
+        ],
+      },
+      {
+        name: 'generate_map',
+        description: 'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
+        arguments: [
+          { name: 'repo', description: 'Repository name (omit if only one indexed)', required: false },
+        ],
+      },
+    ],
+  }));
+
+  // Handle get prompt request
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    
+    if (name === 'detect_impact') {
+      const scope = args?.scope || 'all';
+      const baseRef = args?.base_ref || '';
+      return {
+        messages: [
+          {
+            role: 'user' as const,
+            content: {
+              type: 'text' as const,
+              text: `Analyze the impact of my current code changes before committing.
+
+Follow these steps:
+1. Run \`detect_changes(${JSON.stringify({ scope, ...(baseRef ? { base_ref: baseRef } : {}) })})\` to find what changed and affected processes
+2. For each changed symbol in critical processes, run \`context({name: "<symbol>"})\` to see its full reference graph
+3. For any high-risk items (many callers or cross-process), run \`impact({target: "<symbol>", direction: "upstream"})\` for blast radius
+4. Summarize: changes, affected processes, risk level, and recommended actions
+
+Present the analysis as a clear risk report.`,
+            },
+          },
+        ],
+      };
+    }
+    
+    if (name === 'generate_map') {
+      const repo = args?.repo || '';
+      return {
+        messages: [
+          {
+            role: 'user' as const,
+            content: {
+              type: 'text' as const,
+              text: `Generate architecture documentation for this codebase using the knowledge graph.
+
+Follow these steps:
+1. READ \`gitnexus://repo/${repo || '{name}'}/context\` for codebase stats
+2. READ \`gitnexus://repo/${repo || '{name}'}/clusters\` to see all functional areas
+3. READ \`gitnexus://repo/${repo || '{name}'}/processes\` to see all execution flows  
+4. For the top 5 most important processes, READ \`gitnexus://repo/${repo || '{name}'}/process/{name}\` for step-by-step traces
+5. Generate a mermaid architecture diagram showing the major areas and their connections
+6. Write an ARCHITECTURE.md file with: overview, functional areas, key execution flows, and the mermaid diagram`,
+            },
+          },
+        ],
+      };
+    }
+    
+    throw new Error(`Unknown prompt: ${name}`);
   });
 
   // Connect to stdio transport

@@ -15,8 +15,8 @@ description: Trace bugs through call chains using knowledge graph
 ## Workflow
 
 ```
-1. gitnexus_search({query: "<error or symptom>"})            → Find related code
-2. gitnexus_explore({name: "<suspect>", type: "symbol"})     → See callers/callees
+1. gitnexus_query({query: "<error or symptom>"})            → Find related execution flows
+2. gitnexus_context({name: "<suspect>"})                    → See callers/callees/processes
 3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
 4. gitnexus_cypher({query: "MATCH path..."})                 → Custom traces if needed
 ```
@@ -27,9 +27,9 @@ description: Trace bugs through call chains using knowledge graph
 
 ```
 - [ ] Understand the symptom (error message, unexpected behavior)
-- [ ] gitnexus_search for error text or related code
-- [ ] Identify the suspect function
-- [ ] gitnexus_explore to see callers and callees
+- [ ] gitnexus_query for error text or related code
+- [ ] Identify the suspect function from returned processes
+- [ ] gitnexus_context to see callers and callees
 - [ ] Trace execution flow via process resource if applicable
 - [ ] gitnexus_cypher for custom call chain traces if needed
 - [ ] Read source files to confirm root cause
@@ -39,26 +39,27 @@ description: Trace bugs through call chains using knowledge graph
 
 | Symptom | GitNexus Approach |
 |---------|-------------------|
-| Error message | `gitnexus_search` for error text → `explore` throw sites |
-| Wrong return value | `explore` the function → trace callees for data flow |
-| Intermittent failure | `explore` → look for external calls, async deps |
-| Performance issue | `explore` → find symbols with many callers (hot paths) |
-| Recent regression | `gitnexus_impact` on recently changed symbols |
+| Error message | `gitnexus_query` for error text → `context` on throw sites |
+| Wrong return value | `context` on the function → trace callees for data flow |
+| Intermittent failure | `context` → look for external calls, async deps |
+| Performance issue | `context` → find symbols with many callers (hot paths) |
+| Recent regression | `detect_changes` to see what your changes affect |
 
 ## Tools
 
-**gitnexus_search** — find code related to error:
+**gitnexus_query** — find code related to error:
 ```
-gitnexus_search({query: "payment validation error", depth: "full"})
-→ validatePayment, handlePaymentError, PaymentException
+gitnexus_query({query: "payment validation error"})
+→ Processes: CheckoutFlow, ErrorHandling
+→ Symbols: validatePayment, handlePaymentError, PaymentException
 ```
 
-**gitnexus_explore** — full context for a suspect:
+**gitnexus_context** — full context for a suspect:
 ```
-gitnexus_explore({name: "validatePayment", type: "symbol"})
-→ Callers: processCheckout, webhookHandler
-→ Callees: verifyCard, fetchRates (external API!)
-→ Cluster: Payment
+gitnexus_context({name: "validatePayment"})
+→ Incoming calls: processCheckout, webhookHandler
+→ Outgoing calls: verifyCard, fetchRates (external API!)
+→ Processes: CheckoutFlow (step 3/7)
 ```
 
 **gitnexus_cypher** — custom call chain traces:
@@ -70,11 +71,12 @@ RETURN [n IN nodes(path) | n.name] AS chain
 ## Example: "Payment endpoint returns 500 intermittently"
 
 ```
-1. gitnexus_search({query: "payment error handling"})
-   → validatePayment, handlePaymentError, PaymentException
+1. gitnexus_query({query: "payment error handling"})
+   → Processes: CheckoutFlow, ErrorHandling
+   → Symbols: validatePayment, handlePaymentError
 
-2. gitnexus_explore({name: "validatePayment", type: "symbol"})
-   → Callees: verifyCard, fetchRates (external API!)
+2. gitnexus_context({name: "validatePayment"})
+   → Outgoing calls: verifyCard, fetchRates (external API!)
 
 3. READ gitnexus://repo/my-app/process/CheckoutFlow
    → Step 3: validatePayment → calls fetchRates (external)
