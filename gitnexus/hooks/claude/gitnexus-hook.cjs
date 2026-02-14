@@ -101,11 +101,22 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    const result = execFileSync(
-      'gitnexus',
-      ['augment', pattern],
-      { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+    // Resolve CLI path relative to this hook script (same package)
+    // hooks/claude/gitnexus-hook.cjs → dist/cli/index.js
+    const cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+
+    // augment CLI writes result to stderr (KuzuDB's native module captures
+    // stdout fd at OS level, making it unusable in subprocess contexts).
+    const { spawnSync } = require('child_process');
+    let result = '';
+    try {
+      const child = spawnSync(
+        process.execPath,
+        [cliPath, 'augment', pattern],
+        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      result = child.stderr || '';
+    } catch { /* graceful failure */ }
 
     if (result && result.trim()) {
       console.log(JSON.stringify({
@@ -115,8 +126,9 @@ function main() {
         }
       }));
     }
-  } catch {
-    // Graceful failure
+  } catch (err) {
+    // Graceful failure — log to stderr for debugging
+    console.error('GitNexus hook error:', err.message);
   }
 }
 

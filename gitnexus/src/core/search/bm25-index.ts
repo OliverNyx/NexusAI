@@ -62,24 +62,22 @@ export const searchFTSFromKuzu = async (query: string, limit: number = 20, repoI
 
   if (repoId) {
     // Use MCP connection pool via dynamic import
+    // IMPORTANT: KuzuDB uses a single connection per repo — queries must be sequential
+    // to avoid deadlocking. Do NOT use Promise.all here.
     const { executeQuery } = await import('../../mcp/core/kuzu-adapter.js');
     const executor = (cypher: string) => executeQuery(repoId, cypher);
-    [fileResults, functionResults, classResults, methodResults, interfaceResults] = await Promise.all([
-      queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit),
-      queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit),
-      queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit),
-      queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit),
-      queryFTSViaExecutor(executor, 'Interface', 'interface_fts', query, limit),
-    ]);
+    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
+    functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
+    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
+    methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit);
+    interfaceResults = await queryFTSViaExecutor(executor, 'Interface', 'interface_fts', query, limit);
   } else {
-    // Use core kuzu adapter (CLI / pipeline context)
-    [fileResults, functionResults, classResults, methodResults, interfaceResults] = await Promise.all([
-      queryFTS('File', 'file_fts', query, limit, false).catch(() => []),
-      queryFTS('Function', 'function_fts', query, limit, false).catch(() => []),
-      queryFTS('Class', 'class_fts', query, limit, false).catch(() => []),
-      queryFTS('Method', 'method_fts', query, limit, false).catch(() => []),
-      queryFTS('Interface', 'interface_fts', query, limit, false).catch(() => []),
-    ]);
+    // Use core kuzu adapter (CLI / pipeline context) — also sequential for safety
+    fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
+    functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(() => []);
+    classResults = await queryFTS('Class', 'class_fts', query, limit, false).catch(() => []);
+    methodResults = await queryFTS('Method', 'method_fts', query, limit, false).catch(() => []);
+    interfaceResults = await queryFTS('Interface', 'interface_fts', query, limit, false).catch(() => []);
   }
   
   // Merge results by filePath, summing scores for same file

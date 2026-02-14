@@ -15,7 +15,6 @@ import { augment } from '../core/augmentation/engine.js';
 
 export async function augmentCommand(pattern: string): Promise<void> {
   if (!pattern || pattern.length < 3) {
-    // Too short to be useful — exit silently
     process.exit(0);
   }
   
@@ -23,7 +22,12 @@ export async function augmentCommand(pattern: string): Promise<void> {
     const result = await augment(pattern, process.cwd());
     
     if (result) {
-      process.stdout.write(result + '\n');
+      // IMPORTANT: Write to stderr, NOT stdout.
+      // KuzuDB's native module captures stdout fd at OS level during init,
+      // which makes stdout permanently broken in subprocess contexts.
+      // stderr is never captured, so it works reliably everywhere.
+      // The hook reads from the subprocess's stderr.
+      process.stderr.write(result + '\n');
     }
   } catch {
     // Graceful failure — never break the calling hook

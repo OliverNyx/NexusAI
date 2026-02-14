@@ -17,7 +17,23 @@
       "Bash(cmd.exe /c \"cd /d D:\\\\Projects\\\\GitnexusV2 && gitnexus status\")",
       "Bash(gh repo clone:*)",
       "Bash(claude mcp:*)",
-      "Bash(gh issue view:*)"
+      "Bash(gh issue view:*)",
+      "Bash(echo:*)",
+      "Bash(node:*)",
+      "Bash(npm view:*)",
+      "Bash(npm version:*)",
+      "Bash(npm pack:*)",
+      "Bash(npm publish:*)",
+      "Bash(npx gitnexus:*)",
+      "mcp__gitnexus__list_repos",
+      "mcp__gitnexus__query",
+      "mcp__gitnexus__context",
+      "mcp__gitnexus__impact",
+      "Bash(git add:*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "gitnexus"
+  ]
 }

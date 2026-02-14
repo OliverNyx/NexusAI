@@ -153,8 +153,8 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   try {
     await fs.mkdir(destHooksDir, { recursive: true });
 
-    const src = path.join(pluginHooksPath, 'gitnexus-hook.js');
-    const dest = path.join(destHooksDir, 'gitnexus-hook.js');
+    const src = path.join(pluginHooksPath, 'gitnexus-hook.cjs');
+    const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
     try {
       const content = await fs.readFile(src, 'utf-8');
       await fs.writeFile(dest, content, 'utf-8');
@@ -162,7 +162,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Script not found in source — skip
     }
 
-    const hookCmd = `node "${path.join(destHooksDir, 'gitnexus-hook.js').replace(/\\/g, '/')}"`;
+    const hookCmd = `node "${path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/')}"`;
 
     // Merge hook config into ~/.claude/settings.json
     const existing = await readJsonFile(settingsPath) || {};
@@ -182,7 +182,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
         hooks: [{
           type: 'command',
           command: hookCmd,
-          timeout: 10,
+          timeout: 8000,
           statusMessage: 'Enriching with GitNexus graph context...',
         }],
       });

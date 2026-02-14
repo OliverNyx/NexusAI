@@ -14,6 +14,7 @@ import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getG
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
+import { registerClaudeHook } from './claude-hooks.js';
 
 export interface AnalyzeOptions {
   force?: boolean;
@@ -137,6 +138,9 @@ export const analyzeCommand = async (
 
   await addToGitignore(repoPath);
   
+  // Auto-register Claude Code hook (idempotent)
+  const hookResult = await registerClaudeHook();
+  
   const projectName = path.basename(repoPath);
   let aggregatedClusterCount = 0;
   if (pipelineResult.communityResult?.communities) {
@@ -171,6 +175,10 @@ export const analyzeCommand = async (
   
   if (aiContext.files.length > 0) {
     console.log(`  Context:  ${aiContext.files.join(', ')}`);
+  }
+  
+  if (hookResult.registered) {
+    console.log(`  Hooks:    ${hookResult.message}`);
   }
 
   try {

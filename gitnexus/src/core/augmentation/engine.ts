@@ -30,18 +30,44 @@ async function findRepoForCwd(cwd: string): Promise<{
     const entries = await listRegisteredRepos({ validate: true });
     const resolved = path.resolve(cwd);
     
-    // Find the repo whose path contains (or is) the cwd
+    // Normalize to lowercase on Windows (drive letters can differ: D: vs d:)
+    const isWindows = process.platform === 'win32';
+    const normalizedCwd = isWindows ? resolved.toLowerCase() : resolved;
+    const sep = path.sep;
+    
+    // Find the LONGEST matching repo path (most specific match wins)
+    let bestMatch: typeof entries[0] | null = null;
+    let bestLen = 0;
+    
     for (const entry of entries) {
       const repoResolved = path.resolve(entry.path);
-      if (resolved.startsWith(repoResolved) || repoResolved.startsWith(resolved)) {
-        return {
-          name: entry.name,
-          storagePath: entry.storagePath,
-          kuzuPath: path.join(entry.storagePath, 'kuzu'),
-        };
+      const normalizedRepo = isWindows ? repoResolved.toLowerCase() : repoResolved;
+      
+      // Check if cwd is inside repo OR repo is inside cwd
+      // Must match at a path separator boundary to avoid false positives
+      // (e.g. /projects/gitnexusv2 should NOT match /projects/gitnexus)
+      let matched = false;
+      if (normalizedCwd === normalizedRepo) {
+        matched = true;
+      } else if (normalizedCwd.startsWith(normalizedRepo + sep)) {
+        matched = true;
+      } else if (normalizedRepo.startsWith(normalizedCwd + sep)) {
+        matched = true;
+      }
+      
+      if (matched && normalizedRepo.length > bestLen) {
+        bestMatch = entry;
+        bestLen = normalizedRepo.length;
       }
     }
-    return null;
+    
+    if (!bestMatch) return null;
+    
+    return {
+      name: bestMatch.name,
+      storagePath: bestMatch.storagePath,
+      kuzuPath: path.join(bestMatch.storagePath, 'kuzu'),
+    };
   } catch {
     return null;
   }
