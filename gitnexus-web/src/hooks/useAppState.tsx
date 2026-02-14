@@ -148,6 +148,7 @@ interface AppState {
   refreshLLMSettings: () => void;
   initializeAgent: (overrideProjectName?: string) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
+  stopChatResponse: () => void;
   clearChat: () => void;
 
   // Code References Panel

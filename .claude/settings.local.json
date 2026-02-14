@@ -29,7 +29,10 @@
       "mcp__gitnexus__query",
       "mcp__gitnexus__context",
       "mcp__gitnexus__impact",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(Glob)",
+      "Bash(Bash\"\\) per new Claude Code schema\n- Rename gitnexus-hook.js → gitnexus-hook.cjs for CommonJS compatibility\n- Fix setup.ts: correct hook filename and timeout \\(8000ms instead of 10ms\\)\n- Bump to v1.1.9 and publish to npm\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
