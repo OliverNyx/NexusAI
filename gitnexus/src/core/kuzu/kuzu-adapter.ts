@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import kuzu from 'kuzu';
-import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
+import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -480,155 +480,38 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
 };
 
 /**
- * Load existing nodes and relationships from KuzuDB, excluding files in the changed set.
- * Used for incremental updates: we keep unchanged data and only re-parse changed files.
+ * Load cached embeddings from KuzuDB before a rebuild.
+ * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
+ * avoiding expensive re-embedding of unchanged nodes.
  */
-export const loadExistingGraph = async (
-  changedFiles: Set<string>,
-  deletedFiles: Set<string>,
-): Promise<{
-  nodes: GraphNode[];
-  relationships: GraphRelationship[];
-  symbolEntries: Array<{ filePath: string; name: string; nodeId: string; type: string }>;
+export const loadCachedEmbeddings = async (): Promise<{
   embeddingNodeIds: Set<string>;
-  cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }>;
+  embeddings: Array<{ nodeId: string; embedding: number[] }>;
 }> => {
   if (!conn) {
-    return { nodes: [], relationships: [], symbolEntries: [], embeddingNodeIds: new Set(), cachedEmbeddings: [] };
+    return { embeddingNodeIds: new Set(), embeddings: [] };
   }
 
-  const str = (v: any): string => String(v ?? '');
-  const num = (v: any): number => Number(v) || 0;
-
-  const excludedFiles = new Set([...changedFiles, ...deletedFiles]);
-  const nodes: GraphNode[] = [];
-  const symbolEntries: Array<{ filePath: string; name: string; nodeId: string; type: string }> = [];
-
-  const codeElementTables: NodeTableName[] = NODE_TABLES.filter(
-    t => t !== 'File' && t !== 'Folder' && t !== 'Community' && t !== 'Process'
-  ) as NodeTableName[];
-
-  // Load File nodes
-  try {
-    const rows = await conn.query('MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content');
-    const result = Array.isArray(rows) ? rows[0] : rows;
-    for (const row of await result.getAll()) {
-      const filePath = str(row.filePath ?? row[2]).replace(/\\/g, '/');
-      if (excludedFiles.has(filePath)) continue;
-      nodes.push({
-        id: str(row.id ?? row[0]),
-        label: 'File',
-        properties: { name: str(row.name ?? row[1]), filePath },
-      });
-    }
-  } catch { /* table may not exist */ }
-
-  // Load Folder nodes
-  try {
-    const rows = await conn.query('MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath');
-    const result = Array.isArray(rows) ? rows[0] : rows;
-    for (const row of await result.getAll()) {
-      nodes.push({
-        id: str(row.id ?? row[0]),
-        label: 'Folder',
-        properties: { name: str(row.name ?? row[1]), filePath: str(row.filePath ?? row[2]).replace(/\\/g, '/') },
-      });
-    }
-  } catch { /* table may not exist */ }
-
-  // Tables with isExported column (standard JS/TS code element tables)
-  const tablesWithExported = new Set(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
-
-  // Load code element nodes (Function, Class, Method, Interface, etc.)
-  for (const table of codeElementTables) {
-    try {
-      const t = BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
-      const hasExported = tablesWithExported.has(table);
-      const query = hasExported
-        ? `MATCH (n:${t}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.isExported AS isExported`
-        : `MATCH (n:${t}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
-      const rows = await conn.query(query);
-      const result = Array.isArray(rows) ? rows[0] : rows;
-      for (const row of await result.getAll()) {
-        const filePath = str(row.filePath ?? row[2]).replace(/\\/g, '/');
-        if (excludedFiles.has(filePath)) continue;
-        const nodeId = str(row.id ?? row[0]);
-        const name = str(row.name ?? row[1]);
-        nodes.push({
-          id: nodeId,
-          label: table as any,
-          properties: {
-            name,
-            filePath,
-            startLine: num(row.startLine ?? row[3]),
-            endLine: num(row.endLine ?? row[4]),
-            ...(hasExported ? { isExported: !!(row.isExported ?? row[5]) } : {}),
-          },
-        });
-        symbolEntries.push({ filePath, name, nodeId, type: table });
-      }
-    } catch { /* table may not exist or is empty */ }
-  }
-
-  // Load relationships for unchanged files.
-  // Filter: SOURCE must be in retained nodes (unchanged files).
-  // TARGET can be any node — edges to changed/deleted nodes that no longer exist
-  // will naturally fail during KuzuDB COPY (gracefully skipped).
-  // This preserves cross-file edges (unchanged → changed) from the old index.
-  const relationships: GraphRelationship[] = [];
-  const nodeIdSet = new Set(nodes.map(n => n.id));
-  try {
-    const rows = await conn.query(
-      `MATCH (a)-[r:${REL_TABLE_NAME}]->(b) RETURN a.id AS fromId, b.id AS toId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
-    );
-    const result = Array.isArray(rows) ? rows[0] : rows;
-    for (const row of await result.getAll()) {
-      const fromId = str(row.fromId ?? row[0]);
-      const toId = str(row.toId ?? row[1]);
-      // Source must be from an unchanged file
-      if (!nodeIdSet.has(fromId)) continue;
-      const type = str(row.type ?? row[2]);
-      // Skip types that are regenerated globally by the incremental pipeline:
-      // - CONTAINS: recomputed by processStructure on all files
-      // - MEMBER_OF: recomputed by community detection
-      // - STEP_IN_PROCESS: recomputed by process detection
-      if (type === 'CONTAINS' || type === 'MEMBER_OF' || type === 'STEP_IN_PROCESS') continue;
-      // Use canonical ID format (matching generateId output) to avoid duplicates
-      const canonicalId = `${type}:${fromId}->${toId}`;
-      relationships.push({
-        id: canonicalId,
-        sourceId: fromId,
-        targetId: toId,
-        type: type as any,
-        confidence: num(row.confidence ?? row[3]) || 1.0,
-        reason: str(row.reason ?? row[4]),
-        step: num(row.step ?? row[5]),
-      });
-    }
-  } catch { /* relationship table may not exist */ }
-
-  // Load existing embeddings (nodeId + vector) for unchanged nodes
   const embeddingNodeIds = new Set<string>();
-  const cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
+  const embeddings: Array<{ nodeId: string; embedding: number[] }> = [];
   try {
     const rows = await conn.query(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`);
     const result = Array.isArray(rows) ? rows[0] : rows;
     for (const row of await result.getAll()) {
-      const nodeId = str(row.nodeId ?? row[0]);
-      if (nodeIdSet.has(nodeId)) {
-        embeddingNodeIds.add(nodeId);
-        const embedding = row.embedding ?? row[1];
-        if (embedding) {
-          cachedEmbeddings.push({
-            nodeId,
-            embedding: Array.isArray(embedding) ? embedding.map(Number) : Array.from(embedding as any).map(Number),
-          });
-        }
+      const nodeId = String(row.nodeId ?? row[0] ?? '');
+      if (!nodeId) continue;
+      embeddingNodeIds.add(nodeId);
+      const embedding = row.embedding ?? row[1];
+      if (embedding) {
+        embeddings.push({
+          nodeId,
+          embedding: Array.isArray(embedding) ? embedding.map(Number) : Array.from(embedding as any).map(Number),
+        });
       }
     }
   } catch { /* embedding table may not exist */ }
 
-  return { nodes, relationships, symbolEntries, embeddingNodeIds, cachedEmbeddings };
+  return { embeddingNodeIds, embeddings };
 };
 
 export const closeKuzu = async (): Promise<void> => {

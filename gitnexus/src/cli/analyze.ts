@@ -6,12 +6,12 @@
 
 import path from 'path';
 import cliProgress from 'cli-progress';
-import { runPipelineFromRepo, runIncrementalPipeline } from '../core/ingestion/pipeline.js';
-import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadExistingGraph } from '../core/kuzu/kuzu-adapter.js';
+import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
+import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
 import { disposeEmbedder } from '../core/embeddings/embedder.js';
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, getGlobalDir } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot, getChangedFiles, getDeletedFiles, getUncommittedChanges } from '../storage/git.js';
+import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
 import { registerClaudeHook } from './claude-hooks.js';
@@ -74,33 +74,6 @@ export const analyzeCommand = async (
     return;
   }
 
-  // ── Determine incremental vs full rebuild ──────────────────────────
-  const INCREMENTAL_THRESHOLD = 0.6; // Fall back to full if >60% files changed
-  let useIncremental = false;
-  let changedFileList: string[] = [];
-  let deletedFileList: string[] = [];
-  let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
-
-  if (existingMeta?.lastCommit && !options?.force) {
-    changedFileList = getChangedFiles(existingMeta.lastCommit, currentCommit, repoPath);
-    deletedFileList = getDeletedFiles(existingMeta.lastCommit, currentCommit, repoPath);
-
-    // Also include uncommitted working tree changes — the pipeline reads from disk,
-    // so any file modified in the working tree needs re-parsing even if not committed.
-    const uncommitted = getUncommittedChanges(repoPath);
-    if (uncommitted.length > 0) {
-      const changedSet = new Set(changedFileList);
-      for (const f of uncommitted) changedSet.add(f);
-      changedFileList = Array.from(changedSet);
-    }
-
-    // We'll check the ratio after scanning total file count below
-    if (changedFileList.length > 0 || deletedFileList.length > 0) {
-      useIncremental = true;
-    }
-  }
-
   // Single progress bar for entire pipeline
   const bar = new cliProgress.SingleBar({
     format: '  {bar} {percentage}% | {phase}',
@@ -116,68 +89,30 @@ export const analyzeCommand = async (
   bar.start(100, 0, { phase: 'Initializing...' });
 
   const t0Global = Date.now();
-  let pipelineMode: 'full' | 'incremental' = 'full';
 
-  // ── Load existing graph for incremental mode ───────────────────────
-  let preloadedData: Awaited<ReturnType<typeof loadExistingGraph>> | null = null;
+  // ── Cache embeddings from existing index before rebuild ────────────
+  let cachedEmbeddingNodeIds = new Set<string>();
+  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
 
-  if (useIncremental) {
+  if (existingMeta && !options?.force) {
     try {
-      bar.update(0, { phase: 'Loading cached graph...' });
+      bar.update(0, { phase: 'Caching embeddings...' });
       await initKuzu(kuzuPath);
-      preloadedData = await loadExistingGraph(
-        new Set(changedFileList),
-        new Set(deletedFileList),
-      );
+      const cached = await loadCachedEmbeddings();
+      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
+      cachedEmbeddings = cached.embeddings;
       await closeKuzu();
-
-      // Check threshold: if too many files changed, fall back to full rebuild
-      const totalCachedFiles = preloadedData.nodes.filter(n => n.label === 'File').length;
-      const totalFiles = totalCachedFiles + changedFileList.length;
-      const changeRatio = totalFiles > 0 ? changedFileList.length / totalFiles : 1;
-
-      if (changeRatio > INCREMENTAL_THRESHOLD) {
-        preloadedData = null;
-        useIncremental = false;
-      } else {
-        pipelineMode = 'incremental';
-        cachedEmbeddingNodeIds = preloadedData.embeddingNodeIds;
-        cachedEmbeddings = preloadedData.cachedEmbeddings;
-      }
     } catch {
-      // KuzuDB load failed — fall back to full rebuild
-      preloadedData = null;
-      useIncremental = false;
       try { await closeKuzu(); } catch {}
     }
   }
 
-  // ── Phase 1: Pipeline (0–60%) ──────────────────────────────────────
-  let pipelineResult;
-
-  if (pipelineMode === 'incremental' && preloadedData) {
-    bar.update(0, { phase: `Incremental: ${changedFileList.length} files changed` });
-    pipelineResult = await runIncrementalPipeline(
-      repoPath,
-      new Set(changedFileList),
-      {
-        nodes: preloadedData.nodes,
-        relationships: preloadedData.relationships,
-        symbolEntries: preloadedData.symbolEntries,
-      },
-      (progress) => {
-        const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
-        const scaled = Math.round(progress.percent * 0.6);
-        bar.update(scaled, { phase: phaseLabel });
-      }
-    );
-  } else {
-    pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
-      const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
-      const scaled = Math.round(progress.percent * 0.6);
-      bar.update(scaled, { phase: phaseLabel });
-    });
-  }
+  // ── Phase 1: Full Pipeline (0–60%) ─────────────────────────────────
+  const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
+    const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
+    const scaled = Math.round(progress.percent * 0.6);
+    bar.update(scaled, { phase: phaseLabel });
+  });
 
   // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
   bar.update(60, { phase: 'Loading into KuzuDB...' });
@@ -214,7 +149,7 @@ export const analyzeCommand = async (
   }
   const ftsTime = ((Date.now() - t0Fts) / 1000).toFixed(1);
 
-  // ── Phase 3.5: Re-insert cached embeddings (incremental) ───────────
+  // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
   if (cachedEmbeddings.length > 0) {
     bar.update(88, { phase: `Restoring ${cachedEmbeddings.length} cached embeddings...` });
     const EMBED_BATCH = 200;
@@ -311,10 +246,8 @@ export const analyzeCommand = async (
   bar.stop();
 
   // ── Summary ───────────────────────────────────────────────────────
-  const modeLabel = pipelineMode === 'incremental'
-    ? `incremental — ${changedFileList.length} files re-parsed`
-    : 'full rebuild';
-  console.log(`\n  Repository indexed successfully (${totalTime}s) [${modeLabel}]\n`);
+  const embeddingsCached = cachedEmbeddings.length > 0;
+  console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings cached]` : ''}\n`);
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
   console.log(`  KuzuDB ${kuzuTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
   console.log(`  ${repoPath}`);
