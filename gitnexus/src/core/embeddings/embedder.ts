@@ -1,6 +1,6 @@
 /**
  * Embedder Module
- * 
+ *
  * Singleton factory for transformers.js embedding pipeline.
  * Handles model loading, caching, and both single and batch embedding operations.
  * 
@@ -14,7 +14,7 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
-let currentDevice: 'webgpu' | 'cuda' | 'cpu' | 'wasm' | null = null;
+let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
 
 /**
  * Progress callback type for model loading
@@ -24,7 +24,7 @@ export type ModelProgressCallback = (progress: ModelProgress) => void;
 /**
  * Get the current device being used for inference
  */
-export const getCurrentDevice = (): 'webgpu' | 'cuda' | 'cpu' | 'wasm' | null => currentDevice;
+export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => currentDevice;
 
 /**
  * Initialize the embedding model
@@ -38,7 +38,7 @@ export const getCurrentDevice = (): 'webgpu' | 'cuda' | 'cpu' | 'wasm' | null =>
 export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
-  forceDevice?: 'webgpu' | 'cuda' | 'cpu' | 'wasm'
+  forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm'
 ): Promise<FeatureExtractionPipeline> => {
   // Return existing instance if available
   if (embedderInstance) {
@@ -53,10 +53,10 @@ export const initEmbedder = async (
   isInitializing = true;
   
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
-  // On Windows, use webgpu for GPU acceleration (via DirectX12/DirectML)
-  // CUDA is only available on Linux with onnxruntime-node
+  // On Windows, use DirectML for GPU acceleration (via DirectX12)
+  // CUDA is only available on Linux x64 with onnxruntime-node
   const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'webgpu' : 'cuda';
+  const gpuDevice = isWindows ? 'dml' : 'cuda';
   let requestedDevice = forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {
@@ -81,16 +81,16 @@ export const initEmbedder = async (
       } : undefined;
 
       // Try GPU first if auto, fall back to CPU
-      // Windows: webgpu (DirectX12/DirectML), Linux: cuda
-      const devicesToTry: Array<'webgpu' | 'cuda' | 'cpu' | 'wasm'> = 
-        (requestedDevice === 'webgpu' || requestedDevice === 'cuda') 
+      // Windows: dml (DirectML/DirectX12), Linux: cuda
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu' | 'wasm'> = 
+        (requestedDevice === 'dml' || requestedDevice === 'cuda') 
           ? [requestedDevice, 'cpu'] 
           : [requestedDevice as 'cpu' | 'wasm'];
 
       for (const device of devicesToTry) {
         try {
-          if (isDev && device === 'webgpu') {
-            console.log('🔧 Trying WebGPU (DirectX12) backend...');
+          if (isDev && device === 'dml') {
+            console.log('🔧 Trying DirectML (DirectX12) GPU backend...');
           } else if (isDev && device === 'cuda') {
             console.log('🔧 Trying CUDA GPU backend...');
           } else if (isDev && device === 'cpu') {
@@ -111,7 +111,7 @@ export const initEmbedder = async (
           currentDevice = device;
 
           if (isDev) {
-            const label = device === 'webgpu' ? 'GPU (WebGPU/DirectX12)' 
+            const label = device === 'dml' ? 'GPU (DirectML/DirectX12)' 
                         : device === 'cuda' ? 'GPU (CUDA)' 
                         : device.toUpperCase();
             console.log(`✅ Using ${label} backend`);
@@ -120,8 +120,8 @@ export const initEmbedder = async (
 
           return embedderInstance!;
         } catch (deviceError) {
-          if (isDev && (device === 'cuda' || device === 'webgpu')) {
-            const gpuType = device === 'webgpu' ? 'WebGPU' : 'CUDA';
+          if (isDev && (device === 'cuda' || device === 'dml')) {
+            const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
             console.log(`⚠️  ${gpuType} not available, falling back to CPU...`);
           }
           // Continue to next device in list
