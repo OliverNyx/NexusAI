@@ -17,15 +17,15 @@ https://github.com/user-attachments/assets/abfd0300-0aae-4296-b8d3-8b72ed882433
 
 ## Two Ways to Use GitNexus
 
-| | **CLI + MCP** | **Web UI** |
-|---|---|---|
-| **What** | Index repos locally, connect AI agents via MCP | Visual graph explorer + AI chat in browser |
-| **For** | Daily development with Cursor, Claude Code, Windsurf, OpenCode | Quick exploration, demos, one-off analysis |
-| **Scale** | Full repos, any size | Limited by browser memory (~5k files) |
-| **Install** | `npm install -g gitnexus` | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app) |
-| **Storage** | KuzuDB native (fast, persistent) | KuzuDB WASM (in-memory, per session) |
-| **Parsing** | Tree-sitter native bindings | Tree-sitter WASM |
-| **Privacy** | Everything local, no network | Everything in-browser, no server |
+|                   | **CLI + MCP**                                            | **Web UI**                                             |
+| ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
+| **What**    | Index repos locally, connect AI agents via MCP                 | Visual graph explorer + AI chat in browser                   |
+| **For**     | Daily development with Cursor, Claude Code, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                   |
+| **Scale**   | Full repos, any size                                           | Limited by browser memory (~5k files)                        |
+| **Install** | `npm install -g gitnexus`                                    | No install —[gitnexus.vercel.app](https://gitnexus.vercel.app) |
+| **Storage** | KuzuDB native (fast, persistent)                               | KuzuDB WASM (in-memory, per session)                         |
+| **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
+| **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
 
 ---
 
@@ -36,30 +36,36 @@ The CLI indexes your repository and runs an MCP server that gives AI agents deep
 ### Quick Start
 
 ```bash
-# Install
-npm install -g gitnexus
-
-# One-time setup: configures MCP for Cursor, Claude Code, OpenCode
-gitnexus setup
-
 # Index your repo (run from repo root)
-gitnexus analyze
-
-# That's it! Open your editor — the MCP server starts automatically.
+npx gitnexus analyze
 ```
 
-Or without installing globally:
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
-```bash
-npx gitnexus setup       # one-time
-npx gitnexus analyze     # per repo
-```
+To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 ### MCP Setup
 
-The `gitnexus setup` command auto-detects your editors and writes the correct MCP config. You only need to run it once.
+`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
+
+### Editor Support
+
+| Editor                | MCP | Skills | Hooks (auto-augment) | Support        |
+| --------------------- | --- | ------ | -------------------- | -------------- |
+| **Claude Code** | Yes | Yes    | Yes (PreToolUse)     | **Full** |
+| **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
+| **Windsurf**    | Yes | —     | —                   | MCP            |
+| **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
+
+> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
 
 If you prefer manual configuration:
+
+**Claude Code** (full support — MCP + skills + hooks):
+
+```bash
+claude mcp add gitnexus -- npx -y gitnexus@latest mcp
+```
 
 **Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
 
@@ -72,12 +78,6 @@ If you prefer manual configuration:
     }
   }
 }
-```
-
-**Claude Code:**
-
-```bash
-claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
 
 **OpenCode** (`~/.config/opencode/config.json`):
@@ -96,44 +96,55 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 ### CLI Commands
 
 ```bash
-gitnexus setup                # Configure MCP for your editors (one-time)
-gitnexus analyze [path]       # Index a repository (or update stale index)
-gitnexus analyze --force      # Force full re-index
-gitnexus mcp                  # Start MCP server (stdio) — serves all indexed repos
-gitnexus serve                # Start HTTP server for web UI connection
-gitnexus list                 # List all indexed repositories
-gitnexus status               # Show index status for current repo
-gitnexus clean                # Delete index for current repo
-gitnexus clean --all          # Delete all indexes
+gitnexus setup                    # Configure MCP for your editors (one-time)
+gitnexus analyze [path]           # Index a repository (or update stale index)
+gitnexus analyze --force          # Force full re-index
+gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
+gitnexus serve                   # Start HTTP server for web UI connection
+gitnexus list                    # List all indexed repositories
+gitnexus status                  # Show index status for current repo
+gitnexus clean                   # Delete index for current repo
+gitnexus clean --all --force     # Delete all indexes
+gitnexus wiki [path]             # Generate repository wiki from knowledge graph
+gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
+gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
 ```
 
 ### What Your AI Agent Gets
 
 **7 tools** exposed via MCP:
 
-| Tool | What It Does | `repo` Param |
-|------|-------------|--------------|
-| `list_repos` | Discover all indexed repositories | — |
-| `search` | Hybrid search (BM25 + semantic) with cluster context | Optional |
-| `overview` | List all clusters and processes | Optional |
-| `explore` | Deep dive on a symbol, cluster, or process | Optional |
-| `impact` | Blast radius analysis with confidence filtering | Optional |
-| `cypher` | Raw Cypher graph queries | Optional |
-| `analyze` | Index or re-index a repository | Optional |
+| Tool               | What It Does                                                      | `repo` Param |
+| ------------------ | ----------------------------------------------------------------- | -------------- |
+| `list_repos`     | Discover all indexed repositories                                 | —             |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)             | Optional       |
+| `context`        | 360-degree symbol view — categorized refs, process participation | Optional       |
+| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
+| `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
+| `cypher`         | Raw Cypher graph queries                                          | Optional       |
 
-> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `search({query: "auth", repo: "my-app"})`.
+> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
 
 **Resources** for instant context:
 
-| Resource | Purpose |
-|----------|---------|
-| `gitnexus://repos` | List all indexed repositories (read this first) |
-| `gitnexus://repo/{name}/context` | Codebase stats and overview |
-| `gitnexus://repo/{name}/clusters` | All functional clusters with cohesion scores |
-| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details |
-| `gitnexus://repo/{name}/processes` | All execution flows |
-| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps |
-| `gitnexus://repo/{name}/schema` | Graph schema for Cypher queries |
+| Resource                                  | Purpose                                              |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `gitnexus://repos`                      | List all indexed repositories (read this first)      |
+| `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
+| `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
+| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details                          |
+| `gitnexus://repo/{name}/processes`      | All execution flows                                  |
+| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
+| `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
+
+**2 MCP prompts** for guided workflows:
+
+| Prompt            | What It Does                                                              |
+| ----------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level       |
+| `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 **4 agent skills** installed to `.claude/skills/` automatically:
 
@@ -218,6 +229,7 @@ The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAs
 Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful — but they don't truly know your codebase structure.
 
 **What happens:**
+
 1. AI edits `UserService.validate()`
 2. Doesn't know 47 functions depend on its return type
 3. **Breaking changes ship**
@@ -316,24 +328,24 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
 
 GitNexus doesn't just string-match import paths. It understands language-specific module systems:
 
-| Language | What's Resolved |
-|----------|----------------|
-| **TypeScript** | Path aliases from `tsconfig.json` (e.g. `@/lib/auth` → `src/lib/auth`) |
-| **Rust** | Module paths (`crate::auth::validate`, `super::utils`, `self::handler`) |
-| **Java** | Wildcard imports (`com.example.*`) and static imports |
-| **Go** | Module paths via `go.mod`, internal package resolution |
-| **C/C++** | Relative includes, system include detection |
+| Language             | What's Resolved                                                               |
+| -------------------- | ----------------------------------------------------------------------------- |
+| **TypeScript** | Path aliases from `tsconfig.json` (e.g. `@/lib/auth` -> `src/lib/auth`) |
+| **Rust**       | Module paths (`crate::auth::validate`, `super::utils`, `self::handler`) |
+| **Java**       | Wildcard imports (`com.example.*`) and static imports                       |
+| **Go**         | Module paths via `go.mod`, internal package resolution                      |
+| **C/C++**      | Relative includes, system include detection                                   |
 
 ### Confidence Scoring on CALLS
 
 Every function call edge includes a trust score:
 
-| Confidence | Reason | Meaning |
-|------------|--------|---------|
-| 0.90 | `import-resolved` | Target found in imported file |
-| 0.85 | `same-file` | Target defined in same file |
-| 0.50 | `fuzzy-global` (1 match) | Single global match by name |
-| 0.30 | `fuzzy-global` (N matches) | Multiple matches, first picked |
+| Confidence | Reason                       | Meaning                        |
+| ---------- | ---------------------------- | ------------------------------ |
+| 0.90       | `import-resolved`          | Target found in imported file  |
+| 0.85       | `same-file`                | Target defined in same file    |
+| 0.50       | `fuzzy-global` (1 match)   | Single global match by name    |
+| 0.30       | `fuzzy-global` (N matches) | Multiple matches, first picked |
 
 The `impact` tool uses `minConfidence` to filter out guesses and return only reliable results.
 
@@ -394,6 +406,7 @@ flowchart TD
 ```
 
 **Framework detection** boosts scoring for known patterns:
+
 - Next.js: `/pages/`, `/app/page.tsx`, `/api/`
 - Express: `/routes/`, `/handlers/`
 - Django: `views.py`, `urls.py`
@@ -406,16 +419,16 @@ flowchart TD
 
 ### Node Types
 
-| Label | Description | Key Properties |
-|-------|-------------|----------------|
-| `Folder` | Directory | `name`, `filePath` |
-| `File` | Source file | `name`, `filePath`, `language`, `content` |
-| `Function` | Function def | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Class` | Class def | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Interface` | Interface def | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Method` | Class method | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Community` | Functional cluster | `label`, `heuristicLabel`, `cohesion`, `symbolCount` |
-| `Process` | Execution flow | `label`, `processType`, `stepCount`, `entryPointId` |
+| Label         | Description        | Key Properties                                                     |
+| ------------- | ------------------ | ------------------------------------------------------------------ |
+| `Folder`    | Directory          | `name`, `filePath`                                             |
+| `File`      | Source file        | `name`, `filePath`, `content`                                |
+| `Function`  | Function def       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Class`     | Class def          | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Interface` | Interface def      | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Method`    | Class method       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Community` | Functional cluster | `label`, `heuristicLabel`, `cohesion`, `symbolCount`       |
+| `Process`   | Execution flow     | `label`, `processType`, `stepCount`, `entryPointId`        |
 
 Plus language-specific nodes: `Struct`, `Enum`, `Trait`, `Impl`, `TypeAlias`, `Namespace`, `Record`, `Delegate`, `Annotation`, `Constructor`, `Template`, `Module` and more.
 
@@ -423,16 +436,16 @@ Plus language-specific nodes: `Struct`, `Enum`, `Trait`, `Impl`, `TypeAlias`, `N
 
 Single edge table with `type` property:
 
-| Type | From | To | Properties |
-|------|------|-----|------------|
-| `CONTAINS` | Folder | File/Folder | — |
-| `DEFINES` | File | Function/Class/etc | — |
-| `IMPORTS` | File | File | — |
-| `CALLS` | Function/Method | Function/Method | `confidence`, `reason` |
-| `EXTENDS` | Class | Class | — |
-| `IMPLEMENTS` | Class | Interface | — |
-| `MEMBER_OF` | Symbol | Community | — |
-| `STEP_IN_PROCESS` | Symbol | Process | `step` (1-indexed) |
+| Type                | From            | To                 | Properties                 |
+| ------------------- | --------------- | ------------------ | -------------------------- |
+| `CONTAINS`        | Folder          | File/Folder        | —                         |
+| `DEFINES`         | File            | Function/Class/etc | —                         |
+| `IMPORTS`         | File            | File               | —                         |
+| `CALLS`           | Function/Method | Function/Method    | `confidence`, `reason` |
+| `EXTENDS`         | Class           | Class              | —                         |
+| `IMPLEMENTS`      | Class           | Interface          | —                         |
+| `MEMBER_OF`       | Symbol          | Community          | —                         |
+| `STEP_IN_PROCESS` | Symbol          | Process            | `step` (1-indexed)       |
 
 ---
 
@@ -441,66 +454,102 @@ Single edge table with `type` property:
 ### Impact Analysis
 
 ```
-gitnexus_impact({target: "UserService", direction: "upstream", minConfidence: 0.8, repo: "my-app"})
+impact({target: "UserService", direction: "upstream", minConfidence: 0.8})
 
 TARGET: Class UserService (src/services/user.ts)
 
 UPSTREAM (what depends on this):
-  Depth 1 (direct callers):
-    handleLogin [CALLS 90%] → src/api/auth.ts:45
-    handleRegister [CALLS 90%] → src/api/auth.ts:78
-    UserController [CALLS 85%] → src/controllers/user.ts:12
-  Depth 2:
-    authRouter [IMPORTS] → src/routes/auth.ts
-
-8 files affected, 3 clusters touched
+  Depth 1 (WILL BREAK):
+    handleLogin [CALLS 90%] -> src/api/auth.ts:45
+    handleRegister [CALLS 90%] -> src/api/auth.ts:78
+    UserController [CALLS 85%] -> src/controllers/user.ts:12
+  Depth 2 (LIKELY AFFECTED):
+    authRouter [IMPORTS] -> src/routes/auth.ts
 ```
 
 Options: `maxDepth`, `minConfidence`, `relationTypes` (`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`), `includeTests`
 
-### Search with Cluster Context
+### Process-Grouped Search
 
 ```
-gitnexus_search({query: "authentication middleware", repo: "my-app"})
+query({query: "authentication middleware"})
 
-Results:
-  [1] Function: validateUser
-      File: src/auth/validate.ts
-      Cluster: Authentication
-      Score: 0.042 (hybrid: bm25 + semantic)
-  [2] Function: checkSession
-      File: src/auth/session.ts
-      Cluster: Authentication
-      Score: 0.038
+processes:
+  - summary: "LoginFlow"
+    priority: 0.042
+    symbol_count: 4
+    process_type: cross_community
+    step_count: 7
+
+process_symbols:
+  - name: validateUser
+    type: Function
+    filePath: src/auth/validate.ts
+    process_id: proc_login
+    step_index: 2
+
+definitions:
+  - name: AuthConfig
+    type: Interface
+    filePath: src/types/auth.ts
 ```
 
-Each result includes the functional cluster it belongs to and optional relationship connections with `depth=full`.
-
-### Explore a Process
+### Context (360-degree Symbol View)
 
 ```
-gitnexus_explore({name: "LoginFlow", type: "process", repo: "my-app"})
+context({name: "validateUser"})
 
-PROCESS: LoginFlow
-Type: cross_community | Steps: 7
+symbol:
+  uid: "Function:validateUser"
+  kind: Function
+  filePath: src/auth/validate.ts
+  startLine: 15
 
-TRACE:
-  1. handleLogin (API)
-  2. validateUser (Authentication)
-  3. checkRateLimit (RateLimiting)
-  4. hashPassword (Authentication)
-  5. createSession (Authentication)
-  6. storeSession (Database)
-  7. generateToken (Authentication)
+incoming:
+  calls: [handleLogin, handleRegister, UserController]
+  imports: [authRouter]
 
-CLUSTERS TOUCHED: API, Authentication, RateLimiting, Database
+outgoing:
+  calls: [checkPassword, createSession]
+
+processes:
+  - name: LoginFlow (step 2/7)
+  - name: RegistrationFlow (step 3/5)
+```
+
+### Detect Changes (Pre-Commit)
+
+```
+detect_changes({scope: "all"})
+
+summary:
+  changed_count: 12
+  affected_count: 3
+  changed_files: 4
+  risk_level: medium
+
+changed_symbols: [validateUser, AuthService, ...]
+affected_processes: [LoginFlow, RegistrationFlow, ...]
+```
+
+### Rename (Multi-File)
+
+```
+rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
+
+status: success
+files_affected: 5
+total_edits: 8
+graph_edits: 6     (high confidence)
+text_search_edits: 2  (review carefully)
+changes: [...]
 ```
 
 ### Cypher Queries
 
 ```cypher
 -- Find what calls auth functions with high confidence
-MATCH (c:Community {label: 'Authentication'})<-[:CodeRelation {type: 'MEMBER_OF'}]-(fn)
+MATCH (c:Community {heuristicLabel: 'Authentication'})<-[:CodeRelation {type: 'MEMBER_OF'}]-(fn)
 MATCH (caller)-[r:CodeRelation {type: 'CALLS'}]->(fn)
 WHERE r.confidence > 0.8
 RETURN caller.name, fn.name, r.confidence
@@ -509,20 +558,40 @@ ORDER BY r.confidence DESC
 
 ---
 
+## Wiki Generation
+
+Generate LLM-powered documentation from your knowledge graph:
+
+```bash
+# Requires an LLM API key (OPENAI_API_KEY, etc.)
+gitnexus wiki
+
+# Use a custom model or provider
+gitnexus wiki --model gpt-4o
+gitnexus wiki --base-url https://api.anthropic.com/v1
+
+# Force full regeneration
+gitnexus wiki --force
+```
+
+The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
+
+---
+
 ## Tech Stack
 
-| Layer | CLI | Web |
-|-------|-----|-----|
-| **Runtime** | Node.js (native) | Browser (WASM) |
-| **Parsing** | Tree-sitter native bindings | Tree-sitter WASM |
-| **Database** | KuzuDB native | KuzuDB WASM |
-| **Embeddings** | HuggingFace transformers | transformers.js (WebGPU/WASM) |
-| **Search** | BM25 + semantic + RRF | BM25 + semantic + RRF |
-| **Agent Interface** | MCP (stdio) | LangChain ReAct agent |
-| **Visualization** | — | Sigma.js + Graphology (WebGL) |
-| **Frontend** | — | React 18, TypeScript, Vite, Tailwind v4 |
-| **Clustering** | Graphology + Leiden | Graphology + Leiden |
-| **Concurrency** | Node.js async | Web Workers + Comlink |
+| Layer                     | CLI                                   | Web                                     |
+| ------------------------- | ------------------------------------- | --------------------------------------- |
+| **Runtime**         | Node.js (native)                      | Browser (WASM)                          |
+| **Parsing**         | Tree-sitter native bindings           | Tree-sitter WASM                        |
+| **Database**        | KuzuDB native                         | KuzuDB WASM                             |
+| **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
+| **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
+| **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
+| **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
+| **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
+| **Clustering**      | Graphology + Leiden                   | Graphology + Leiden                     |
+| **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
 
 ---
 
@@ -532,24 +601,28 @@ ORDER BY r.confidence DESC
 
 - [ ] **LLM Cluster Enrichment** — Semantic cluster names via LLM API
 - [ ] **AST Decorator Detection** — Parse @Controller, @Get, etc.
-- [ ] **Diff-Aware Impact** — Show blast radius for uncommitted changes
+- [ ] **Incremental Indexing** — Only re-index changed files
 
 ### Recently Completed
 
-- [x] **Multi-Repo MCP** — Global registry + lazy connection pool, one MCP server for all repos
-- [x] **Zero-Config Setup** — `gitnexus setup` auto-configures Cursor, Claude Code, OpenCode
-- [x] **Unified CLI + MCP** — `npm install -g gitnexus` for indexing and MCP server
-- [x] **Language-Aware Imports** — TS path aliases, Rust modules, Java wildcards, Go packages
-- [x] **Community Detection** — Leiden algorithm for functional clustering
-- [x] **Process Detection** — Entry point tracing with framework awareness
-- [x] **9 Language Support** — TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
-- [x] **Confidence Scoring** — Trust levels on CALLS edges (0.3-0.9)
-- [x] **Blast Radius Tool** — `impact` with minConfidence, relationTypes, includeTests
-- [x] **Hybrid Search** — BM25 + semantic + Reciprocal Rank Fusion + cluster context
-- [x] **Browser Embeddings** — snowflake-arctic-embed-xs (22M params)
-- [x] **Vector Index** — HNSW in KuzuDB for semantic search
-- [x] **Grounded Citations** — `[[file:line]]` format in AI responses
-- [x] **Multiple LLM Providers** — OpenAI, Azure, Gemini, Anthropic, Ollama
+- [X] **Wiki Generation** — LLM-powered docs from knowledge graph (`gitnexus wiki`)
+- [X] **Multi-File Rename** — Graph-aware rename with confidence tags (`rename` tool)
+- [X] **Git-Diff Impact** — Pre-commit change analysis (`detect_changes` tool)
+- [X] **Process-Grouped Search** — Query results grouped by execution flow (`query` tool)
+- [X] **360-Degree Context** — Categorized refs + process participation (`context` tool)
+- [X] **Claude Code Hooks** — Auto-augment grep/glob with graph context
+- [X] **MCP Prompts** — Guided workflows for impact detection and architecture docs
+- [X] **Multi-Repo MCP** — Global registry + lazy connection pool, one MCP server for all repos
+- [X] **Zero-Config Setup** — `gitnexus setup` auto-configures Cursor, Claude Code, OpenCode
+- [X] **Unified CLI + MCP** — `npm install -g gitnexus` for indexing and MCP server
+- [X] **Language-Aware Imports** — TS path aliases, Rust modules, Java wildcards, Go packages
+- [X] **Community Detection** — Leiden algorithm for functional clustering
+- [X] **Process Detection** — Entry point tracing with framework awareness
+- [X] **9 Language Support** — TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+- [X] **Confidence Scoring** — Trust levels on CALLS edges (0.3-0.9)
+- [X] **Blast Radius Tool** — `impact` with minConfidence, relationTypes, includeTests
+- [X] **Hybrid Search** — BM25 + semantic + Reciprocal Rank Fusion
+- [X] **Vector Index** — HNSW in KuzuDB for semantic search
 
 ---
 

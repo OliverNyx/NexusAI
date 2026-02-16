@@ -71,8 +71,12 @@ function closeOne(repoId: string): void {
   pool.delete(repoId);
 }
 
+const LOCK_RETRY_ATTEMPTS = 3;
+const LOCK_RETRY_DELAY_MS = 2000;
+
 /**
- * Initialize (or reuse) a connection for a specific repo
+ * Initialize (or reuse) a connection for a specific repo.
+ * Retries on lock errors (e.g., when `gitnexus analyze` is running).
  */
 export const initKuzu = async (repoId: string, dbPath: string): Promise<void> => {
   const existing = pool.get(repoId);
@@ -90,21 +94,42 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
 
   evictLRU();
 
-  // Silence stdout during KuzuDB init — native module may write to stdout
-  // which corrupts the MCP stdio protocol.
-  const origWrite = process.stdout.write;
-  process.stdout.write = (() => true) as any;
-  let db: kuzu.Database;
-  let conn: kuzu.Connection;
-  try {
-    db = new kuzu.Database(dbPath);
-    conn = new kuzu.Connection(db);
-  } finally {
-    process.stdout.write = origWrite;
+  // Open in read-only mode — MCP server never writes to the database.
+  // This allows multiple MCP server instances to read concurrently, and
+  // avoids lock conflicts when `gitnexus analyze` is writing.
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+    // Silence stdout during KuzuDB init — native module may write to stdout
+    // which corrupts the MCP stdio protocol.
+    const origWrite = process.stdout.write;
+    process.stdout.write = (() => true) as any;
+    try {
+      const db = new kuzu.Database(
+        dbPath,
+        0,     // bufferManagerSize (default)
+        false, // enableCompression (default)
+        true,  // readOnly
+      );
+      const conn = new kuzu.Connection(db);
+      process.stdout.write = origWrite;
+      pool.set(repoId, { db, conn, lastUsed: Date.now(), dbPath });
+      ensureIdleTimer();
+      return;
+    } catch (err: any) {
+      process.stdout.write = origWrite;
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const isLockError = lastError.message.includes('Could not set lock')
+        || lastError.message.includes('lock');
+      if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
+      // Wait before retrying — analyze may be mid-rebuild
+      await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+    }
   }
-  pool.set(repoId, { db, conn, lastUsed: Date.now(), dbPath });
 
-  ensureIdleTimer();
+  throw new Error(
+    `KuzuDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+    `Retry later. (${lastError?.message || 'unknown error'})`
+  );
 };
 
 /**

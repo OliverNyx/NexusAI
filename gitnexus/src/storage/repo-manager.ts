@@ -262,3 +262,39 @@ export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promis
 
   return valid;
 };
+
+// ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
+
+export interface CLIConfig {
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Get the path to the global CLI config file
+ */
+export const getGlobalConfigPath = (): string => {
+  return path.join(getGlobalDir(), 'config.json');
+};
+
+/**
+ * Load CLI config from ~/.gitnexus/config.json
+ */
+export const loadCLIConfig = async (): Promise<CLIConfig> => {
+  try {
+    const raw = await fs.readFile(getGlobalConfigPath(), 'utf-8');
+    return JSON.parse(raw) as CLIConfig;
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * Save CLI config to ~/.gitnexus/config.json
+ */
+export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
+  const dir = getGlobalDir();
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(getGlobalConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+};

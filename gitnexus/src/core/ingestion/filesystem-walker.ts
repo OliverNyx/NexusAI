@@ -8,6 +8,8 @@ export interface FileEntry {
   content: string;
 }
 
+const READ_CONCURRENCY = 32;
+
 export const walkRepository = async (
   repoPath: string,
   onProgress?: (current: number, total: number, filePath: string) => void
@@ -20,21 +22,27 @@ export const walkRepository = async (
 
   const filtered = files.filter(file => !shouldIgnorePath(file));
   const entries: FileEntry[] = [];
+  let processed = 0;
 
-  for (let i = 0; i < filtered.length; i++) {
-    const relativePath = filtered[i];
-    const fullPath = path.join(repoPath, relativePath);
-    try {
-      const content = await fs.readFile(fullPath, 'utf-8');
-      entries.push({ path: relativePath.replace(/\\/g, '/'), content });
-      onProgress?.(i + 1, filtered.length, relativePath);
-    } catch {
-      onProgress?.(i + 1, filtered.length, relativePath);
+  for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
+    const batch = filtered.slice(start, start + READ_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(relativePath =>
+        fs.readFile(path.join(repoPath, relativePath), 'utf-8')
+          .then(content => ({ path: relativePath.replace(/\\/g, '/'), content }))
+      )
+    );
+
+    for (const result of results) {
+      processed++;
+      if (result.status === 'fulfilled') {
+        entries.push(result.value);
+        onProgress?.(processed, filtered.length, result.value.path);
+      } else {
+        onProgress?.(processed, filtered.length, batch[results.indexOf(result)]);
+      }
     }
   }
 
   return entries;
 };
-
-
-

@@ -5,5 +5,3 @@ export const serveCommand = async (options?: { port?: string }) => {
   await createServer(port);
 };
 
-
-

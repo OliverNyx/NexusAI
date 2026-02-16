@@ -36,8 +36,10 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
-      // Try WebGPU first (Windows DirectX12), fall back to CPU
-      const devicesToTry: Array<'webgpu' | 'cpu'> = ['webgpu', 'cpu'];
+      // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
+      const isWindows = process.platform === 'win32';
+      const gpuDevice = isWindows ? 'dml' : 'cuda';
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
       
       for (const device of devicesToTry) {
         try {

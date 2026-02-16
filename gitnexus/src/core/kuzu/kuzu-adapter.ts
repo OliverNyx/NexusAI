@@ -11,8 +11,6 @@ import {
 } from './schema.js';
 import { generateAllCSVs } from './csv-generator.js';
 
-const isDev = process.env.NODE_ENV === 'development';
-
 let db: kuzu.Database | null = null;
 let conn: kuzu.Connection | null = null;
 

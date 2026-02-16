@@ -223,26 +223,63 @@ const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring']
  * Install GitNexus skills to a target directory.
  * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
  * following the Agent Skills standard (both Cursor and Claude Code).
+ *
+ * Supports two source layouts:
+ *   - Flat file:  skills/{name}.md           → copied as SKILL.md
+ *   - Directory:  skills/{name}/SKILL.md     → copied recursively (includes references/, etc.)
  */
 async function installSkillsTo(targetDir: string): Promise<string[]> {
   const installed: string[] = [];
-  
+  const skillsRoot = path.join(__dirname, '..', '..', 'skills');
+
   for (const skillName of SKILL_NAMES) {
-    const sourcePath = path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
     const skillDir = path.join(targetDir, `gitnexus-${skillName}`);
-    const destPath = path.join(skillDir, 'SKILL.md');
-    
+
     try {
-      const content = await fs.readFile(sourcePath, 'utf-8');
-      await fs.mkdir(skillDir, { recursive: true });
-      await fs.writeFile(destPath, content, 'utf-8');
-      installed.push(skillName);
+      // Try directory-based skill first (skills/{name}/SKILL.md)
+      const dirSource = path.join(skillsRoot, skillName);
+      const dirSkillFile = path.join(dirSource, 'SKILL.md');
+
+      let isDirectory = false;
+      try {
+        const stat = await fs.stat(dirSource);
+        isDirectory = stat.isDirectory();
+      } catch { /* not a directory */ }
+
+      if (isDirectory) {
+        await copyDirRecursive(dirSource, skillDir);
+        installed.push(skillName);
+      } else {
+        // Fall back to flat file (skills/{name}.md)
+        const flatSource = path.join(skillsRoot, `${skillName}.md`);
+        const content = await fs.readFile(flatSource, 'utf-8');
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+        installed.push(skillName);
+      }
     } catch {
-      // Source skill file not found — skip
+      // Source skill not found — skip
     }
   }
-  
+
   return installed;
+}
+
+/**
+ * Recursively copy a directory tree.
+ */
+async function copyDirRecursive(src: string, dest: string): Promise<void> {
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirRecursive(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
+    }
+  }
 }
 
 /**

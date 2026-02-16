@@ -11,6 +11,16 @@ import { LocalBackend } from '../mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../storage/repo-manager.js';
 
 export const mcpCommand = async () => {
+  // Prevent unhandled errors from crashing the MCP server process.
+  // KuzuDB lock conflicts and transient errors should degrade gracefully.
+  process.on('uncaughtException', (err) => {
+    console.error(`GitNexus MCP: uncaught exception — ${err.message}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    console.error(`GitNexus MCP: unhandled rejection — ${msg}`);
+  });
+
   // Load all registered repos
   const entries = await listRegisteredRepos({ validate: true });
 

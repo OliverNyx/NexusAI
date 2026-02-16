@@ -6,8 +6,16 @@ import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { WorkerPool } from './workers/worker-pool.js';
+import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage } from './workers/parse-worker.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
+
+export interface WorkerExtractedData {
+  imports: ExtractedImport[];
+  calls: ExtractedCall[];
+  heritage: ExtractedHeritage[];
+}
 
 // ============================================================================
 // EXPORT DETECTION - Language-specific visibility detection
@@ -16,7 +24,7 @@ export type FileProgressCallback = (current: number, total: number, filePath: st
 /**
  * Check if a symbol (function, class, etc.) is exported/public
  * Handles all 9 supported languages with explicit logic
- * 
+ *
  * @param node - The AST node for the symbol name
  * @param name - The symbol name
  * @param language - The programming language
@@ -24,14 +32,14 @@ export type FileProgressCallback = (current: number, total: number, filePath: st
  */
 const isNodeExported = (node: any, name: string, language: string): boolean => {
   let current = node;
-  
+
   switch (language) {
     // JavaScript/TypeScript: Check for export keyword in ancestors
     case 'javascript':
     case 'typescript':
       while (current) {
         const type = current.type;
-        if (type === 'export_statement' || 
+        if (type === 'export_statement' ||
             type === 'export_specifier' ||
             type === 'lexical_declaration' && current.parent?.type === 'export_statement') {
           return true;
@@ -43,11 +51,11 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
         current = current.parent;
       }
       return false;
-    
+
     // Python: Public if no leading underscore (convention)
     case 'python':
       return !name.startsWith('_');
-    
+
     // Java: Check for 'public' modifier
     // In tree-sitter Java, modifiers are siblings of the name node, not parents
     case 'java':
@@ -72,7 +80,7 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
         current = current.parent;
       }
       return false;
-    
+
     // C#: Check for 'public' modifier in ancestors
     case 'csharp':
       while (current) {
@@ -82,14 +90,14 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
         current = current.parent;
       }
       return false;
-    
+
     // Go: Uppercase first letter = exported
     case 'go':
       if (name.length === 0) return false;
       const first = name[0];
       // Must be uppercase letter (not a number or symbol)
       return first === first.toUpperCase() && first !== first.toLowerCase();
-    
+
     // Rust: Check for 'pub' visibility modifier
     case 'rust':
       while (current) {
@@ -99,66 +107,125 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
         current = current.parent;
       }
       return false;
-    
+
     // C/C++: No native export concept at language level
     // Entry points will be detected via name patterns (main, etc.)
     case 'c':
     case 'cpp':
       return false;
-    
+
     default:
       return false;
   }
 };
 
-export const processParsing = async (
-  graph: KnowledgeGraph, 
+// ============================================================================
+// Worker-based parallel parsing
+// ============================================================================
+
+const processParsingWithWorkers = async (
+  graph: KnowledgeGraph,
+  files: { path: string; content: string }[],
+  symbolTable: SymbolTable,
+  astCache: ASTCache,
+  workerPool: WorkerPool,
+  onFileProgress?: FileProgressCallback
+): Promise<WorkerExtractedData> => {
+  // Filter to parseable files only
+  const parseableFiles: ParseWorkerInput[] = [];
+  for (const file of files) {
+    const lang = getLanguageFromFilename(file.path);
+    if (lang) {
+      parseableFiles.push({ path: file.path, content: file.content });
+    }
+  }
+
+  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [] };
+
+  const total = files.length;
+
+  // Dispatch to worker pool — pool handles splitting into chunks
+  // Workers send progress messages during parsing so the bar updates smoothly
+  const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
+    parseableFiles,
+    (filesProcessed) => {
+      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+    }
+  );
+
+  // Merge results from all workers into graph and symbol table
+  const allImports: ExtractedImport[] = [];
+  const allCalls: ExtractedCall[] = [];
+  const allHeritage: ExtractedHeritage[] = [];
+  for (const result of chunkResults) {
+    for (const node of result.nodes) {
+      graph.addNode({
+        id: node.id,
+        label: node.label as any,
+        properties: node.properties,
+      });
+    }
+
+    for (const rel of result.relationships) {
+      graph.addRelationship(rel);
+    }
+
+    for (const sym of result.symbols) {
+      symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type);
+    }
+
+    allImports.push(...result.imports);
+    allCalls.push(...result.calls);
+    allHeritage.push(...result.heritage);
+  }
+
+  // Final progress
+  onFileProgress?.(total, total, 'done');
+  return { imports: allImports, calls: allCalls, heritage: allHeritage };
+};
+
+// ============================================================================
+// Sequential fallback (original implementation)
+// ============================================================================
+
+const processParsingSequential = async (
+  graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTable,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback
 ) => {
- 
   const parser = await loadParser();
   const total = files.length;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    
-    // Report progress for each file
+
     onFileProgress?.(i + 1, total, file.path);
-    
-    // Yield to event loop periodically so spinner can update
+
     if (i % 20 === 0) await yieldToEventLoop();
-    
+
     const language = getLanguageFromFilename(file.path);
 
     if (!language) continue;
 
     await loadLanguage(language, file.path);
-    
-    // 3. Parse the text content into an AST
-    // Use larger bufferSize for files > 32KB (default limit)
+
     let tree;
     try {
       tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
     } catch (parseError) {
-      // Skip files that can't be parsed (binary, encoding issues, etc.)
       console.warn(`Skipping unparseable file: ${file.path}`);
       continue;
     }
-    
-    // Store in cache immediately (this might evict an old one)
+
     astCache.set(file.path, tree);
-    
-    // 4. Get the specific query string for this language
+
     const queryString = LANGUAGE_QUERIES[language];
     if (!queryString) {
       continue;
     }
 
-    // 5. Run the query against the AST root node
-    // This looks for patterns like (function_declaration)
     let query;
     let matches;
     try {
@@ -170,21 +237,17 @@ export const processParsing = async (
       continue;
     }
 
-    // 6. Process every match found
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
-      
+
       match.captures.forEach(c => {
         captureMap[c.name] = c.node;
       });
 
-      // Skip imports here - they are handled by import-processor.ts
-      // which creates proper File -> IMPORTS -> File relationships
       if (captureMap['import']) {
         return;
       }
 
-      // Skip call expressions - they are handled by call-processor.ts
       if (captureMap['call']) {
         return;
       }
@@ -193,43 +256,34 @@ export const processParsing = async (
       if (!nameNode) return;
 
       const nodeName = nameNode.text;
-      
+
       let nodeLabel = 'CodeElement';
-      
-      // Core types
+
       if (captureMap['definition.function']) nodeLabel = 'Function';
       else if (captureMap['definition.class']) nodeLabel = 'Class';
       else if (captureMap['definition.interface']) nodeLabel = 'Interface';
       else if (captureMap['definition.method']) nodeLabel = 'Method';
-      // Struct types (C, C++, Go, Rust, C#)
       else if (captureMap['definition.struct']) nodeLabel = 'Struct';
-      // Enum types
       else if (captureMap['definition.enum']) nodeLabel = 'Enum';
-      // Namespace/Module (C++, C#, Rust)
       else if (captureMap['definition.namespace']) nodeLabel = 'Namespace';
       else if (captureMap['definition.module']) nodeLabel = 'Module';
-      // Rust-specific
       else if (captureMap['definition.trait']) nodeLabel = 'Trait';
       else if (captureMap['definition.impl']) nodeLabel = 'Impl';
       else if (captureMap['definition.type']) nodeLabel = 'TypeAlias';
       else if (captureMap['definition.const']) nodeLabel = 'Const';
       else if (captureMap['definition.static']) nodeLabel = 'Static';
-      // C-specific
       else if (captureMap['definition.typedef']) nodeLabel = 'Typedef';
       else if (captureMap['definition.macro']) nodeLabel = 'Macro';
       else if (captureMap['definition.union']) nodeLabel = 'Union';
-      // C#-specific
       else if (captureMap['definition.property']) nodeLabel = 'Property';
       else if (captureMap['definition.record']) nodeLabel = 'Record';
       else if (captureMap['definition.delegate']) nodeLabel = 'Delegate';
-      // Java-specific
       else if (captureMap['definition.annotation']) nodeLabel = 'Annotation';
       else if (captureMap['definition.constructor']) nodeLabel = 'Constructor';
-      // C++ template
       else if (captureMap['definition.template']) nodeLabel = 'Template';
 
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
-      
+
       const node: GraphNode = {
         id: nodeId,
         label: nodeLabel as any,
@@ -245,13 +299,12 @@ export const processParsing = async (
 
       graph.addNode(node);
 
-      // Register in Symbol Table (only definitions, not imports)
       symbolTable.add(file.path, nodeName, nodeId, nodeLabel);
 
       const fileId = generateId('File', file.path);
-      
+
       const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-      
+
       const relationship: GraphRelationship = {
         id: relId,
         sourceId: fileId,
@@ -263,7 +316,30 @@ export const processParsing = async (
 
       graph.addRelationship(relationship);
     });
-    
-    // Don't delete tree here - LRU cache handles cleanup when evicted
   }
+};
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+export const processParsing = async (
+  graph: KnowledgeGraph,
+  files: { path: string; content: string }[],
+  symbolTable: SymbolTable,
+  astCache: ASTCache,
+  onFileProgress?: FileProgressCallback,
+  workerPool?: WorkerPool,
+): Promise<WorkerExtractedData | null> => {
+  if (workerPool) {
+    try {
+      return await processParsingWithWorkers(graph, files, symbolTable, astCache, workerPool, onFileProgress);
+    } catch (err) {
+      console.warn('Worker pool parsing failed, falling back to sequential:', err);
+    }
+  }
+
+  // Fallback: sequential parsing (no pre-extracted data)
+  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
+  return null;
 };

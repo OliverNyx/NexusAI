@@ -79,7 +79,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = new Server(
     {
       name: 'gitnexus',
-      version: '1.1.0',
+      version: '1.1.9',
     },
     {
       capabilities: {

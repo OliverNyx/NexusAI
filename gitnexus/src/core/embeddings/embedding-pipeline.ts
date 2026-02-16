@@ -128,12 +128,14 @@ const createVectorIndex = async (
  * @param executeWithReusedStatement - Function to execute with reused prepared statement
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
+ * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   executeWithReusedStatement: (cypher: string, paramsList: Array<Record<string, any>>) => Promise<void>,
   onProgress: EmbeddingProgressCallback,
-  config: Partial<EmbeddingConfig> = {}
+  config: Partial<EmbeddingConfig> = {},
+  skipNodeIds?: Set<string>,
 ): Promise<void> => {
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
 
@@ -146,11 +148,10 @@ export const runEmbeddingPipeline = async (
     });
 
     await initEmbedder((modelProgress: ModelProgress) => {
-      // Report model download progress
       const downloadPercent = modelProgress.progress ?? 0;
       onProgress({
         phase: 'loading-model',
-        percent: Math.round(downloadPercent * 0.2), // 0-20% for model loading
+        percent: Math.round(downloadPercent * 0.2),
         modelDownloadPercent: downloadPercent,
       });
     }, finalConfig);
@@ -166,7 +167,17 @@ export const runEmbeddingPipeline = async (
     }
 
     // Phase 2: Query embeddable nodes
-    const nodes = await queryEmbeddableNodes(executeQuery);
+    let nodes = await queryEmbeddableNodes(executeQuery);
+
+    // Incremental mode: filter out nodes that already have embeddings
+    if (skipNodeIds && skipNodeIds.size > 0) {
+      const beforeCount = nodes.length;
+      nodes = nodes.filter(n => !skipNodeIds.has(n.id));
+      if (isDev) {
+        console.log(`📦 Incremental embeddings: ${beforeCount} total, ${skipNodeIds.size} cached, ${nodes.length} to embed`);
+      }
+    }
+
     const totalNodes = nodes.length;
 
     if (isDev) {

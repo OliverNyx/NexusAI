@@ -18,30 +18,36 @@ AI coding tools don't understand your codebase structure. They edit a function w
 ## Quick Start
 
 ```bash
-# Install
-npm install -g gitnexus
-
-# One-time: configure MCP for your editors
-gitnexus setup
-
-# Index your repository (run from repo root)
-gitnexus analyze
-
-# Done! Open your editor — MCP connects automatically.
+# Index your repo (run from repo root)
+npx gitnexus analyze
 ```
 
-Or without installing globally:
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
-```bash
-npx gitnexus setup       # one-time
-npx gitnexus analyze     # per repo
-```
+To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
-The `setup` command auto-detects Cursor, Claude Code, and OpenCode, then writes the correct global MCP config. You only run it once.
+`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
+
+### Editor Support
+
+| Editor | MCP | Skills | Hooks (auto-augment) | Support |
+|--------|-----|--------|---------------------|---------|
+| **Claude Code** | Yes | Yes | Yes (PreToolUse) | **Full** |
+| **Cursor** | Yes | Yes | — | MCP + Skills |
+| **Windsurf** | Yes | — | — | MCP |
+| **OpenCode** | Yes | Yes | — | MCP + Skills |
+
+> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
 
 ## MCP Setup (manual)
 
 If you prefer to configure manually instead of using `gitnexus setup`:
+
+### Claude Code (full support — MCP + skills + hooks)
+
+```bash
+claude mcp add gitnexus -- npx -y gitnexus@latest mcp
+```
 
 ### Cursor / Windsurf
 
@@ -56,12 +62,6 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
     }
   }
 }
-```
-
-### Claude Code
-
-```bash
-claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
 
 ### OpenCode
@@ -100,67 +100,58 @@ Your AI agent gets these tools automatically:
 | Tool | What It Does | `repo` Param |
 |------|-------------|--------------|
 | `list_repos` | Discover all indexed repositories | — |
-| `search` | Hybrid search (BM25 + semantic) with cluster context | Optional |
-| `overview` | List all clusters and processes | Optional |
-| `explore` | Deep dive on a symbol, cluster, or process | Optional |
-| `impact` | Blast radius analysis | Optional |
+| `query` | Process-grouped hybrid search (BM25 + semantic + RRF) | Optional |
+| `context` | 360-degree symbol view — categorized refs, process participation | Optional |
+| `impact` | Blast radius analysis with depth grouping and confidence | Optional |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes | Optional |
+| `rename` | Multi-file coordinated rename with graph + text search | Optional |
 | `cypher` | Raw Cypher graph queries | Optional |
-| `analyze` | Index or re-index a repository | Optional |
 
-> With one indexed repo, the `repo` param is optional. With multiple, specify which: `search({query: "auth", repo: "my-app"})`.
+> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
 
 ## MCP Resources
 
 | Resource | Purpose |
 |----------|---------|
 | `gitnexus://repos` | List all indexed repositories (read first) |
-| `gitnexus://repo/{name}/context` | Codebase stats and overview |
-| `gitnexus://repo/{name}/clusters` | All functional clusters |
+| `gitnexus://repo/{name}/context` | Codebase stats, staleness check, and available tools |
+| `gitnexus://repo/{name}/clusters` | All functional clusters with cohesion scores |
 | `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details |
 | `gitnexus://repo/{name}/processes` | All execution flows |
-| `gitnexus://repo/{name}/process/{name}` | Full process trace |
+| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps |
 | `gitnexus://repo/{name}/schema` | Graph schema for Cypher queries |
+
+## MCP Prompts
+
+| Prompt | What It Does |
+|--------|-------------|
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level |
+| `generate_map` | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 ## CLI Commands
 
 ```bash
-gitnexus setup                # Configure MCP for your editors (one-time)
-gitnexus analyze [path]       # Index a repository (or update stale index)
-gitnexus analyze --force      # Force full re-index
-gitnexus mcp                  # Start MCP server (stdio) — serves all indexed repos
-gitnexus serve                # Start HTTP server for web UI
-gitnexus list                 # List all indexed repositories
-gitnexus status               # Show index status for current repo
-gitnexus clean                # Delete index for current repo
-gitnexus clean --all          # Delete all indexes
+gitnexus setup                    # Configure MCP for your editors (one-time)
+gitnexus analyze [path]           # Index a repository (or update stale index)
+gitnexus analyze --force          # Force full re-index
+gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
+gitnexus serve                   # Start HTTP server for web UI
+gitnexus list                    # List all indexed repositories
+gitnexus status                  # Show index status for current repo
+gitnexus clean                   # Delete index for current repo
+gitnexus clean --all --force     # Delete all indexes
+gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
+gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
 ```
 
 ## Multi-Repo Support
 
-GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically with lazy KuzuDB connections.
+GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically with lazy KuzuDB connections (max 5 concurrent, evicted after 5 minutes idle).
 
 ## Supported Languages
 
 TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
-
-## How Impact Analysis Works
-
-```
-gitnexus_impact({target: "UserService", direction: "upstream", repo: "my-app"})
-
-TARGET: Class UserService (src/services/user.ts)
-
-UPSTREAM (what depends on this):
-  Depth 1 (direct callers):
-    handleLogin [CALLS 90%] → src/api/auth.ts:45
-    handleRegister [CALLS 90%] → src/api/auth.ts:78
-  Depth 2:
-    authRouter [IMPORTS] → src/routes/auth.ts
-
-8 files affected, 3 clusters touched
-```
-
-Options: `maxDepth`, `minConfidence`, `relationTypes`, `includeTests`
 
 ## Agent Skills
 
@@ -171,7 +162,7 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Impact Analysis** — Analyze blast radius before changes
 - **Refactoring** — Plan safe refactors using dependency mapping
 
-These are installed automatically to `.claude/skills/` when you run `gitnexus analyze`.
+Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global).
 
 ## Requirements
 

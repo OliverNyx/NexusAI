@@ -183,8 +183,14 @@ export class LocalBackend {
     const handle = this.repos.get(repoId);
     if (!handle) throw new Error(`Unknown repo: ${repoId}`);
 
-    await initKuzu(repoId, handle.kuzuPath);
-    this.initializedRepos.add(repoId);
+    try {
+      await initKuzu(repoId, handle.kuzuPath);
+      this.initializedRepos.add(repoId);
+    } catch (err: any) {
+      // If lock error, mark as not initialized so next call retries
+      this.initializedRepos.delete(repoId);
+      throw err;
+    }
   }
 
   // ─── Public Getters ──────────────────────────────────────────────

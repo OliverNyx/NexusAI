@@ -8,12 +8,15 @@ import { mcpCommand } from './mcp.js';
 import { cleanCommand } from './clean.js';
 import { setupCommand } from './setup.js';
 import { augmentCommand } from './augment.js';
+import { wikiCommand } from './wiki.js';
+import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
+import { evalServerCommand } from './eval-server.js';
 const program = new Command();
 
 program
   .name('gitnexus')
   .description('GitNexus local CLI and MCP server')
-  .version('1.1.1');
+  .version('1.1.9');
 
 program
   .command('setup')
@@ -56,8 +59,63 @@ program
   .action(cleanCommand);
 
 program
+  .command('wiki [path]')
+  .description('Generate repository wiki from knowledge graph')
+  .option('-f, --force', 'Force full regeneration even if up to date')
+  .option('--model <model>', 'LLM model name (default: gpt-4o-mini)')
+  .option('--base-url <url>', 'LLM API base URL (default: OpenAI)')
+  .option('--api-key <key>', 'LLM API key (saved to ~/.gitnexus/config.json)')
+  .action(wikiCommand);
+
+program
   .command('augment <pattern>')
   .description('Augment a search pattern with knowledge graph context (used by hooks)')
   .action(augmentCommand);
+
+// ─── Direct Tool Commands (no MCP overhead) ────────────────────────
+// These invoke LocalBackend directly for use in eval, scripts, and CI.
+
+program
+  .command('query <search_query>')
+  .description('Search the knowledge graph for execution flows related to a concept')
+  .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
+  .option('-c, --context <text>', 'Task context to improve ranking')
+  .option('-g, --goal <text>', 'What you want to find')
+  .option('-l, --limit <n>', 'Max processes to return (default: 5)')
+  .option('--content', 'Include full symbol source code')
+  .action(queryCommand);
+
+program
+  .command('context [name]')
+  .description('360-degree view of a code symbol: callers, callees, processes')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('--content', 'Include full symbol source code')
+  .action(contextCommand);
+
+program
+  .command('impact <target>')
+  .description('Blast radius analysis: what breaks if you change a symbol')
+  .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('--depth <n>', 'Max relationship depth (default: 3)')
+  .option('--include-tests', 'Include test files in results')
+  .action(impactCommand);
+
+program
+  .command('cypher <query>')
+  .description('Execute raw Cypher query against the knowledge graph')
+  .option('-r, --repo <name>', 'Target repository')
+  .action(cypherCommand);
+
+// ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
+
+program
+  .command('eval-server')
+  .description('Start lightweight HTTP server for fast tool calls during evaluation')
+  .option('-p, --port <port>', 'Port number', '4848')
+  .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
+  .action(evalServerCommand);
 
 program.parse(process.argv);

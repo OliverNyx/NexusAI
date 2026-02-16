@@ -8,6 +8,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import type { ExtractedImport } from './workers/parse-worker.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -139,14 +140,101 @@ function tryResolveWithExtensions(
 }
 
 /**
- * Suffix-based resolution: try progressively shorter suffixes against all files.
- * Used for package-style imports (Java, Python, etc.).
+ * Build a suffix index for O(1) endsWith lookups.
+ * Maps every possible path suffix to its original file path.
+ * e.g. for "src/com/example/Foo.java":
+ *   "Foo.java" -> "src/com/example/Foo.java"
+ *   "example/Foo.java" -> "src/com/example/Foo.java"
+ *   "com/example/Foo.java" -> "src/com/example/Foo.java"
+ *   etc.
+ */
+export interface SuffixIndex {
+  /** Exact suffix lookup (case-sensitive) */
+  get(suffix: string): string | undefined;
+  /** Case-insensitive suffix lookup */
+  getInsensitive(suffix: string): string | undefined;
+  /** Get all files in a directory suffix */
+  getFilesInDir(dirSuffix: string, extension: string): string[];
+}
+
+function buildSuffixIndex(normalizedFileList: string[], allFileList: string[]): SuffixIndex {
+  // Map: normalized suffix -> original file path
+  const exactMap = new Map<string, string>();
+  // Map: lowercase suffix -> original file path
+  const lowerMap = new Map<string, string>();
+  // Map: directory suffix -> list of file paths in that directory
+  const dirMap = new Map<string, string[]>();
+
+  for (let i = 0; i < normalizedFileList.length; i++) {
+    const normalized = normalizedFileList[i];
+    const original = allFileList[i];
+    const parts = normalized.split('/');
+
+    // Index all suffixes: "a/b/c.java" -> ["c.java", "b/c.java", "a/b/c.java"]
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const suffix = parts.slice(j).join('/');
+      // Only store first match (longest path wins for ambiguous suffixes)
+      if (!exactMap.has(suffix)) {
+        exactMap.set(suffix, original);
+      }
+      const lower = suffix.toLowerCase();
+      if (!lowerMap.has(lower)) {
+        lowerMap.set(lower, original);
+      }
+    }
+
+    // Index directory membership
+    const lastSlash = normalized.lastIndexOf('/');
+    if (lastSlash >= 0) {
+      // Build all directory suffixes
+      const dirParts = parts.slice(0, -1);
+      const fileName = parts[parts.length - 1];
+      const ext = fileName.substring(fileName.lastIndexOf('.'));
+
+      for (let j = dirParts.length - 1; j >= 0; j--) {
+        const dirSuffix = dirParts.slice(j).join('/');
+        const key = `${dirSuffix}:${ext}`;
+        let list = dirMap.get(key);
+        if (!list) {
+          list = [];
+          dirMap.set(key, list);
+        }
+        list.push(original);
+      }
+    }
+  }
+
+  return {
+    get: (suffix: string) => exactMap.get(suffix),
+    getInsensitive: (suffix: string) => lowerMap.get(suffix.toLowerCase()),
+    getFilesInDir: (dirSuffix: string, extension: string) => {
+      return dirMap.get(`${dirSuffix}:${extension}`) || [];
+    },
+  };
+}
+
+/**
+ * Suffix-based resolution using index. O(1) per lookup instead of O(files).
  */
 function suffixResolve(
   pathParts: string[],
   normalizedFileList: string[],
   allFileList: string[],
+  index?: SuffixIndex,
 ): string | null {
+  if (index) {
+    for (let i = 0; i < pathParts.length; i++) {
+      const suffix = pathParts.slice(i).join('/');
+      for (const ext of EXTENSIONS) {
+        const suffixWithExt = suffix + ext;
+        const result = index.get(suffixWithExt) || index.getInsensitive(suffixWithExt);
+        if (result) return result;
+      }
+    }
+    return null;
+  }
+
+  // Fallback: linear scan (for backward compatibility)
   for (let i = 0; i < pathParts.length; i++) {
     const suffix = pathParts.slice(i).join('/');
     for (const ext of EXTENSIONS) {
@@ -182,6 +270,7 @@ const resolveImportPath = (
   resolveCache: Map<string, string | null>,
   language: SupportedLanguages,
   tsconfigPaths: TsconfigPaths | null,
+  index?: SuffixIndex,
 ): string | null => {
   const cacheKey = `${currentFile}::${importPath}`;
   if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
@@ -211,7 +300,7 @@ const resolveImportPath = (
 
         // Try suffix matching as fallback
         const parts = rewritten.split('/').filter(Boolean);
-        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList);
+        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
         if (suffixResult) return cache(suffixResult);
       }
     }
@@ -255,7 +344,7 @@ const resolveImportPath = (
     : importPath.replace(/\./g, '/');
   const pathParts = pathLike.split('/').filter(Boolean);
 
-  const resolved = suffixResolve(pathParts, normalizedFileList, allFileList);
+  const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
   return cache(resolved);
 };
 
@@ -353,16 +442,31 @@ function resolveJavaWildcard(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  index?: SuffixIndex,
 ): string[] {
   // "com.example.util.*" -> "com/example/util"
   const packagePath = importPath.slice(0, -2).replace(/\./g, '/');
-  const packageSuffix = '/' + packagePath + '/';
 
+  if (index) {
+    // Use directory index: get all .java files in this package directory
+    const candidates = index.getFilesInDir(packagePath, '.java');
+    // Filter to only direct children (no subdirectories)
+    const packageSuffix = '/' + packagePath + '/';
+    return candidates.filter(f => {
+      const normalized = f.replace(/\\/g, '/');
+      const idx = normalized.indexOf(packageSuffix);
+      if (idx < 0) return false;
+      const afterPkg = normalized.substring(idx + packageSuffix.length);
+      return !afterPkg.includes('/');
+    });
+  }
+
+  // Fallback: linear scan
+  const packageSuffix = '/' + packagePath + '/';
   const matches: string[] = [];
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
     if (normalized.includes(packageSuffix) && normalized.endsWith('.java')) {
-      // Ensure the file is directly in the package (not a subdirectory)
       const afterPackage = normalized.substring(normalized.indexOf(packageSuffix) + packageSuffix.length);
       if (!afterPackage.includes('/')) {
         matches.push(allFileList[i]);
@@ -380,6 +484,7 @@ function resolveJavaStaticImport(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  index?: SuffixIndex,
 ): string | null {
   // Static imports look like: com.example.Constants.VALUE or com.example.Constants.*
   // The last segment is a member name (field/method) if it starts with lowercase or is ALL_CAPS
@@ -390,10 +495,17 @@ function resolveJavaStaticImport(
   // If last segment is a wildcard or ALL_CAPS constant or starts with lowercase, strip it
   if (lastSeg === '*' || /^[a-z]/.test(lastSeg) || /^[A-Z_]+$/.test(lastSeg)) {
     const classPath = segments.slice(0, -1).join('/');
-    const classSuffix = '/' + classPath + '.java';
+    const classSuffix = classPath + '.java';
+
+    if (index) {
+      return index.get(classSuffix) || index.getInsensitive(classSuffix) || null;
+    }
+
+    // Fallback: linear scan
+    const fullSuffix = '/' + classSuffix;
     for (let i = 0; i < normalizedFileList.length; i++) {
-      if (normalizedFileList[i].endsWith(classSuffix) ||
-          normalizedFileList[i].toLowerCase().endsWith(classSuffix.toLowerCase())) {
+      if (normalizedFileList[i].endsWith(fullSuffix) ||
+          normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
         return allFileList[i];
       }
     }
@@ -458,6 +570,8 @@ export const processImports = async (
   const allFileList = files.map(f => f.path);
   // Pre-compute normalized file list once (forward slashes)
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
+  // Build suffix index for O(1) lookups
+  const index = buildSuffixIndex(normalizedFileList, allFileList);
 
   // Track import statistics
   let totalImportsFound = 0;
@@ -517,6 +631,8 @@ export const processImports = async (
         continue;
       }
       wasReparsed = true;
+      // Cache re-parsed tree so call/heritage phases get hits
+      astCache.set(file.path, tree);
     }
 
     let query;
@@ -561,7 +677,7 @@ export const processImports = async (
         // ---- Java: handle wildcards and static imports specially ----
         if (language === SupportedLanguages.Java) {
           if (rawImportPath.endsWith('.*')) {
-            const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList);
+            const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
             for (const matchedFile of matchedFiles) {
               addImportEdge(file.path, matchedFile);
             }
@@ -569,7 +685,7 @@ export const processImports = async (
           }
 
           // Try static import resolution (strip member name)
-          const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList);
+          const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
           if (staticResolved) {
             addImportEdge(file.path, staticResolved);
             return;
@@ -599,6 +715,7 @@ export const processImports = async (
           resolveCache,
           language,
           tsconfigPaths,
+          index,
         );
 
         if (resolvedPath) {
@@ -607,13 +724,160 @@ export const processImports = async (
       }
     });
 
-    // If re-parsed just for this, delete the tree to save memory
-    if (wasReparsed) {
-      (tree as any).delete?.();
-    }
+    // Tree is now owned by the LRU cache — no manual delete needed
   }
 
   if (isDev) {
     console.log(`📊 Import processing complete: ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
+  }
+};
+
+// ============================================================================
+// FAST PATH: Resolve pre-extracted imports (no parsing needed)
+// ============================================================================
+
+export const processImportsFromExtracted = async (
+  graph: KnowledgeGraph,
+  files: { path: string; content: string }[],
+  extractedImports: ExtractedImport[],
+  importMap: ImportMap,
+  onProgress?: (current: number, total: number) => void,
+  repoRoot?: string,
+) => {
+  const allFilePaths = new Set(files.map(f => f.path));
+  const resolveCache = new Map<string, string | null>();
+  const allFileList = files.map(f => f.path);
+  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
+  // Build suffix index for O(1) lookups
+  const index = buildSuffixIndex(normalizedFileList, allFileList);
+
+  let totalImportsFound = 0;
+  let totalImportsResolved = 0;
+
+  const effectiveRoot = repoRoot || '';
+  const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
+  const goModule = await loadGoModulePath(effectiveRoot);
+
+  const addImportEdge = (filePath: string, resolvedPath: string) => {
+    const sourceId = generateId('File', filePath);
+    const targetId = generateId('File', resolvedPath);
+    const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
+
+    totalImportsResolved++;
+
+    graph.addRelationship({
+      id: relId,
+      sourceId,
+      targetId,
+      type: 'IMPORTS',
+      confidence: 1.0,
+      reason: '',
+    });
+
+    if (!importMap.has(filePath)) {
+      importMap.set(filePath, new Set());
+    }
+    importMap.get(filePath)!.add(resolvedPath);
+  };
+
+  // Group by file for progress reporting (users see file count, not import count)
+  const importsByFile = new Map<string, ExtractedImport[]>();
+  for (const imp of extractedImports) {
+    let list = importsByFile.get(imp.filePath);
+    if (!list) {
+      list = [];
+      importsByFile.set(imp.filePath, list);
+    }
+    list.push(imp);
+  }
+
+  const totalFiles = importsByFile.size;
+  let filesProcessed = 0;
+
+  // Pre-build a suffix index for O(1) suffix lookups instead of O(n) linear scans
+  const suffixIndex = new Map<string, string[]>();
+  for (let i = 0; i < normalizedFileList.length; i++) {
+    const normalized = normalizedFileList[i];
+    // Index by last path segment (filename) for fast suffix matching
+    const lastSlash = normalized.lastIndexOf('/');
+    const filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+    let list = suffixIndex.get(filename);
+    if (!list) {
+      list = [];
+      suffixIndex.set(filename, list);
+    }
+    list.push(allFileList[i]);
+  }
+
+  for (const [filePath, fileImports] of importsByFile) {
+    filesProcessed++;
+    if (filesProcessed % 100 === 0) {
+      onProgress?.(filesProcessed, totalFiles);
+      await yieldToEventLoop();
+    }
+
+    for (const { rawImportPath, language } of fileImports) {
+      totalImportsFound++;
+
+      // Check resolve cache first
+      const cacheKey = `${filePath}::${rawImportPath}`;
+      if (resolveCache.has(cacheKey)) {
+        const cached = resolveCache.get(cacheKey);
+        if (cached) addImportEdge(filePath, cached);
+        continue;
+      }
+
+      // Java: handle wildcards and static imports
+      if (language === SupportedLanguages.Java) {
+        if (rawImportPath.endsWith('.*')) {
+          const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
+          for (const matchedFile of matchedFiles) {
+            addImportEdge(filePath, matchedFile);
+          }
+          continue;
+        }
+
+        const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
+        if (staticResolved) {
+          resolveCache.set(cacheKey, staticResolved);
+          addImportEdge(filePath, staticResolved);
+          continue;
+        }
+      }
+
+      // Go: handle package-level imports
+      if (language === SupportedLanguages.Go && goModule && rawImportPath.startsWith(goModule.modulePath)) {
+        const pkgFiles = resolveGoPackage(rawImportPath, goModule, normalizedFileList, allFileList);
+        if (pkgFiles.length > 0) {
+          for (const pkgFile of pkgFiles) {
+            addImportEdge(filePath, pkgFile);
+          }
+          continue;
+        }
+      }
+
+      // Standard resolution (has its own internal cache)
+      const resolvedPath = resolveImportPath(
+        filePath,
+        rawImportPath,
+        allFilePaths,
+        allFileList,
+        normalizedFileList,
+        resolveCache,
+        language as SupportedLanguages,
+        tsconfigPaths,
+        index,
+      );
+
+      if (resolvedPath) {
+        addImportEdge(filePath, resolvedPath);
+      }
+    }
+  }
+
+  onProgress?.(totalFiles, totalFiles);
+
+  if (isDev) {
+    console.log(`📊 Import processing (fast path): ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
   }
 };

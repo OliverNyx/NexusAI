@@ -42,5 +42,8 @@ coverage/
 .env*.local
 .gitnexus
 
+# Assets (screenshots, images)
+assets/
+
 # Generated files (should not be indexed)
 repomix-output*
