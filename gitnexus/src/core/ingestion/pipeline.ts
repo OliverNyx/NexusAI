@@ -1,17 +1,25 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { GraphNode, GraphRelationship } from '../graph/types.js';
 import { processStructure } from './structure-processor.js';
 import { processParsing } from './parsing-processor.js';
-import { processImports, createImportMap } from './import-processor.js';
-import { processCalls } from './call-processor.js';
-import { processHeritage } from './heritage-processor.js';
+import { processImports, processImportsFromExtracted, createImportMap } from './import-processor.js';
+import { processCalls, processCallsFromExtracted } from './call-processor.js';
+import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
 import { createSymbolTable } from './symbol-table.js';
 import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepository } from './filesystem-walker.js';
+import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 
 const isDev = process.env.NODE_ENV === 'development';
+
+export interface PreloadedData {
+  nodes: GraphNode[];
+  relationships: GraphRelationship[];
+  symbolEntries: Array<{ filePath: string; name: string; nodeId: string; type: string }>;
+}
 
 export const runPipelineFromRepo = async (
   repoPath: string,
@@ -20,7 +28,8 @@ export const runPipelineFromRepo = async (
   const graph = createKnowledgeGraph();
   const fileContents = new Map<string, string>();
   const symbolTable = createSymbolTable();
-  const astCache = createASTCache(50);
+  // AST cache sized after file scan — start with a placeholder, resize after we know file count
+  let astCache = createASTCache(50);
   const importMap = createImportMap();
 
   const cleanup = () => {
@@ -47,6 +56,9 @@ export const runPipelineFromRepo = async (
     });
 
     files.forEach(f => fileContents.set(f.path, f.content));
+
+    // Resize AST cache to fit all files — avoids re-parsing in import/call/heritage phases
+    astCache = createASTCache(files.length);
 
     onProgress({
       phase: 'extracting',
@@ -79,16 +91,30 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processParsing(graph, files, symbolTable, astCache, (current, total, filePath) => {
-      const parsingProgress = 30 + ((current / total) * 40);
-      onProgress({
-        phase: 'parsing',
-        percent: Math.round(parsingProgress),
-        message: 'Parsing code definitions...',
-        detail: filePath,
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
-      });
-    });
+    // Create worker pool for parallel parsing, with graceful fallback
+    let workerPool: WorkerPool | undefined;
+    try {
+      const workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
+      workerPool = createWorkerPool(workerUrl);
+    } catch (err) {
+      // Worker pool creation failed (e.g., single core) — sequential fallback
+    }
+
+    let workerData: Awaited<ReturnType<typeof processParsing>> = null;
+    try {
+      workerData = await processParsing(graph, files, symbolTable, astCache, (current, total, filePath) => {
+        const parsingProgress = 30 + ((current / total) * 40);
+        onProgress({
+          phase: 'parsing',
+          percent: Math.round(parsingProgress),
+          message: 'Parsing code definitions...',
+          detail: filePath,
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      }, workerPool);
+    } finally {
+      await workerPool?.terminate();
+    }
 
     onProgress({
       phase: 'imports',
@@ -97,15 +123,29 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processImports(graph, files, astCache, importMap, (current, total) => {
-      const importProgress = 70 + ((current / total) * 12);
-      onProgress({
-        phase: 'imports',
-        percent: Math.round(importProgress),
-        message: 'Resolving imports...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
-      });
-    }, repoPath);
+    if (workerData) {
+      // Fast path: imports already extracted by workers, just resolve paths
+      await processImportsFromExtracted(graph, files, workerData.imports, importMap, (current, total) => {
+        const importProgress = 70 + ((current / total) * 12);
+        onProgress({
+          phase: 'imports',
+          percent: Math.round(importProgress),
+          message: 'Resolving imports...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      }, repoPath);
+    } else {
+      // Fallback: full parse + resolve (sequential path)
+      await processImports(graph, files, astCache, importMap, (current, total) => {
+        const importProgress = 70 + ((current / total) * 12);
+        onProgress({
+          phase: 'imports',
+          percent: Math.round(importProgress),
+          message: 'Resolving imports...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      }, repoPath);
+    }
 
     if (isDev) {
       const importsCount = graph.relationships.filter(r => r.type === 'IMPORTS').length;
@@ -119,15 +159,29 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
-      const callProgress = 82 + ((current / total) * 10);
-      onProgress({
-        phase: 'calls',
-        percent: Math.round(callProgress),
-        message: 'Tracing function calls...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    if (workerData) {
+      // Fast path: calls already extracted by workers, just resolve targets
+      await processCallsFromExtracted(graph, workerData.calls, symbolTable, importMap, (current, total) => {
+        const callProgress = 82 + ((current / total) * 10);
+        onProgress({
+          phase: 'calls',
+          percent: Math.round(callProgress),
+          message: 'Tracing function calls...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
       });
-    });
+    } else {
+      // Fallback: full parse + resolve (sequential path)
+      await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
+        const callProgress = 82 + ((current / total) * 10);
+        onProgress({
+          phase: 'calls',
+          percent: Math.round(callProgress),
+          message: 'Tracing function calls...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      });
+    }
 
     onProgress({
       phase: 'heritage',
@@ -136,15 +190,29 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
-      const heritageProgress = 88 + ((current / total) * 4);
-      onProgress({
-        phase: 'heritage',
-        percent: Math.round(heritageProgress),
-        message: 'Extracting class inheritance...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    if (workerData) {
+      // Fast path: heritage already extracted by workers, just resolve symbols
+      await processHeritageFromExtracted(graph, workerData.heritage, symbolTable, (current, total) => {
+        const heritageProgress = 88 + ((current / total) * 4);
+        onProgress({
+          phase: 'heritage',
+          percent: Math.round(heritageProgress),
+          message: 'Extracting class inheritance...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
       });
-    });
+    } else {
+      // Fallback: full parse + resolve (sequential path)
+      await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
+        const heritageProgress = 88 + ((current / total) * 4);
+        onProgress({
+          phase: 'heritage',
+          percent: Math.round(heritageProgress),
+          message: 'Extracting class inheritance...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      });
+    }
 
     onProgress({
       phase: 'communities',
@@ -255,6 +323,300 @@ export const runPipelineFromRepo = async (
       phase: 'complete',
       percent: 100,
       message: `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`,
+      stats: {
+        filesProcessed: files.length,
+        totalFiles: files.length,
+        nodesCreated: graph.nodeCount
+      },
+    });
+
+    astCache.clear();
+
+    return { graph, fileContents, communityResult, processResult };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+};
+
+/**
+ * Incremental pipeline: only parses changed files, reuses pre-loaded nodes for unchanged files.
+ * Imports/calls/heritage are re-resolved on ALL files for cross-file correctness.
+ * Communities and processes are recomputed on the full graph (global algorithms).
+ */
+export const runIncrementalPipeline = async (
+  repoPath: string,
+  changedFileSet: Set<string>,
+  preloaded: PreloadedData,
+  onProgress: (progress: PipelineProgress) => void
+): Promise<PipelineResult> => {
+  const graph = createKnowledgeGraph();
+  const fileContents = new Map<string, string>();
+  const symbolTable = createSymbolTable();
+  let astCache = createASTCache(50);
+  const importMap = createImportMap();
+
+  const cleanup = () => {
+    astCache.clear();
+    symbolTable.clear();
+  };
+
+  try {
+    // ── Phase 1: Inject pre-loaded nodes for unchanged files ──────────
+    onProgress({
+      phase: 'extracting',
+      percent: 0,
+      message: `Incremental: loading ${preloaded.nodes.length} cached nodes...`,
+    });
+
+    for (const node of preloaded.nodes) {
+      graph.addNode(node);
+    }
+    for (const rel of preloaded.relationships) {
+      graph.addRelationship(rel);
+    }
+    for (const sym of preloaded.symbolEntries) {
+      symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type);
+    }
+
+    if (isDev) {
+      console.log(`📦 Incremental: injected ${preloaded.nodes.length} nodes, ${preloaded.relationships.length} rels, ${preloaded.symbolEntries.length} symbols from cache`);
+    }
+
+    // ── Phase 2: Scan all files from disk ─────────────────────────────
+    onProgress({
+      phase: 'extracting',
+      percent: 5,
+      message: 'Scanning repository...',
+    });
+
+    const files = await walkRepository(repoPath, (current, total, filePath) => {
+      const scanProgress = 5 + Math.round((current / total) * 10);
+      onProgress({
+        phase: 'extracting',
+        percent: scanProgress,
+        message: 'Scanning repository...',
+        detail: filePath,
+        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+      });
+    });
+
+    files.forEach(f => fileContents.set(f.path, f.content));
+
+    // ── Phase 3: Structure (all files — fast) ─────────────────────────
+    onProgress({
+      phase: 'structure',
+      percent: 15,
+      message: 'Analyzing project structure...',
+      stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    const filePaths = files.map(f => f.path);
+    processStructure(graph, filePaths);
+
+    // ── Phase 4: Parse ONLY changed files ─────────────────────────────
+    const changedFiles = files.filter(f => changedFileSet.has(f.path));
+    const unchangedCount = files.length - changedFiles.length;
+
+    onProgress({
+      phase: 'parsing',
+      percent: 20,
+      message: `Parsing ${changedFiles.length} changed files (${unchangedCount} cached)...`,
+      stats: { filesProcessed: 0, totalFiles: changedFiles.length, nodesCreated: graph.nodeCount },
+    });
+
+    astCache = createASTCache(changedFiles.length || 1);
+
+    let workerPool: WorkerPool | undefined;
+    try {
+      const workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
+      workerPool = createWorkerPool(workerUrl);
+    } catch {
+      // Sequential fallback
+    }
+
+    let workerData: Awaited<ReturnType<typeof processParsing>> = null;
+    try {
+      workerData = await processParsing(graph, changedFiles, symbolTable, astCache, (current, total, filePath) => {
+        const parsingProgress = 20 + ((current / Math.max(total, 1)) * 40);
+        onProgress({
+          phase: 'parsing',
+          percent: Math.round(parsingProgress),
+          message: `Parsing ${changedFiles.length} changed files (${unchangedCount} cached)...`,
+          detail: filePath,
+          stats: { filesProcessed: current, totalFiles: changedFiles.length, nodesCreated: graph.nodeCount },
+        });
+      }, workerPool);
+    } finally {
+      await workerPool?.terminate();
+    }
+
+    if (isDev) {
+      console.log(`📝 Incremental: parsed ${changedFiles.length} changed files, skipped ${unchangedCount} unchanged`);
+    }
+
+    // ── Phase 5: Imports (ALL files — full re-resolution for cross-file correctness) ──
+    // We always use the full parser path here (not workerData fast path) because:
+    // - Pre-loaded relationships only include DEFINES (intra-file)
+    // - Cross-file IMPORTS must be freshly resolved to capture unchanged→changed file edges
+    onProgress({
+      phase: 'imports',
+      percent: 60,
+      message: 'Resolving imports...',
+      stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    // Resize AST cache for all files (import/call/heritage parse on-the-fly)
+    astCache = createASTCache(files.length);
+
+    await processImports(graph, files, astCache, importMap, (current, total) => {
+      const importProgress = 60 + ((current / total) * 12);
+      onProgress({
+        phase: 'imports',
+        percent: Math.round(importProgress),
+        message: 'Resolving imports...',
+        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+      });
+    }, repoPath);
+
+    // ── Phase 6: Calls (ALL files) ────────────────────────────────────
+    onProgress({
+      phase: 'calls',
+      percent: 72,
+      message: 'Tracing function calls...',
+      stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
+      const callProgress = 72 + ((current / total) * 10);
+      onProgress({
+        phase: 'calls',
+        percent: Math.round(callProgress),
+        message: 'Tracing function calls...',
+        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+      });
+    });
+
+    // ── Phase 7: Heritage (ALL files) ─────────────────────────────────
+    onProgress({
+      phase: 'heritage',
+      percent: 82,
+      message: 'Extracting class inheritance...',
+      stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
+      const heritageProgress = 82 + ((current / total) * 6);
+      onProgress({
+        phase: 'heritage',
+        percent: Math.round(heritageProgress),
+        message: 'Extracting class inheritance...',
+        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+      });
+    });
+
+    // ── Phase 8: Communities ───────────────────────────────────────────
+    onProgress({
+      phase: 'communities',
+      percent: 88,
+      message: 'Detecting code communities...',
+      stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    const communityResult = await processCommunities(graph, (message, progress) => {
+      const communityProgress = 88 + (progress * 0.06);
+      onProgress({
+        phase: 'communities',
+        percent: Math.round(communityProgress),
+        message,
+        stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+      });
+    });
+
+    communityResult.communities.forEach(comm => {
+      graph.addNode({
+        id: comm.id,
+        label: 'Community' as const,
+        properties: {
+          name: comm.label,
+          filePath: '',
+          heuristicLabel: comm.heuristicLabel,
+          cohesion: comm.cohesion,
+          symbolCount: comm.symbolCount,
+        }
+      });
+    });
+
+    communityResult.memberships.forEach(membership => {
+      graph.addRelationship({
+        id: `${membership.nodeId}_member_of_${membership.communityId}`,
+        type: 'MEMBER_OF',
+        sourceId: membership.nodeId,
+        targetId: membership.communityId,
+        confidence: 1.0,
+        reason: 'leiden-algorithm',
+      });
+    });
+
+    // ── Phase 9: Processes ────────────────────────────────────────────
+    onProgress({
+      phase: 'processes',
+      percent: 94,
+      message: 'Detecting execution flows...',
+      stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+
+    const symbolCount = graph.nodes.filter(n => n.label !== 'File').length;
+    const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+
+    const processResult = await processProcesses(
+      graph,
+      communityResult.memberships,
+      (message, progress) => {
+        const processProgress = 94 + (progress * 0.05);
+        onProgress({
+          phase: 'processes',
+          percent: Math.round(processProgress),
+          message,
+          stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+        });
+      },
+      { maxProcesses: dynamicMaxProcesses, minSteps: 3 }
+    );
+
+    processResult.processes.forEach(proc => {
+      graph.addNode({
+        id: proc.id,
+        label: 'Process' as const,
+        properties: {
+          name: proc.label,
+          filePath: '',
+          heuristicLabel: proc.heuristicLabel,
+          processType: proc.processType,
+          stepCount: proc.stepCount,
+          communities: proc.communities,
+          entryPointId: proc.entryPointId,
+          terminalId: proc.terminalId,
+        }
+      });
+    });
+
+    processResult.steps.forEach(step => {
+      graph.addRelationship({
+        id: `${step.nodeId}_step_${step.step}_${step.processId}`,
+        type: 'STEP_IN_PROCESS',
+        sourceId: step.nodeId,
+        targetId: step.processId,
+        confidence: 1.0,
+        reason: 'trace-detection',
+        step: step.step,
+      });
+    });
+
+    onProgress({
+      phase: 'complete',
+      percent: 100,
+      message: `Incremental complete! ${changedFiles.length} files re-parsed, ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes.`,
       stats: {
         filesProcessed: files.length,
         totalFiles: files.length,
