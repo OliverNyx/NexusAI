@@ -1,6 +1,6 @@
 /**
  * Embedder Module
- *
+ * 
  * Singleton factory for transformers.js embedding pipeline.
  * Handles model loading, caching, and both single and batch embedding operations.
  * 
