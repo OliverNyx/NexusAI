@@ -455,10 +455,7 @@ export const runIncrementalPipeline = async (
       console.log(`📝 Incremental: parsed ${changedFiles.length} changed files, skipped ${unchangedCount} unchanged`);
     }
 
-    // ── Phase 5: Imports (ALL files — full re-resolution for cross-file correctness) ──
-    // We always use the full parser path here (not workerData fast path) because:
-    // - Pre-loaded relationships only include DEFINES (intra-file)
-    // - Cross-file IMPORTS must be freshly resolved to capture unchanged→changed file edges
+    // ── Phase 5: Imports (changed files via workerData, unchanged from pre-loaded) ──
     onProgress({
       phase: 'imports',
       percent: 60,
@@ -466,20 +463,29 @@ export const runIncrementalPipeline = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    // Resize AST cache for all files (import/call/heritage parse on-the-fly)
-    astCache = createASTCache(files.length);
+    if (workerData) {
+      await processImportsFromExtracted(graph, files, workerData.imports, importMap, (current, total) => {
+        const importProgress = 60 + ((current / total) * 12);
+        onProgress({
+          phase: 'imports',
+          percent: Math.round(importProgress),
+          message: 'Resolving imports...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      }, repoPath);
+    } else {
+      await processImports(graph, files, astCache, importMap, (current, total) => {
+        const importProgress = 60 + ((current / total) * 12);
+        onProgress({
+          phase: 'imports',
+          percent: Math.round(importProgress),
+          message: 'Resolving imports...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      }, repoPath);
+    }
 
-    await processImports(graph, files, astCache, importMap, (current, total) => {
-      const importProgress = 60 + ((current / total) * 12);
-      onProgress({
-        phase: 'imports',
-        percent: Math.round(importProgress),
-        message: 'Resolving imports...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
-      });
-    }, repoPath);
-
-    // ── Phase 6: Calls (ALL files) ────────────────────────────────────
+    // ── Phase 6: Calls (changed files via workerData, unchanged from pre-loaded) ──
     onProgress({
       phase: 'calls',
       percent: 72,
@@ -487,17 +493,29 @@ export const runIncrementalPipeline = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
-      const callProgress = 72 + ((current / total) * 10);
-      onProgress({
-        phase: 'calls',
-        percent: Math.round(callProgress),
-        message: 'Tracing function calls...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    if (workerData) {
+      await processCallsFromExtracted(graph, workerData.calls, symbolTable, importMap, (current, total) => {
+        const callProgress = 72 + ((current / total) * 10);
+        onProgress({
+          phase: 'calls',
+          percent: Math.round(callProgress),
+          message: 'Tracing function calls...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
       });
-    });
+    } else {
+      await processCalls(graph, files, astCache, symbolTable, importMap, (current, total) => {
+        const callProgress = 72 + ((current / total) * 10);
+        onProgress({
+          phase: 'calls',
+          percent: Math.round(callProgress),
+          message: 'Tracing function calls...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      });
+    }
 
-    // ── Phase 7: Heritage (ALL files) ─────────────────────────────────
+    // ── Phase 7: Heritage (changed files via workerData, unchanged from pre-loaded) ──
     onProgress({
       phase: 'heritage',
       percent: 82,
@@ -505,15 +523,27 @@ export const runIncrementalPipeline = async (
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: graph.nodeCount },
     });
 
-    await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
-      const heritageProgress = 82 + ((current / total) * 6);
-      onProgress({
-        phase: 'heritage',
-        percent: Math.round(heritageProgress),
-        message: 'Extracting class inheritance...',
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    if (workerData) {
+      await processHeritageFromExtracted(graph, workerData.heritage, symbolTable, (current, total) => {
+        const heritageProgress = 82 + ((current / total) * 6);
+        onProgress({
+          phase: 'heritage',
+          percent: Math.round(heritageProgress),
+          message: 'Extracting class inheritance...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
       });
-    });
+    } else {
+      await processHeritage(graph, files, astCache, symbolTable, (current, total) => {
+        const heritageProgress = 82 + ((current / total) * 6);
+        onProgress({
+          phase: 'heritage',
+          percent: Math.round(heritageProgress),
+          message: 'Extracting class inheritance...',
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      });
+    }
 
     // ── Phase 8: Communities ───────────────────────────────────────────
     onProgress({
