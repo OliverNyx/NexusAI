@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import kuzu from 'kuzu';
-import { KnowledgeGraph } from '../graph/types.js';
+import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -63,128 +63,158 @@ export const initKuzu = async (dbPath: string) => {
   return { db, conn };
 };
 
+export type KuzuProgressCallback = (message: string) => void;
+
 export const loadGraphToKuzu = async (
   graph: KnowledgeGraph,
   fileContents: Map<string, string>,
-  storagePath: string
+  storagePath: string,
+  onProgress?: KuzuProgressCallback
 ) => {
   if (!conn) {
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
 
+  const log = onProgress || (() => {});
+
   const csvData = generateAllCSVs(graph, fileContents);
   const csvDir = path.join(storagePath, 'csv');
   await fs.mkdir(csvDir, { recursive: true });
 
-  const nodeFiles: Array<{ table: NodeTableName; path: string }> = [];
+  log('Generating CSVs...');
+
+  const nodeFiles: Array<{ table: NodeTableName; path: string; rows: number }> = [];
   for (const [tableName, csv] of csvData.nodes.entries()) {
-    if (csv.split('\n').length <= 1) continue;
+    const rowCount = csv.split('\n').length - 1;
+    if (rowCount <= 0) continue;
     const filePath = path.join(csvDir, `${tableName.toLowerCase()}.csv`);
     await fs.writeFile(filePath, csv, 'utf-8');
-    nodeFiles.push({ table: tableName, path: filePath });
+    nodeFiles.push({ table: tableName, path: filePath, rows: rowCount });
   }
 
-  const relLines = csvData.relCSV.split('\n').slice(1).filter(line => line.trim());
-
-  for (const { table, path: filePath } of nodeFiles) {
-    const normalizedPath = normalizeCopyPath(filePath);
-    const copyQuery = getCopyQuery(table, normalizedPath);
-    
-    if (isDev) {
-      const csvContent = await fs.readFile(filePath, 'utf-8');
-      const csvLines = csvContent.split('\n').length;
-      console.log(`  COPY ${table}: ${csvLines - 1} rows`);
-    }
-    
-    try {
-      await conn.query(copyQuery);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`⚠️ COPY failed for ${table}: ${errMsg.slice(0, 100)}`);
-      
-      try {
-        const retryQuery = copyQuery.replace('auto_detect=false)', 'auto_detect=false, IGNORE_ERRORS=true)');
-        await conn.query(retryQuery);
-        if (isDev) {
-          console.log(`  ✅ ${table} loaded with IGNORE_ERRORS (some rows may have been skipped)`);
-        }
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        console.error(`❌ COPY failed for ${table} even with IGNORE_ERRORS: ${retryMsg}`);
-        throw retryErr;
-      }
-    }
-  }
-
-  if (isDev) {
-    console.log('✅ All COPY commands succeeded. Starting relationship insertion...');
-  }
-
-  // Build a set of valid table names for fast lookup
+  // Write relationship CSV to disk for bulk COPY
+  const relCsvPath = path.join(csvDir, 'relations.csv');
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);
-
   const getNodeLabel = (nodeId: string): string => {
     if (nodeId.startsWith('comm_')) return 'Community';
     if (nodeId.startsWith('proc_')) return 'Process';
     return nodeId.split(':')[0];
   };
 
-  // All multi-language tables are created with backticks - must always reference them with backticks
-  const escapeLabel = (label: string): string => {
-    return BACKTICK_TABLES.has(label) ? `\`${label}\`` : label;
-  };
-
-  let insertedRels = 0;
+  const relLines = csvData.relCSV.split('\n');
+  const relHeader = relLines[0];
+  const validRelLines = [relHeader];
   let skippedRels = 0;
-  for (const line of relLines) {
+  for (let i = 1; i < relLines.length; i++) {
+    const line = relLines[i];
+    if (!line.trim()) continue;
+    const match = line.match(/"([^"]*)","([^"]*)"/);
+    if (!match) { skippedRels++; continue; }
+    const fromLabel = getNodeLabel(match[1]);
+    const toLabel = getNodeLabel(match[2]);
+    if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
+      skippedRels++;
+      continue;
+    }
+    validRelLines.push(line);
+  }
+  await fs.writeFile(relCsvPath, validRelLines.join('\n'), 'utf-8');
+
+  // Bulk COPY all node CSVs
+  const totalSteps = nodeFiles.length + 1; // +1 for relationships
+  let stepsDone = 0;
+
+  for (const { table, path: filePath, rows } of nodeFiles) {
+    stepsDone++;
+    log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
+
+    const normalizedPath = normalizeCopyPath(filePath);
+    const copyQuery = getCopyQuery(table, normalizedPath);
+
     try {
-      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      await conn.query(copyQuery);
+    } catch (err) {
+      try {
+        const retryQuery = copyQuery.replace('auto_detect=false)', 'auto_detect=false, IGNORE_ERRORS=true)');
+        await conn.query(retryQuery);
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      }
+    }
+  }
+
+  // Bulk COPY relationships — split by FROM→TO label pair (KuzuDB requires it)
+  const insertedRels = validRelLines.length - 1;
+  const warnings: string[] = [];
+  if (insertedRels > 0) {
+    const relsByPair = new Map<string, string[]>();
+    for (let i = 1; i < validRelLines.length; i++) {
+      const line = validRelLines[i];
+      const match = line.match(/"([^"]*)","([^"]*)"/);
       if (!match) continue;
-      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const fromLabel = getNodeLabel(match[1]);
+      const toLabel = getNodeLabel(match[2]);
+      const pairKey = `${fromLabel}|${toLabel}`;
+      let list = relsByPair.get(pairKey);
+      if (!list) { list = []; relsByPair.set(pairKey, list); }
+      list.push(line);
+    }
 
-      const fromLabel = getNodeLabel(fromId);
-      const toLabel = getNodeLabel(toId);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
-      // Skip relationships where either node's label doesn't have a table in KuzuDB
-      // (e.g. Variable, Import, Type nodes that aren't in the schema)
-      // Querying a non-existent table causes a fatal native crash
-      if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
-        skippedRels++;
-        continue;
+    let pairIdx = 0;
+    let failedPairEdges = 0;
+    const failedPairLines: string[] = [];
+
+    for (const [pairKey, lines] of relsByPair) {
+      pairIdx++;
+      const [fromLabel, toLabel] = pairKey.split('|');
+      const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
+      await fs.writeFile(pairCsvPath, relHeader + '\n' + lines.join('\n'), 'utf-8');
+      const normalizedPath = normalizeCopyPath(pairCsvPath);
+      const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
+
+      if (pairIdx % 5 === 0 || lines.length > 1000) {
+        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
       }
 
-      const confidence = parseFloat(confidenceStr) || 1.0;
-      const step = parseInt(stepStr) || 0;
+      try {
+        await conn.query(copyQuery);
+      } catch (err) {
+        try {
+          const retryQuery = copyQuery.replace('auto_detect=false)', 'auto_detect=false, IGNORE_ERRORS=true)');
+          await conn.query(retryQuery);
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          warnings.push(`${fromLabel}->${toLabel} (${lines.length} edges): ${retryMsg.slice(0, 80)}`);
+          failedPairEdges += lines.length;
+          failedPairLines.push(...lines);
+        }
+      }
+      try { await fs.unlink(pairCsvPath); } catch {}
+    }
 
-      const insertQuery = `
-        MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}' }),
-              (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
-      `;
-      await conn.query(insertQuery);
-      insertedRels++;
-    } catch {
-      skippedRels++;
+    if (failedPairLines.length > 0) {
+      log(`Inserting ${failedPairEdges} edges individually (missing schema pairs)`);
+      await fallbackRelationshipInserts([relHeader, ...failedPairLines], validTables, getNodeLabel);
     }
   }
 
-  // Cleanup CSVs
+  // Cleanup all CSVs
+  try { await fs.unlink(relCsvPath); } catch {}
   for (const { path: filePath } of nodeFiles) {
-    try {
-      await fs.unlink(filePath);
-    } catch {
-      // ignore
-    }
+    try { await fs.unlink(filePath); } catch {}
   }
-  
-  // Remove empty csv directory
   try {
-    await fs.rmdir(csvDir);
-  } catch {
-    // ignore if not empty or other error
-  }
+    const remaining = await fs.readdir(csvDir);
+    for (const f of remaining) {
+      try { await fs.unlink(path.join(csvDir, f)); } catch {}
+    }
+  } catch {}
+  try { await fs.rmdir(csvDir); } catch {}
 
-  return { success: true, insertedRels, skippedRels };
+  return { success: true, insertedRels, skippedRels, warnings };
 };
 
 // KuzuDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
@@ -203,6 +233,41 @@ const BACKTICK_TABLES = new Set([
 
 const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
+};
+
+/** Fallback: insert relationships one-by-one if COPY fails */
+const fallbackRelationshipInserts = async (
+  validRelLines: string[],
+  validTables: Set<string>,
+  getNodeLabel: (id: string) => string
+) => {
+  if (!conn) return;
+  const escapeLabel = (label: string): string => {
+    return BACKTICK_TABLES.has(label) ? `\`${label}\`` : label;
+  };
+
+  for (let i = 1; i < validRelLines.length; i++) {
+    const line = validRelLines[i];
+    try {
+      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      if (!match) continue;
+      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const fromLabel = getNodeLabel(fromId);
+      const toLabel = getNodeLabel(toId);
+      if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
+
+      const confidence = parseFloat(confidenceStr) || 1.0;
+      const step = parseInt(stepStr) || 0;
+
+      await conn.query(`
+        MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}' }),
+              (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}' })
+        CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
+      `);
+    } catch {
+      // skip
+    }
+  }
 };
 
 const getCopyQuery = (table: NodeTableName, filePath: string): string => {
@@ -412,6 +477,147 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
   }
 
   return { nodes: totalNodes, edges: totalEdges };
+};
+
+/**
+ * Load existing nodes and relationships from KuzuDB, excluding files in the changed set.
+ * Used for incremental updates: we keep unchanged data and only re-parse changed files.
+ */
+export const loadExistingGraph = async (
+  changedFiles: Set<string>,
+  deletedFiles: Set<string>,
+): Promise<{
+  nodes: GraphNode[];
+  relationships: GraphRelationship[];
+  symbolEntries: Array<{ filePath: string; name: string; nodeId: string; type: string }>;
+  embeddingNodeIds: Set<string>;
+  cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }>;
+}> => {
+  if (!conn) {
+    return { nodes: [], relationships: [], symbolEntries: [], embeddingNodeIds: new Set(), cachedEmbeddings: [] };
+  }
+
+  const str = (v: any): string => String(v ?? '');
+  const num = (v: any): number => Number(v) || 0;
+
+  const excludedFiles = new Set([...changedFiles, ...deletedFiles]);
+  const nodes: GraphNode[] = [];
+  const symbolEntries: Array<{ filePath: string; name: string; nodeId: string; type: string }> = [];
+
+  const codeElementTables: NodeTableName[] = NODE_TABLES.filter(
+    t => t !== 'File' && t !== 'Folder' && t !== 'Community' && t !== 'Process'
+  ) as NodeTableName[];
+
+  // Load File nodes
+  try {
+    const rows = await conn.query('MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content');
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    for (const row of await result.getAll()) {
+      const filePath = str(row.filePath ?? row[2]).replace(/\\/g, '/');
+      if (excludedFiles.has(filePath)) continue;
+      nodes.push({
+        id: str(row.id ?? row[0]),
+        label: 'File',
+        properties: { name: str(row.name ?? row[1]), filePath },
+      });
+    }
+  } catch { /* table may not exist */ }
+
+  // Load Folder nodes
+  try {
+    const rows = await conn.query('MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath');
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    for (const row of await result.getAll()) {
+      nodes.push({
+        id: str(row.id ?? row[0]),
+        label: 'Folder',
+        properties: { name: str(row.name ?? row[1]), filePath: str(row.filePath ?? row[2]).replace(/\\/g, '/') },
+      });
+    }
+  } catch { /* table may not exist */ }
+
+  // Tables with isExported column (standard JS/TS code element tables)
+  const tablesWithExported = new Set(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
+
+  // Load code element nodes (Function, Class, Method, Interface, etc.)
+  for (const table of codeElementTables) {
+    try {
+      const t = BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
+      const hasExported = tablesWithExported.has(table);
+      const query = hasExported
+        ? `MATCH (n:${t}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.isExported AS isExported`
+        : `MATCH (n:${t}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+      const rows = await conn.query(query);
+      const result = Array.isArray(rows) ? rows[0] : rows;
+      for (const row of await result.getAll()) {
+        const filePath = str(row.filePath ?? row[2]).replace(/\\/g, '/');
+        if (excludedFiles.has(filePath)) continue;
+        const nodeId = str(row.id ?? row[0]);
+        const name = str(row.name ?? row[1]);
+        nodes.push({
+          id: nodeId,
+          label: table as any,
+          properties: {
+            name,
+            filePath,
+            startLine: num(row.startLine ?? row[3]),
+            endLine: num(row.endLine ?? row[4]),
+            ...(hasExported ? { isExported: !!(row.isExported ?? row[5]) } : {}),
+          },
+        });
+        symbolEntries.push({ filePath, name, nodeId, type: table });
+      }
+    } catch { /* table may not exist or is empty */ }
+  }
+
+  // Load relationships (exclude any involving changed/deleted files)
+  const relationships: GraphRelationship[] = [];
+  const nodeIdSet = new Set(nodes.map(n => n.id));
+  try {
+    const rows = await conn.query(
+      `MATCH (a)-[r:${REL_TABLE_NAME}]->(b) RETURN a.id AS fromId, b.id AS toId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
+    );
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    for (const row of await result.getAll()) {
+      const fromId = str(row.fromId ?? row[0]);
+      const toId = str(row.toId ?? row[1]);
+      if (!nodeIdSet.has(fromId) || !nodeIdSet.has(toId)) continue;
+      const type = str(row.type ?? row[2]);
+      if (type === 'MEMBER_OF' || type === 'STEP_IN_PROCESS') continue;
+      relationships.push({
+        id: `${fromId}_${type}_${toId}`,
+        sourceId: fromId,
+        targetId: toId,
+        type: type as any,
+        confidence: num(row.confidence ?? row[3]) || 1.0,
+        reason: str(row.reason ?? row[4]),
+        step: num(row.step ?? row[5]),
+      });
+    }
+  } catch { /* relationship table may not exist */ }
+
+  // Load existing embeddings (nodeId + vector) for unchanged nodes
+  const embeddingNodeIds = new Set<string>();
+  const cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
+  try {
+    const rows = await conn.query(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`);
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    for (const row of await result.getAll()) {
+      const nodeId = str(row.nodeId ?? row[0]);
+      if (nodeIdSet.has(nodeId)) {
+        embeddingNodeIds.add(nodeId);
+        const embedding = row.embedding ?? row[1];
+        if (embedding) {
+          cachedEmbeddings.push({
+            nodeId,
+            embedding: Array.isArray(embedding) ? embedding.map(Number) : Array.from(embedding as any).map(Number),
+          });
+        }
+      }
+    }
+  } catch { /* embedding table may not exist */ }
+
+  return { nodes, relationships, symbolEntries, embeddingNodeIds, cachedEmbeddings };
 };
 
 export const closeKuzu = async (): Promise<void> => {

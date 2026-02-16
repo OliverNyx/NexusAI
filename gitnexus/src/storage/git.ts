@@ -72,3 +72,20 @@ export const getDeletedFiles = (fromCommit: string, toCommit: string, repoPath: 
   }
 };
 
+/**
+ * Get files with uncommitted changes (working tree vs HEAD).
+ * This catches staged + unstaged modifications that aren't in any commit yet.
+ * Returns relative paths (forward-slash normalized).
+ */
+export const getUncommittedChanges = (repoPath: string): string[] => {
+  try {
+    const output = execSync(
+      'git diff HEAD --name-only --diff-filter=ACMR',
+      { cwd: repoPath, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+    ).trim();
+    return output ? output.split('\n').filter(Boolean).map(f => f.replace(/\\/g, '/')) : [];
+  } catch {
+    return [];
+  }
+};
+
