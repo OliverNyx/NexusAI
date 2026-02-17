@@ -6,13 +6,15 @@
  * - IMPLEMENTS: Class implements an Interface (TS only)
  */
 
-import { KnowledgeGraph } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { SymbolTable } from './symbol-table';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import { SymbolTable } from './symbol-table.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import type { ExtractedHeritage } from './workers/parse-worker.js';
 
 export const processHeritage = async (
   graph: KnowledgeGraph,
@@ -26,6 +28,7 @@ export const processHeritage = async (
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
 
     // 1. Check language support
     const language = getLanguageFromFilename(file.path);
@@ -42,18 +45,26 @@ export const processHeritage = async (
     let wasReparsed = false;
 
     if (!tree) {
-      tree = parser.parse(file.content);
+      // Use larger bufferSize for files > 32KB
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      } catch (parseError) {
+        // Skip files that can't be parsed
+        continue;
+      }
       wasReparsed = true;
+      // Cache re-parsed tree for potential future use
+      astCache.set(file.path, tree);
     }
 
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryStr);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Heritage query error for ${file.path}:`, queryError);
-      if (wasReparsed) tree.delete();
       continue;
     }
 
@@ -146,9 +157,86 @@ export const processHeritage = async (
       }
     });
 
-    // Cleanup
-    if (wasReparsed) {
-      tree.delete();
+    // Tree is now owned by the LRU cache — no manual delete needed
+  }
+};
+
+/**
+ * Fast path: resolve pre-extracted heritage from workers.
+ * No AST parsing — workers already extracted className + parentName + kind.
+ */
+export const processHeritageFromExtracted = async (
+  graph: KnowledgeGraph,
+  extractedHeritage: ExtractedHeritage[],
+  symbolTable: SymbolTable,
+  onProgress?: (current: number, total: number) => void
+) => {
+  const total = extractedHeritage.length;
+
+  for (let i = 0; i < extractedHeritage.length; i++) {
+    if (i % 500 === 0) {
+      onProgress?.(i, total);
+      await yieldToEventLoop();
+    }
+
+    const h = extractedHeritage[i];
+
+    if (h.kind === 'extends') {
+      const childId = symbolTable.lookupExact(h.filePath, h.className) ||
+                      symbolTable.lookupFuzzy(h.className)[0]?.nodeId ||
+                      generateId('Class', `${h.filePath}:${h.className}`);
+
+      const parentId = symbolTable.lookupFuzzy(h.parentName)[0]?.nodeId ||
+                       generateId('Class', `${h.parentName}`);
+
+      if (childId && parentId && childId !== parentId) {
+        graph.addRelationship({
+          id: generateId('EXTENDS', `${childId}->${parentId}`),
+          sourceId: childId,
+          targetId: parentId,
+          type: 'EXTENDS',
+          confidence: 1.0,
+          reason: '',
+        });
+      }
+    } else if (h.kind === 'implements') {
+      const classId = symbolTable.lookupExact(h.filePath, h.className) ||
+                      symbolTable.lookupFuzzy(h.className)[0]?.nodeId ||
+                      generateId('Class', `${h.filePath}:${h.className}`);
+
+      const interfaceId = symbolTable.lookupFuzzy(h.parentName)[0]?.nodeId ||
+                          generateId('Interface', `${h.parentName}`);
+
+      if (classId && interfaceId) {
+        graph.addRelationship({
+          id: generateId('IMPLEMENTS', `${classId}->${interfaceId}`),
+          sourceId: classId,
+          targetId: interfaceId,
+          type: 'IMPLEMENTS',
+          confidence: 1.0,
+          reason: '',
+        });
+      }
+    } else if (h.kind === 'trait-impl') {
+      const structId = symbolTable.lookupExact(h.filePath, h.className) ||
+                       symbolTable.lookupFuzzy(h.className)[0]?.nodeId ||
+                       generateId('Struct', `${h.filePath}:${h.className}`);
+
+      const traitId = symbolTable.lookupFuzzy(h.parentName)[0]?.nodeId ||
+                      generateId('Trait', `${h.parentName}`);
+
+      if (structId && traitId) {
+        graph.addRelationship({
+          id: generateId('IMPLEMENTS', `${structId}->${traitId}`),
+          sourceId: structId,
+          targetId: traitId,
+          type: 'IMPLEMENTS',
+          confidence: 1.0,
+          reason: 'trait-impl',
+        });
+      }
     }
   }
+
+  onProgress?.(total, total);
 };

@@ -1,183 +1,373 @@
-# GitNexus V2
+# GitNexus
 
-**Zero-Server, Graph-Based Code Intelligence Engine**
-Works fully in-browser through WebAssembly. (DB engine, Embeddings model, AST parsing, all happens inside browser)
+**Building git for agent context.**
 
+Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
+
+[![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
 
 https://github.com/user-attachments/assets/abfd0300-0aae-4296-b8d3-8b72ed882433
 
-https://gitnexus.vercel.app
-Being client sided, it costs me zero to deploy, so you can use it for free :-) (would love a ⭐ though)
+> *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
 
-> *Like DeepWiki, but deeper.* 😉
-
-DeepWiki helps you *understand* code. GitNexus lets you *analyze* it—because a knowledge graph tracks every dependency, call chain, and relationship. 
-
-That's the difference between:
-- "What does this function do?" → *understanding*
-- "What breaks if I change this function?" → *analysis*
-
-**Core Innovation: Precomputed Relational Intelligence**
-
-Most AI coding tools give the LLM raw data and hope it figures out relationships. GitNexus **precomputes structure at index time**—clustering related code, tracing execution flows, scoring edge confidence—so tools return *decision-ready context*. This means:
-- 🎯 **Reliability**: LLM can't miss context—it's already in the tool response
-- ⚡ **Token efficiency**: No 10-query chains to understand one function
-- 🤖 **Model democratization**: Smaller LLMs work because tools do the heavy lifting
-
-**Quick tech jargon:**
-- **Smart Tools**: 7 graph-aware tools with built-in cluster/process context
-- **Leiden Clustering**: Automatic detection of functional code communities
-- **Process Detection**: Entry point tracing via BFS with framework-aware scoring
-- **Confidence Scoring**: Every CALLS edge rated 0-1 (import-resolved vs fuzzy guess)
-- **Hybrid Search**: BM25 + Semantic + 1-hop graph expansion via Cypher
-- **Full WASM Stack**: Tree-sitter parsing + KuzuDB graph database, all in-browser
-- **9 Languages**: TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
-
-**What you can do:**
-
-| Capability | Description |
-|------------|-------------|
-| **Codebase-wide audits** | Find layer violations, forbidden dependencies |
-| **Blast radius analysis** | See every function affected by a change (with confidence) |
-| **Dead code detection** | Identify orphaned nodes with zero incoming calls |
-| **Dependency tracing** | Follow import chains across the entire codebase |
-| **Process exploration** | Trace execution flows from API handlers to data layer |
-| **Cluster navigation** | Explore code by functional area, not just file structure |
-| **AI analyses with citations** | Ask questions, analyze, get answers with `[[file:line]]` proof |
-
-**100% client-side.** Your code never leaves your browser.
-
-<img width="2550" height="1343" alt="gitnexus_img" src="https://github.com/user-attachments/assets/cc5d637d-e0e5-48e6-93ff-5bcfdb929285" />
+**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with goliath models.
 
 ---
 
-## 🔍 The Problem with AI Coding Tools
+## Two Ways to Use GitNexus
 
-Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful—but they share a fundamental limitation: **they don't truly know your codebase structure**.
+|                   | **CLI + MCP**                                            | **Web UI**                                             |
+| ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
+| **What**    | Index repos locally, connect AI agents via MCP                 | Visual graph explorer + AI chat in browser                   |
+| **For**     | Daily development with Cursor, Claude Code, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                   |
+| **Scale**   | Full repos, any size                                           | Limited by browser memory (~5k files)                        |
+| **Install** | `npm install -g gitnexus`                                    | No install —[gitnexus.vercel.app](https://gitnexus.vercel.app) |
+| **Storage** | KuzuDB native (fast, persistent)                               | KuzuDB WASM (in-memory, per session)                         |
+| **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
+| **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
+
+---
+
+## CLI + MCP (recommended)
+
+The CLI indexes your repository and runs an MCP server that gives AI agents deep codebase awareness.
+
+### Quick Start
+
+```bash
+# Index your repo (run from repo root)
+npx gitnexus analyze
+```
+
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+
+To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
+
+### MCP Setup
+
+`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
+
+### Editor Support
+
+| Editor                | MCP | Skills | Hooks (auto-augment) | Support        |
+| --------------------- | --- | ------ | -------------------- | -------------- |
+| **Claude Code** | Yes | Yes    | Yes (PreToolUse)     | **Full** |
+| **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
+| **Windsurf**    | Yes | —     | —                   | MCP            |
+| **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
+
+> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
+
+If you prefer manual configuration:
+
+**Claude Code** (full support — MCP + skills + hooks):
+
+```bash
+claude mcp add gitnexus -- npx -y gitnexus@latest mcp
+```
+
+**Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+**OpenCode** (`~/.config/opencode/config.json`):
+
+```json
+{
+  "mcp": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+### CLI Commands
+
+```bash
+gitnexus setup                    # Configure MCP for your editors (one-time)
+gitnexus analyze [path]           # Index a repository (or update stale index)
+gitnexus analyze --force          # Force full re-index
+gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
+gitnexus serve                   # Start HTTP server for web UI connection
+gitnexus list                    # List all indexed repositories
+gitnexus status                  # Show index status for current repo
+gitnexus clean                   # Delete index for current repo
+gitnexus clean --all --force     # Delete all indexes
+gitnexus wiki [path]             # Generate repository wiki from knowledge graph
+gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
+gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
+```
+
+### What Your AI Agent Gets
+
+**7 tools** exposed via MCP:
+
+| Tool               | What It Does                                                      | `repo` Param |
+| ------------------ | ----------------------------------------------------------------- | -------------- |
+| `list_repos`     | Discover all indexed repositories                                 | —             |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)             | Optional       |
+| `context`        | 360-degree symbol view — categorized refs, process participation | Optional       |
+| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
+| `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
+| `cypher`         | Raw Cypher graph queries                                          | Optional       |
+
+> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+
+**Resources** for instant context:
+
+| Resource                                  | Purpose                                              |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `gitnexus://repos`                      | List all indexed repositories (read this first)      |
+| `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
+| `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
+| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details                          |
+| `gitnexus://repo/{name}/processes`      | All execution flows                                  |
+| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
+| `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
+
+**2 MCP prompts** for guided workflows:
+
+| Prompt            | What It Does                                                              |
+| ----------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level       |
+| `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
+
+**4 agent skills** installed to `.claude/skills/` automatically:
+
+- **Exploring** — Navigate unfamiliar code using the knowledge graph
+- **Debugging** — Trace bugs through call chains
+- **Impact Analysis** — Analyze blast radius before changes
+- **Refactoring** — Plan safe refactors using dependency mapping
+
+---
+
+## Multi-Repo MCP Architecture
+
+GitNexus uses a **global registry** so one MCP server can serve multiple indexed repos. No per-project MCP config needed — set it up once and it works everywhere.
+
+```mermaid
+flowchart TD
+    subgraph CLI [CLI Commands]
+        Setup["gitnexus setup"]
+        Analyze["gitnexus analyze"]
+        Clean["gitnexus clean"]
+        List["gitnexus list"]
+    end
+
+    subgraph Registry ["~/.gitnexus/"]
+        RegFile["registry.json"]
+    end
+
+    subgraph Repos [Project Repos]
+        RepoA[".gitnexus/ in repo A"]
+        RepoB[".gitnexus/ in repo B"]
+    end
+
+    subgraph MCP [MCP Server]
+        Server["server.ts"]
+        Backend["LocalBackend"]
+        Pool["Connection Pool"]
+        ConnA["KuzuDB conn A"]
+        ConnB["KuzuDB conn B"]
+    end
+
+    Setup -->|"writes global MCP config"| CursorConfig["~/.cursor/mcp.json"]
+    Analyze -->|"registers repo"| RegFile
+    Analyze -->|"stores index"| RepoA
+    Clean -->|"unregisters repo"| RegFile
+    List -->|"reads"| RegFile
+    Server -->|"reads registry"| RegFile
+    Server --> Backend
+    Backend --> Pool
+    Pool -->|"lazy open"| ConnA
+    Pool -->|"lazy open"| ConnB
+    ConnA -->|"queries"| RepoA
+    ConnB -->|"queries"| RepoB
+```
+
+**How it works:** Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. KuzuDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). If only one repo is indexed, the `repo` parameter is optional on all tools — agents don't need to change anything.
+
+---
+
+## Web UI (browser-based)
+
+A fully client-side graph explorer and AI chat. No server, no install — your code never leaves the browser.
+
+**Try it now:** [gitnexus.vercel.app](https://gitnexus.vercel.app) — drag & drop a ZIP and start exploring.
+
+<img width="2550" height="1343" alt="gitnexus_img" src="https://github.com/user-attachments/assets/cc5d637d-e0e5-48e6-93ff-5bcfdb929285" />
+
+Or run locally:
+
+```bash
+git clone https://github.com/abhigyanpatwari/gitnexus.git
+cd gitnexus/gitnexus-web
+npm install
+npm run dev
+```
+
+The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, KuzuDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
+
+---
+
+## The Problem GitNexus Solves
+
+Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful — but they don't truly know your codebase structure.
 
 **What happens:**
-1. AI edits `UserService.validate()` 
+
+1. AI edits `UserService.validate()`
 2. Doesn't know 47 functions depend on its return type
-3. **Breaking changes ship** 💥
+3. **Breaking changes ship**
 
-### The Solution: Precomputed Graph Intelligence
+### Traditional Graph RAG vs GitNexus
 
-Traditional Graph RAG gives the LLM raw edges and hopes it explores enough. GitNexus precomputes structure so tools return complete context in one call:
+Traditional approaches give the LLM raw graph edges and hope it explores enough. GitNexus **precomputes structure at index time** — clustering, tracing, scoring — so tools return complete context in one call:
 
 ```mermaid
 flowchart TB
-    subgraph Traditional["❌ Traditional Graph RAG"]
+    subgraph Traditional["Traditional Graph RAG"]
         direction TB
         U1["User: What depends on UserService?"]
         U1 --> LLM1["LLM receives raw graph"]
         LLM1 --> Q1["Query 1: Find callers"]
-        Q1 --> R1["47 node IDs returned"]
-        R1 --> Q2["Query 2: What files are these?"]
-        Q2 --> R2["12 file paths"]
-        R2 --> Q3["Query 3: Filter out tests?"]
-        Q3 --> R3["8 production files"]
-        R3 --> Q4["Query 4: Which are high-risk?"]
-        Q4 --> THINK["LLM interprets..."]
-        THINK --> OUT1["Answer after 4+ queries"]
+        Q1 --> Q2["Query 2: What files?"]
+        Q2 --> Q3["Query 3: Filter tests?"]
+        Q3 --> Q4["Query 4: High-risk?"]
+        Q4 --> OUT1["Answer after 4+ queries"]
     end
 
-    subgraph GitNexus["✅ GitNexus Smart Tools"]
+    subgraph GN["GitNexus Smart Tools"]
         direction TB
         U2["User: What depends on UserService?"]
         U2 --> TOOL["impact UserService upstream"]
         TOOL --> PRECOMP["Pre-structured response:
-        • 8 production callers
-        • Grouped: Auth 3, Payment 2, API 3
-        • All 90%+ confidence
-        • 5 in LoginFlow process"]
+        8 callers, 3 clusters, all 90%+ confidence"]
         PRECOMP --> OUT2["Complete answer, 1 query"]
     end
 ```
 
-**Current state:** GitNexus is a standalone tool—a better DeepWiki that's 100% client-side with graph-powered analysis.
+**Core innovation: Precomputed Relational Intelligence**
 
-**MCP Integration:** GitNexus also runs as an MCP server (`gitnexus-mcp`) so tools like Cursor and Claude Code can query it for accurate context.
-
-git clone https://github.com/abhigyanpatwari/gitnexus.git
-cd gitnexus
-npm install
-npm run dev
-
-Open http://localhost:5173, drag & drop a ZIP of your codebase, and start exploring.
+- **Reliability** — LLM can't miss context, it's already in the tool response
+- **Token efficiency** — No 10-query chains to understand one function
+- **Model democratization** — Smaller LLMs work because tools do the heavy lifting
 
 ---
 
-## 🏗️ Indexing Architecture
+## How Indexing Works
 
-Seven-phase indexing: **Structure** → **Parse** → **Imports** → **Calls** → **Heritage** → **Communities** → **Processes**.
+Seven-phase pipeline that builds a complete knowledge graph:
 
 ```mermaid
 flowchart TD
-    subgraph P1["Phase 1: Extract (0-15%)"]
-        E1[Decompress ZIP] --> E2[Collect file paths]
+    subgraph P1["Phase 1: Structure (0-15%)"]
+        S1[Walk file tree] --> S2[Create CONTAINS edges]
     end
-    
-    subgraph P2["Phase 2: Structure (15-30%)"]
-        S1[Build folder tree] --> S2[Create CONTAINS edges]
-    end
-    
-    subgraph P3["Phase 3: Parse (30-55%)"]
-        PA1[Load Tree-sitter WASM] --> PA2[Generate ASTs]
-        PA2 --> PA3[Extract symbols]
+
+    subgraph P2["Phase 2: Parse (15-40%)"]
+        PA1[Load Tree-sitter parsers] --> PA2[Generate ASTs]
+        PA2 --> PA3[Extract functions, classes, methods]
         PA3 --> PA4[Populate Symbol Table]
     end
-    
-    subgraph P4["Phase 4: Imports (55-65%)"]
-        I1[Find import statements] --> I2[Resolve paths]
+
+    subgraph P3["Phase 3: Imports (40-55%)"]
+        I1[Find import statements] --> I2[Language-aware resolution]
         I2 --> I3[Create IMPORTS edges]
     end
-    
-    subgraph P5["Phase 5: Calls + Heritage (65-80%)"]
+
+    subgraph P4["Phase 4: Calls + Heritage (55-75%)"]
         C1[Find function calls] --> C2[Resolve via Symbol Table]
         C2 --> C3[Create CALLS edges with confidence]
         C3 --> H1[Find extends/implements]
         H1 --> H2[Create EXTENDS/IMPLEMENTS edges]
     end
-    
-    subgraph P6["Phase 6: Communities (80-90%)"]
+
+    subgraph P5["Phase 5: Communities (75-85%)"]
         CM1[Build CALLS graph] --> CM2[Run Leiden algorithm]
         CM2 --> CM3[Calculate cohesion scores]
         CM3 --> CM4[Generate heuristic labels]
         CM4 --> CM5[Create MEMBER_OF edges]
     end
-    
-    subgraph P7["Phase 7: Processes (90-100%)"]
+
+    subgraph P6["Phase 6: Processes (85-95%)"]
         PR1[Score entry points] --> PR2[BFS trace via CALLS]
         PR2 --> PR3[Detect cross-community flows]
         PR3 --> PR4[Create STEP_IN_PROCESS edges]
     end
-    
+
+    subgraph P7["Phase 7: Embeddings (95-100%)"]
+        EM1[Generate embeddings] --> EM2[Build HNSW vector index]
+        EM2 --> EM3[Build BM25 full-text index]
+    end
+
     P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
-    P7 --> DB[(KuzuDB WASM)]
-    DB --> READY[Graph Ready!]
+    P7 --> DB[(KuzuDB)]
+    DB --> READY[Graph Ready]
 ```
 
-### Symbol Table: Dual HashMap
+### Supported Languages
 
-Resolution strategy for function calls (produces **confidence scores**):
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+
+### Language-Aware Import Resolution
+
+GitNexus doesn't just string-match import paths. It understands language-specific module systems:
+
+| Language             | What's Resolved                                                               |
+| -------------------- | ----------------------------------------------------------------------------- |
+| **TypeScript** | Path aliases from `tsconfig.json` (e.g. `@/lib/auth` -> `src/lib/auth`) |
+| **Rust**       | Module paths (`crate::auth::validate`, `super::utils`, `self::handler`) |
+| **Java**       | Wildcard imports (`com.example.*`) and static imports                       |
+| **Go**         | Module paths via `go.mod`, internal package resolution                      |
+| **C/C++**      | Relative includes, system include detection                                   |
+
+### Confidence Scoring on CALLS
+
+Every function call edge includes a trust score:
+
+| Confidence | Reason                       | Meaning                        |
+| ---------- | ---------------------------- | ------------------------------ |
+| 0.90       | `import-resolved`          | Target found in imported file  |
+| 0.85       | `same-file`                | Target defined in same file    |
+| 0.50       | `fuzzy-global` (1 match)   | Single global match by name    |
+| 0.30       | `fuzzy-global` (N matches) | Multiple matches, first picked |
+
+The `impact` tool uses `minConfidence` to filter out guesses and return only reliable results.
+
+### Symbol Table: Dual HashMap
 
 ```mermaid
 flowchart TD
     CALL["Found call: validateUser"] --> CHECK1{"In Import Map?"}
-    CHECK1 -->|Yes| FOUND1["✅ Import-resolved (90%)"]
+    CHECK1 -->|Yes| FOUND1["Import-resolved (90%)"]
     CHECK1 -->|No| CHECK2{"In Current File?"}
-    CHECK2 -->|Yes| FOUND2["✅ Same-file (85%)"]
+    CHECK2 -->|Yes| FOUND2["Same-file (85%)"]
     CHECK2 -->|No| CHECK3{"Global Search"}
-    CHECK3 -->|1 match| FOUND3["⚠️ Fuzzy single (50%)"]
-    CHECK3 -->|N matches| FOUND4["⚠️ Fuzzy multiple (30%)"]
+    CHECK3 -->|1 match| FOUND3["Fuzzy single (50%)"]
+    CHECK3 -->|N matches| FOUND4["Fuzzy multiple (30%)"]
     CHECK3 -->|Not Found| SKIP["Skip - unresolved"]
-    
+
     FOUND1 & FOUND2 & FOUND3 & FOUND4 --> EDGE["Create CALLS edge with confidence"]
 ```
 
 ### Community Detection (Leiden Algorithm)
 
-Groups related code by analyzing CALLS edge density:
+Groups related code into functional clusters by analyzing CALLS edge density:
 
 ```mermaid
 flowchart LR
@@ -191,7 +381,7 @@ flowchart LR
     COHESION --> MEMBER["MEMBER_OF edges"]
 ```
 
-**Why it matters:** Instead of "this function is in `/src/auth/validate.ts`", the agent knows "this function is in the **Authentication** cluster with 23 other related symbols."
+Instead of "this function is in `/src/auth/validate.ts`", the agent knows "this function is in the **Authentication** cluster with 23 other related symbols."
 
 ### Process Detection (Entry Point Tracing)
 
@@ -200,14 +390,14 @@ Finds execution flows by tracing from entry points:
 ```mermaid
 flowchart TD
     FUNCS[All Functions/Methods] --> SCORE["Score entry point likelihood"]
-    
+
     subgraph Scoring["Entry Point Scoring"]
         BASE["Call ratio: callees/(callers+1)"]
-        EXPORT["× 2.0 if exported"]
-        NAME["× 1.5 if handle*/on*/Controller"]
-        FW["× 3.0 if in /routes/ or /handlers/"]
+        EXPORT["x 2.0 if exported"]
+        NAME["x 1.5 if handle*/on*/Controller"]
+        FW["x 3.0 if in /routes/ or /handlers/"]
     end
-    
+
     SCORE --> Scoring
     Scoring --> TOP["Top candidates"]
     TOP --> BFS["BFS trace via CALLS (max 10 hops)"]
@@ -216,114 +406,150 @@ flowchart TD
 ```
 
 **Framework detection** boosts scoring for known patterns:
+
 - Next.js: `/pages/`, `/app/page.tsx`, `/api/`
 - Express: `/routes/`, `/handlers/`
 - Django: `views.py`, `urls.py`
 - Spring: `/controllers/`, `*Controller.java`
 - And more for Go, Rust, C#...
 
-### Background Embeddings
-
-```mermaid
-flowchart LR
-    subgraph BG["Background (Non-blocking)"]
-        M1[Load snowflake-arctic-embed-xs] --> M2[Initialize WebGPU/WASM]
-        M2 --> E1[Batch embed nodes]
-        E1 --> E2[INSERT into CodeEmbedding table]
-        E2 --> V1[Create HNSW Vector Index]
-        V1 --> B1[Build BM25 Index]
-    end
-    
-    BG --> AI[AI Search Ready!]
-```
-
-User can explore the graph during embedding. AI features unlock when complete.
-
 ---
 
-## 📊 Graph Schema
+## Graph Schema
 
 ### Node Types
 
-| Label | Description | Key Properties |
-|-------|-------------|----------------|
-| `Folder` | Directory | `name`, `filePath` |
-| `File` | Source file | `name`, `filePath`, `language` |
-| `Function` | Function def | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Class` | Class def | `name`, `filePath`, `startLine`, `endLine` |
-| `Interface` | Interface def | `name`, `filePath`, `startLine`, `endLine` |
-| `Method` | Class method | `name`, `filePath`, `startLine`, `endLine` |
-| `Community` | Functional cluster | `label`, `cohesion`, `symbolCount`, `description` |
-| `Process` | Execution flow | `label`, `processType`, `stepCount`, `entryPointId` |
+| Label         | Description        | Key Properties                                                     |
+| ------------- | ------------------ | ------------------------------------------------------------------ |
+| `Folder`    | Directory          | `name`, `filePath`                                             |
+| `File`      | Source file        | `name`, `filePath`, `content`                                |
+| `Function`  | Function def       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Class`     | Class def          | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Interface` | Interface def      | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Method`    | Class method       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
+| `Community` | Functional cluster | `label`, `heuristicLabel`, `cohesion`, `symbolCount`       |
+| `Process`   | Execution flow     | `label`, `processType`, `stepCount`, `entryPointId`        |
+
+Plus language-specific nodes: `Struct`, `Enum`, `Trait`, `Impl`, `TypeAlias`, `Namespace`, `Record`, `Delegate`, `Annotation`, `Constructor`, `Template`, `Module` and more.
 
 ### Relationship Table: `CodeRelation`
 
 Single edge table with `type` property:
 
-| Type | From | To | Properties |
-|------|------|-----|------------|
-| `CONTAINS` | Folder | File/Folder | — |
-| `DEFINES` | File | Function/Class/etc | — |
-| `IMPORTS` | File | File | — |
-| `CALLS` | Function/Method | Function/Method | `confidence`, `reason` |
-| `EXTENDS` | Class | Class | — |
-| `IMPLEMENTS` | Class | Interface | — |
-| `MEMBER_OF` | Symbol | Community | — |
-| `STEP_IN_PROCESS` | Symbol | Process | `step` (1-indexed position) |
-
-### Confidence Scores on CALLS
-
-Every CALLS edge includes trust metadata:
-
-| Confidence | Reason | Meaning |
-|------------|--------|---------|
-| 0.90 | `import-resolved` | Target found in imported file |
-| 0.85 | `same-file` | Target defined in same file |
-| 0.50 | `fuzzy-global` (1 match) | Single global match by name |
-| 0.30 | `fuzzy-global` (N matches) | Multiple matches, first picked |
-
-**Why it matters:** The `impact` tool filters by `minConfidence` (default 0.7) to exclude guesses.
+| Type                | From            | To                 | Properties                 |
+| ------------------- | --------------- | ------------------ | -------------------------- |
+| `CONTAINS`        | Folder          | File/Folder        | —                         |
+| `DEFINES`         | File            | Function/Class/etc | —                         |
+| `IMPORTS`         | File            | File               | —                         |
+| `CALLS`           | Function/Method | Function/Method    | `confidence`, `reason` |
+| `EXTENDS`         | Class           | Class              | —                         |
+| `IMPLEMENTS`      | Class           | Interface          | —                         |
+| `MEMBER_OF`       | Symbol          | Community          | —                         |
+| `STEP_IN_PROCESS` | Symbol          | Process            | `step` (1-indexed)       |
 
 ---
 
-## 🛠️ Agent Tools Architecture
+## Tool Examples
 
-The LangChain ReAct agent has **7 tools** for code exploration. These tools **use precomputed structure** (clusters, processes, confidence) to return rich context.
+### Impact Analysis
 
-### Tool 1: `search` — Hybrid Search with Process Grouping
+```
+impact({target: "UserService", direction: "upstream", minConfidence: 0.8})
 
-Combines **BM25** (keyword) + **Semantic** (vector) + **1-hop expansion** + **process context**:
+TARGET: Class UserService (src/services/user.ts)
 
-```mermaid
-flowchart TD
-    Q["Query: auth middleware"] --> HYBRID["Hybrid Search (BM25 + Semantic)"]
-    HYBRID --> RRF["Reciprocal Rank Fusion"]
-    RRF --> TOP["Top K Results"]
-    
-    TOP --> ENRICH["For each result:"]
-    ENRICH --> HOP["1-hop connections + confidence"]
-    ENRICH --> CLUSTER["Cluster membership"]
-    ENRICH --> PROC["Process participation"]
-    
-    HOP & CLUSTER & PROC --> GROUP["Group by process"]
-    GROUP --> OUT["Structured output:
-    PROCESS: LoginFlow (3 matches)
-    [1] Function: validateUser (step 2/7)
-        Cluster: Authentication
-        Connections: ←[CALLS 90%] handleLogin"]
+UPSTREAM (what depends on this):
+  Depth 1 (WILL BREAK):
+    handleLogin [CALLS 90%] -> src/api/auth.ts:45
+    handleRegister [CALLS 90%] -> src/api/auth.ts:78
+    UserController [CALLS 85%] -> src/controllers/user.ts:12
+  Depth 2 (LIKELY AFFECTED):
+    authRouter [IMPORTS] -> src/routes/auth.ts
 ```
 
-Each result includes not just *what matches*, but *where it fits* in the codebase structure.
+Options: `maxDepth`, `minConfidence`, `relationTypes` (`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`), `includeTests`
 
----
+### Process-Grouped Search
 
-### Tool 2: `cypher` — Raw Graph Queries
+```
+query({query: "authentication middleware"})
 
-Execute Cypher directly. Supports `{{QUERY_VECTOR}}` auto-embedding:
+processes:
+  - summary: "LoginFlow"
+    priority: 0.042
+    symbol_count: 4
+    process_type: cross_community
+    step_count: 7
+
+process_symbols:
+  - name: validateUser
+    type: Function
+    filePath: src/auth/validate.ts
+    process_id: proc_login
+    step_index: 2
+
+definitions:
+  - name: AuthConfig
+    type: Interface
+    filePath: src/types/auth.ts
+```
+
+### Context (360-degree Symbol View)
+
+```
+context({name: "validateUser"})
+
+symbol:
+  uid: "Function:validateUser"
+  kind: Function
+  filePath: src/auth/validate.ts
+  startLine: 15
+
+incoming:
+  calls: [handleLogin, handleRegister, UserController]
+  imports: [authRouter]
+
+outgoing:
+  calls: [checkPassword, createSession]
+
+processes:
+  - name: LoginFlow (step 2/7)
+  - name: RegistrationFlow (step 3/5)
+```
+
+### Detect Changes (Pre-Commit)
+
+```
+detect_changes({scope: "all"})
+
+summary:
+  changed_count: 12
+  affected_count: 3
+  changed_files: 4
+  risk_level: medium
+
+changed_symbols: [validateUser, AuthService, ...]
+affected_processes: [LoginFlow, RegistrationFlow, ...]
+```
+
+### Rename (Multi-File)
+
+```
+rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
+
+status: success
+files_affected: 5
+total_edits: 8
+graph_edits: 6     (high confidence)
+text_search_edits: 2  (review carefully)
+changes: [...]
+```
+
+### Cypher Queries
 
 ```cypher
--- Find what calls auth functions in the Authentication cluster
-MATCH (c:Community {label: 'Authentication'})<-[:CodeRelation {type: 'MEMBER_OF'}]-(fn)
+-- Find what calls auth functions with high confidence
+MATCH (c:Community {heuristicLabel: 'Authentication'})<-[:CodeRelation {type: 'MEMBER_OF'}]-(fn)
 MATCH (caller)-[r:CodeRelation {type: 'CALLS'}]->(fn)
 WHERE r.confidence > 0.8
 RETURN caller.name, fn.name, r.confidence
@@ -332,222 +558,87 @@ ORDER BY r.confidence DESC
 
 ---
 
-### Tool 3: `grep` — Regex Pattern Matching
+## Wiki Generation
 
-For exact strings, error codes, TODOs:
+Generate LLM-powered documentation from your knowledge graph:
 
+```bash
+# Requires an LLM API key (OPENAI_API_KEY, etc.)
+gitnexus wiki
+
+# Use a custom model or provider
+gitnexus wiki --model gpt-4o
+gitnexus wiki --base-url https://api.anthropic.com/v1
+
+# Force full regeneration
+gitnexus wiki --force
 ```
-grep TODO|FIXME --fileFilter=.ts
-→ src/auth/validate.ts:42: // TODO: Add rate limiting
-```
+
+The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
 
 ---
 
-### Tool 4: `read` — Smart File Reader
+## Tech Stack
 
-Fuzzy path matching with suggestions if not found.
-
----
-
-### Tool 5: `overview` — Codebase Map
-
-Returns the full structural overview in one call:
-
-```
-CLUSTERS (12 total):
-| Cluster       | Symbols | Cohesion | Description |
-| Authentication| 23      | 0.82     | Login, session, JWT handling |
-| Database      | 18      | 0.76     | Query builders, connection pool |
-...
-
-PROCESSES (8 total):
-| Process               | Steps | Type            | Clusters |
-| LoginFlow             | 7     | cross_community | 3        |
-| PaymentProcessing     | 5     | intra_community | 1        |
-...
-
-CLUSTER DEPENDENCIES:
-- Authentication -> Database (12 calls)
-- API -> Authentication (8 calls)
-```
+| Layer                     | CLI                                   | Web                                     |
+| ------------------------- | ------------------------------------- | --------------------------------------- |
+| **Runtime**         | Node.js (native)                      | Browser (WASM)                          |
+| **Parsing**         | Tree-sitter native bindings           | Tree-sitter WASM                        |
+| **Database**        | KuzuDB native                         | KuzuDB WASM                             |
+| **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
+| **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
+| **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
+| **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
+| **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
+| **Clustering**      | Graphology + Leiden                   | Graphology + Leiden                     |
+| **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
 
 ---
 
-### Tool 6: `explore` — Deep Dive
-
-Accepts a **symbol**, **cluster**, or **process** name and returns detailed info:
-
-**For a symbol:**
-```
-SYMBOL: Function validateUser
-File: src/auth/validate.ts
-Cluster: Authentication — Login and session management
-
-PROCESSES:
-- LoginFlow (step 2/7)
-- SessionRefresh (step 1/4)
-
-CONNECTIONS:
--[CALLS 90%]-> hashPassword
--[CALLS 85%]-> checkRateLimit
-<-[CALLS 90%]- handleLogin
-<-[CALLS 85%]- refreshSession
-```
-
-**For a process:**
-```
-PROCESS: LoginFlow
-Type: cross_community
-Steps: 7
-
-TRACE:
-1. handleLogin (API)
-2. validateUser (Authentication)
-3. checkRateLimit (RateLimiting)
-4. hashPassword (Authentication)
-5. createSession (Authentication)
-6. storeSession (Database)
-7. generateToken (Authentication)
-
-CLUSTERS TOUCHED: API, Authentication, RateLimiting, Database
-```
-
----
-
-### Tool 7: `impact` — Blast Radius Analysis
-
-Answers "what breaks if I change X?" or "what does X depend on?":
-
-```
-impact UserService upstream --maxDepth=3 --minConfidence=0.8
-
-TARGET: Class UserService (src/services/user.ts)
-
-UPSTREAM (what depends on this):
-Depth 1 (direct callers):
-  • handleLogin [CALLS 90%] → src/api/auth.ts:45
-  • handleRegister [CALLS 90%] → src/api/auth.ts:78
-  • UserController [CALLS 85%] → src/controllers/user.ts:12
-
-Depth 2:
-  • authRouter [IMPORTS] → src/routes/auth.ts
-  • (3 more...)
-
-Summary: 8 production files affected, 3 clusters touched
-```
-
-**Key features:**
-- `upstream` = what calls this (breakage risk)
-- `downstream` = what this depends on
-- `minConfidence` = filter out fuzzy matches (default 0.7)
-- `includeTests` = false by default
-
----
-
-## 💡 Key Discovery: Unified Vector + Graph
-
-KuzuDB supports **native vector indexing (HNSW)**, so we do semantic + graph in **one Cypher query**:
-
-```cypher
-CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $queryVector, 20)
-YIELD node AS emb, distance
-WITH emb, distance WHERE distance < 0.4
-MATCH (n:Function {id: emb.nodeId})<-[:CodeRelation {type: 'CALLS'}]-(caller)
-MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-RETURN n.name, caller.name, c.label, distance
-ORDER BY distance
-```
-
-**Why this matters:**
-- 🎯 **Single query execution** — No round-trips between systems
-- 📊 **Built-in relevance ranking** — Distance IS the score
-- ⚡ **No separate vector DB** — One database, one query language
-
----
-
-## ⚡ Technical Improvements
-
-### Sigma.js + WebGL
-- V1: D3.js, choked at ~3k nodes
-- V2: Sigma.js + GPU rendering, smooth at 10k+
-
-### Dual HashMap Symbol Table
-- V1: Trie (prefix tree) - clever but slow
-- V2: File-scoped + Global hashmaps - **~2x speedup**
-
-### LRU AST Cache
-- Tree-sitter ASTs live in WASM memory
-- LRU cache (50 slots) with `tree.delete()` for cleanup
-
-### ForceAtlas2 in Web Worker
-- Layout algorithm runs off main thread
-- UI stays responsive during graph positioning
-
----
-
-## 🚧 Roadmap
+## Roadmap
 
 ### Actively Building
 
-- [ ] **LLM Cluster Enrichment** - Semantic names via LLM API
-- [ ] **AST Decorator Detection** - Parse @Controller, @Get, etc.
-- [ ] **Multi-Repo Support** - Analyze multiple repos together
-- [ ] **External Neo4j Connection** - Use hosted graph DB
+- [ ] **LLM Cluster Enrichment** — Semantic cluster names via LLM API
+- [ ] **AST Decorator Detection** — Parse @Controller, @Get, etc.
+- [ ] **Incremental Indexing** — Only re-index changed files
 
-### Recently Completed ✅
+### Recently Completed
 
-- [x] **MCP Support** - `gitnexus-mcp` package for tool integration
-- [x] **Community Detection** - Leiden algorithm for functional clustering
-- [x] **Process Detection** - Entry point tracing with framework awareness
-- [x] **9 Language Support** - Java, C, C++, C#, Go, Rust added
-- [x] **Confidence Scoring** - Trust levels on CALLS edges
-- [x] **7 Smart Tools** - overview, explore, impact added
-- [x] **Ollama Support** - Local LLM integration
-- [x] **Blast Radius Tool** - `impact` for dependency analysis
-- [x] Graph RAG Agent with streaming
-- [x] Browser embeddings (snowflake-arctic-embed-xs, 22M params)
-- [x] Vector index with HNSW in KuzuDB
-- [x] Hybrid search (BM25 + semantic + RRF)
-- [x] Grounded citations (`[[file:line]]` format)
-- [x] Multiple LLM providers (OpenAI, Azure, Gemini, Anthropic, Ollama)
-
----
-
-## 🛠 Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Frontend** | React 18, TypeScript, Vite, Tailwind v4 |
-| **Visualization** | Sigma.js, Graphology, ForceAtlas2 (WebGL) |
-| **Parsing** | Tree-sitter WASM (9 languages) |
-| **Database** | KuzuDB WASM (graph + vector HNSW) |
-| **Clustering** | Graphology + Leiden (Louvain) |
-| **Embeddings** | transformers.js, snowflake-arctic-embed-xs (22M) |
-| **AI** | LangChain ReAct agent, streaming |
-| **Concurrency** | Web Workers + Comlink |
+- [X] **Wiki Generation** — LLM-powered docs from knowledge graph (`gitnexus wiki`)
+- [X] **Multi-File Rename** — Graph-aware rename with confidence tags (`rename` tool)
+- [X] **Git-Diff Impact** — Pre-commit change analysis (`detect_changes` tool)
+- [X] **Process-Grouped Search** — Query results grouped by execution flow (`query` tool)
+- [X] **360-Degree Context** — Categorized refs + process participation (`context` tool)
+- [X] **Claude Code Hooks** — Auto-augment grep/glob with graph context
+- [X] **MCP Prompts** — Guided workflows for impact detection and architecture docs
+- [X] **Multi-Repo MCP** — Global registry + lazy connection pool, one MCP server for all repos
+- [X] **Zero-Config Setup** — `gitnexus setup` auto-configures Cursor, Claude Code, OpenCode
+- [X] **Unified CLI + MCP** — `npm install -g gitnexus` for indexing and MCP server
+- [X] **Language-Aware Imports** — TS path aliases, Rust modules, Java wildcards, Go packages
+- [X] **Community Detection** — Leiden algorithm for functional clustering
+- [X] **Process Detection** — Entry point tracing with framework awareness
+- [X] **9 Language Support** — TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+- [X] **Confidence Scoring** — Trust levels on CALLS edges (0.3-0.9)
+- [X] **Blast Radius Tool** — `impact` with minConfidence, relationTypes, includeTests
+- [X] **Hybrid Search** — BM25 + semantic + Reciprocal Rank Fusion
+- [X] **Vector Index** — HNSW in KuzuDB for semantic search
 
 ---
 
-## 🔐 Security & Privacy
+## Security & Privacy
 
-- All processing happens in your browser
-- No code uploaded to any server
-- API keys stored in localStorage only
-- Open source—audit the code yourself
-
----
-
-## 📝 License
-
-MIT License
+- **CLI**: Everything runs locally on your machine. No network calls. Index stored in `.gitnexus/` (gitignored). Global registry at `~/.gitnexus/` stores only paths and metadata.
+- **Web**: Everything runs in your browser. No code uploaded to any server. API keys stored in localStorage only.
+- Open source — audit the code yourself.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-- [Tree-sitter](https://tree-sitter.github.io/) - AST parsing
-- [KuzuDB](https://kuzudb.com/) - Embedded graph database with vector support
-- [Sigma.js](https://www.sigmajs.org/) - WebGL graph rendering
-- [transformers.js](https://huggingface.co/docs/transformers.js) - Browser ML
-- [LangChain](https://langchain.com/) - Agent orchestration
-- [Graphology](https://graphology.github.io/) - Graph data structures + Leiden
+- [Tree-sitter](https://tree-sitter.github.io/) — AST parsing
+- [KuzuDB](https://kuzudb.com/) — Embedded graph database with vector support
+- [Sigma.js](https://www.sigmajs.org/) — WebGL graph rendering
+- [transformers.js](https://huggingface.co/docs/transformers.js) — Browser ML
+- [Graphology](https://graphology.github.io/) — Graph data structures + Leiden
+- [MCP](https://modelcontextprotocol.io/) — Model Context Protocol

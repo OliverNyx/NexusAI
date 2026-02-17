@@ -9,8 +9,8 @@
  * 5. Create vector index for semantic search
  */
 
-import { initEmbedder, embedBatch, embedText, embeddingToArray, isEmbedderReady } from './embedder';
-import { generateBatchEmbeddingTexts, generateEmbeddingText } from './text-generator';
+import { initEmbedder, embedBatch, embedText, embeddingToArray, isEmbedderReady } from './embedder.js';
+import { generateBatchEmbeddingTexts, generateEmbeddingText } from './text-generator.js';
 import {
   type EmbeddingProgress,
   type EmbeddingConfig,
@@ -19,7 +19,9 @@ import {
   type ModelProgress,
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDABLE_LABELS,
-} from './types';
+} from './types.js';
+
+const isDev = process.env.NODE_ENV === 'development';
 
 /**
  * Progress callback type
@@ -71,7 +73,7 @@ const queryEmbeddableNodes = async (
       }
     } catch (error) {
       // Table might not exist or be empty, continue
-      if (import.meta.env.DEV) {
+      if (isDev) {
         console.warn(`Query for ${label} nodes failed:`, error);
       }
     }
@@ -113,7 +115,7 @@ const createVectorIndex = async (
     await executeQuery(cypher);
   } catch (error) {
     // Index might already exist
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.warn('Vector index creation warning:', error);
     }
   }
@@ -126,12 +128,14 @@ const createVectorIndex = async (
  * @param executeWithReusedStatement - Function to execute with reused prepared statement
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
+ * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   executeWithReusedStatement: (cypher: string, paramsList: Array<Record<string, any>>) => Promise<void>,
   onProgress: EmbeddingProgressCallback,
-  config: Partial<EmbeddingConfig> = {}
+  config: Partial<EmbeddingConfig> = {},
+  skipNodeIds?: Set<string>,
 ): Promise<void> => {
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
 
@@ -144,11 +148,10 @@ export const runEmbeddingPipeline = async (
     });
 
     await initEmbedder((modelProgress: ModelProgress) => {
-      // Report model download progress
       const downloadPercent = modelProgress.progress ?? 0;
       onProgress({
         phase: 'loading-model',
-        percent: Math.round(downloadPercent * 0.2), // 0-20% for model loading
+        percent: Math.round(downloadPercent * 0.2),
         modelDownloadPercent: downloadPercent,
       });
     }, finalConfig);
@@ -159,15 +162,25 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 100,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('🔍 Querying embeddable nodes...');
     }
 
     // Phase 2: Query embeddable nodes
-    const nodes = await queryEmbeddableNodes(executeQuery);
+    let nodes = await queryEmbeddableNodes(executeQuery);
+
+    // Incremental mode: filter out nodes that already have embeddings
+    if (skipNodeIds && skipNodeIds.size > 0) {
+      const beforeCount = nodes.length;
+      nodes = nodes.filter(n => !skipNodeIds.has(n.id));
+      if (isDev) {
+        console.log(`📦 Incremental embeddings: ${beforeCount} total, ${skipNodeIds.size} cached, ${nodes.length} to embed`);
+      }
+    }
+
     const totalNodes = nodes.length;
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log(`📊 Found ${totalNodes} embeddable nodes`);
     }
 
@@ -236,7 +249,7 @@ export const runEmbeddingPipeline = async (
       totalNodes,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('📇 Creating vector index...');
     }
 
@@ -250,13 +263,13 @@ export const runEmbeddingPipeline = async (
       totalNodes,
     });
 
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.log('✅ Embedding pipeline complete!');
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
-    if (import.meta.env.DEV) {
+    if (isDev) {
       console.error('❌ Embedding pipeline error:', error);
     }
 

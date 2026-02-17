@@ -83,4 +83,6 @@ export interface KnowledgeGraph {
   relationshipCount: number,
   addNode: (node: GraphNode) => void,
   addRelationship: (relationship: GraphRelationship) => void,
+  removeNode: (nodeId: string) => boolean,
+  removeNodesByFile: (filePath: string) => number,
 }

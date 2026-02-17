@@ -1,11 +1,13 @@
-import { KnowledgeGraph } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { SymbolTable } from './symbol-table';
-import { ImportMap } from './import-processor';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries';
-import { generateId } from '../../lib/utils';
-import { getLanguageFromFilename } from './utils';
+import { KnowledgeGraph } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import { SymbolTable } from './symbol-table.js';
+import { ImportMap } from './import-processor.js';
+import Parser from 'tree-sitter';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import type { ExtractedCall } from './workers/parse-worker.js';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -139,6 +141,7 @@ export const processCalls = async (
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
 
     // 1. Check language support first
     const language = getLanguageFromFilename(file.path);
@@ -156,18 +159,26 @@ export const processCalls = async (
 
     if (!tree) {
       // Cache Miss: Re-parse
-      tree = parser.parse(file.content);
+      // Use larger bufferSize for files > 32KB
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      } catch (parseError) {
+        // Skip files that can't be parsed
+        continue;
+      }
       wasReparsed = true;
+      // Cache re-parsed tree so heritage phase gets hits
+      astCache.set(file.path, tree);
     }
 
     let query;
     let matches;
     try {
-      query = parser.getLanguage().query(queryStr);
+      const language = parser.getLanguage();
+      query = new Parser.Query(language, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);
-      if (wasReparsed) tree.delete();
       continue;
     }
 
@@ -216,10 +227,7 @@ export const processCalls = async (
       });
     });
 
-    // Cleanup if re-parsed
-    if (wasReparsed) {
-      tree.delete();
-    }
+    // Tree is now owned by the LRU cache — no manual delete needed
   }
 };
 
@@ -246,29 +254,29 @@ const resolveCallTarget = (
   symbolTable: SymbolTable,
   importMap: ImportMap
 ): ResolveResult | null => {
-  // Strategy A: Check imported files (HIGH confidence - we know the import chain)
-  const importedFiles = importMap.get(currentFile);
-  if (importedFiles) {
-    for (const importedFile of importedFiles) {
-      const nodeId = symbolTable.lookupExact(importedFile, calledName);
-      if (nodeId) {
-        return { nodeId, confidence: 0.9, reason: 'import-resolved' };
-      }
-    }
-  }
-
-  // Strategy B: Check local file (HIGH confidence - same file definition)
+  // Strategy B first (cheapest — single map lookup): Check local file
   const localNodeId = symbolTable.lookupExact(currentFile, calledName);
   if (localNodeId) {
     return { nodeId: localNodeId, confidence: 0.85, reason: 'same-file' };
   }
 
-  // Strategy C: Fuzzy global search (LOW confidence - just matching by name)
-  const fuzzyMatches = symbolTable.lookupFuzzy(calledName);
-  if (fuzzyMatches.length > 0) {
-    // Lower confidence if multiple matches exist (more ambiguous)
-    const confidence = fuzzyMatches.length === 1 ? 0.5 : 0.3;
-    return { nodeId: fuzzyMatches[0].nodeId, confidence, reason: 'fuzzy-global' };
+  // Strategy A: Check if any definition of calledName is in an imported file
+  // Reversed: instead of iterating all imports and checking each, get all definitions
+  // and check if any is imported. O(definitions) instead of O(imports).
+  const allDefs = symbolTable.lookupFuzzy(calledName);
+  if (allDefs.length > 0) {
+    const importedFiles = importMap.get(currentFile);
+    if (importedFiles) {
+      for (const def of allDefs) {
+        if (importedFiles.has(def.filePath)) {
+          return { nodeId: def.nodeId, confidence: 0.9, reason: 'import-resolved' };
+        }
+      }
+    }
+
+    // Strategy C: Fuzzy global (no import match found)
+    const confidence = allDefs.length === 1 ? 0.5 : 0.3;
+    return { nodeId: allDefs[0].nodeId, confidence, reason: 'fuzzy-global' };
   }
 
   return null;
@@ -312,3 +320,59 @@ const isBuiltInOrNoise = (name: string): boolean => {
   return builtIns.has(name);
 };
 
+/**
+ * Fast path: resolve pre-extracted call sites from workers.
+ * No AST parsing — workers already extracted calledName + sourceId.
+ * This function only does symbol table lookups + graph mutations.
+ */
+export const processCallsFromExtracted = async (
+  graph: KnowledgeGraph,
+  extractedCalls: ExtractedCall[],
+  symbolTable: SymbolTable,
+  importMap: ImportMap,
+  onProgress?: (current: number, total: number) => void
+) => {
+  // Group by file for progress reporting
+  const byFile = new Map<string, ExtractedCall[]>();
+  for (const call of extractedCalls) {
+    let list = byFile.get(call.filePath);
+    if (!list) {
+      list = [];
+      byFile.set(call.filePath, list);
+    }
+    list.push(call);
+  }
+
+  const totalFiles = byFile.size;
+  let filesProcessed = 0;
+
+  for (const [_filePath, calls] of byFile) {
+    filesProcessed++;
+    if (filesProcessed % 100 === 0) {
+      onProgress?.(filesProcessed, totalFiles);
+      await yieldToEventLoop();
+    }
+
+    for (const call of calls) {
+      const resolved = resolveCallTarget(
+        call.calledName,
+        call.filePath,
+        symbolTable,
+        importMap
+      );
+      if (!resolved) continue;
+
+      const relId = generateId('CALLS', `${call.sourceId}:${call.calledName}->${resolved.nodeId}`);
+      graph.addRelationship({
+        id: relId,
+        sourceId: call.sourceId,
+        targetId: resolved.nodeId,
+        type: 'CALLS',
+        confidence: resolved.confidence,
+        reason: resolved.reason,
+      });
+    }
+  }
+
+  onProgress?.(totalFiles, totalFiles);
+};

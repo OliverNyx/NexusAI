@@ -1,16 +1,28 @@
 /**
  * Community Detection Processor
  * 
- * Uses the Leiden algorithm (via graphology-communities-louvain) to detect
+ * Uses the Leiden algorithm (via graphology-communities-leiden) to detect
  * communities/clusters in the code graph based on CALLS relationships.
  * 
  * Communities represent groups of code that work together frequently,
  * helping agents navigate the codebase by functional area rather than file structure.
  */
 
+// NOTE: The Leiden algorithm source is vendored from graphology's repo
+// (src/communities-leiden) because it was never published to npm.
+// We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
-import louvain from 'graphology-communities-louvain';
-import { KnowledgeGraph, NodeLabel } from '../graph/types';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { KnowledgeGraph, NodeLabel } from '../graph/types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Navigate to package root (works from both src/ and dist/)
+const leidenPath = resolve(__dirname, '..', '..', '..', 'vendor', 'leiden', 'index.cjs');
+const _require = createRequire(import.meta.url);
+const leiden = _require(leidenPath);
 
 // ============================================================================
 // TYPES
@@ -93,8 +105,8 @@ export const processCommunities = async (
 
   onProgress?.(`Running Leiden algorithm on ${graph.order} nodes...`, 30);
 
-  // Step 2: Run Leiden (via Louvain implementation with refinement)
-  const details = louvain.detailed(graph, {
+  // Step 2: Run Leiden algorithm for community detection
+  const details = (leiden as any).detailed(graph, {
     resolution: 1.0,  // Default resolution, can be tuned
     randomWalk: true,
   });
@@ -141,16 +153,28 @@ export const processCommunities = async (
  * Build a graphology graph containing only symbol nodes and CALLS edges
  * This is what the Leiden algorithm will cluster
  */
-const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): Graph => {
+const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): any => {
   // Use undirected graph for Leiden - it looks at edge density, not direction
-  const graph = new Graph({ type: 'undirected', allowSelfLoops: false });
+  const graph = new (Graph as any)({ type: 'undirected', allowSelfLoops: false });
 
   // Symbol types that should be clustered
   const symbolTypes = new Set<NodeLabel>(['Function', 'Class', 'Method', 'Interface']);
-  
-  // Add symbol nodes
+
+  // First pass: collect which nodes participate in clustering edges
+  const clusteringRelTypes = new Set(['CALLS', 'EXTENDS', 'IMPLEMENTS']);
+  const connectedNodes = new Set<string>();
+
+  knowledgeGraph.relationships.forEach(rel => {
+    if (clusteringRelTypes.has(rel.type) && rel.sourceId !== rel.targetId) {
+      connectedNodes.add(rel.sourceId);
+      connectedNodes.add(rel.targetId);
+    }
+  });
+
+  // Only add nodes that have at least one clustering edge
+  // Isolated nodes would just become singletons (skipped anyway)
   knowledgeGraph.nodes.forEach(node => {
-    if (symbolTypes.has(node.label)) {
+    if (symbolTypes.has(node.label) && connectedNodes.has(node.id)) {
       graph.addNode(node.id, {
         name: node.properties.name,
         filePath: node.properties.filePath,
@@ -159,16 +183,10 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): Graph => {
     }
   });
 
-  // Add CALLS edges (primary clustering signal)
-  // We can also include EXTENDS/IMPLEMENTS for OOP clustering
-  const clusteringRelTypes = new Set(['CALLS', 'EXTENDS', 'IMPLEMENTS']);
-  
+  // Add edges
   knowledgeGraph.relationships.forEach(rel => {
     if (clusteringRelTypes.has(rel.type)) {
-      // Only add edge if both nodes exist in our symbol graph
-      // Also skip self-loops (recursive calls) - not allowed in undirected graph
       if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId) && rel.sourceId !== rel.targetId) {
-        // Avoid duplicate edges
         if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
           graph.addEdge(rel.sourceId, rel.targetId);
         }
@@ -189,7 +207,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): Graph => {
 const createCommunityNodes = (
   communities: Record<string, number>,
   communityCount: number,
-  graph: Graph,
+  graph: any,
   knowledgeGraph: KnowledgeGraph
 ): CommunityNode[] => {
   // Group node IDs by community
@@ -244,7 +262,7 @@ const createCommunityNodes = (
 const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
-  graph: Graph,
+  graph: any,
   commNum: number
 ): string => {
   // Collect folder names from file paths
@@ -322,33 +340,34 @@ const findCommonPrefix = (strings: string[]): string => {
 // ============================================================================
 
 /**
- * Calculate cohesion score (0-1) based on internal edge density
- * Higher cohesion = more internal connections relative to size
+ * Estimate cohesion score (0-1) based on internal edge density.
+ * Uses sampling for large communities to avoid O(N^2) cost.
  */
-const calculateCohesion = (memberIds: string[], graph: Graph): number => {
+const calculateCohesion = (memberIds: string[], graph: any): number => {
   if (memberIds.length <= 1) return 1.0;
 
   const memberSet = new Set(memberIds);
+
+  // Sample up to 50 members for large communities
+  const SAMPLE_SIZE = 50;
+  const sample = memberIds.length <= SAMPLE_SIZE
+    ? memberIds
+    : memberIds.slice(0, SAMPLE_SIZE);
+
   let internalEdges = 0;
-  
-  // Count edges within the community
-  memberIds.forEach(nodeId => {
-    if (graph.hasNode(nodeId)) {
-      graph.forEachNeighbor(nodeId, neighbor => {
-        if (memberSet.has(neighbor)) {
-          internalEdges++;
-        }
-      });
-    }
-  });
-  
-  // Each edge is counted twice (once from each end), so divide by 2
-  internalEdges = internalEdges / 2;
-  
-  // Maximum possible internal edges for n nodes: n*(n-1)/2
-  const maxPossibleEdges = (memberIds.length * (memberIds.length - 1)) / 2;
-  
-  if (maxPossibleEdges === 0) return 1.0;
-  
-  return Math.min(1.0, internalEdges / maxPossibleEdges);
+  let totalEdges = 0;
+
+  for (const nodeId of sample) {
+    if (!graph.hasNode(nodeId)) continue;
+    graph.forEachNeighbor(nodeId, (neighbor: string) => {
+      totalEdges++;
+      if (memberSet.has(neighbor)) {
+        internalEdges++;
+      }
+    });
+  }
+
+  // Cohesion = fraction of edges that stay internal
+  if (totalEdges === 0) return 1.0;
+  return Math.min(1.0, internalEdges / totalEdges);
 };

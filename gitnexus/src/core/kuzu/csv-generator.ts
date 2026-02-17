@@ -10,20 +10,25 @@
  * - All fields are consistently quoted for safety with code content
  */
 
-import { KnowledgeGraph, GraphNode, NodeLabel } from '../graph/types';
-import { NODE_TABLES, NodeTableName } from './schema';
+import { KnowledgeGraph, GraphNode, NodeLabel } from '../graph/types.js';
+import { NODE_TABLES, NodeTableName } from './schema.js';
 
 // ============================================================================
 // CSV ESCAPE UTILITIES
 // ============================================================================
 
 /**
- * Sanitize string to ensure valid UTF-8
- * Removes or replaces invalid characters that would break CSV parsing
+ * Sanitize string to ensure valid UTF-8 and safe CSV content for KuzuDB
+ * Removes or replaces invalid characters that would break CSV parsing.
+ * 
+ * Critical: KuzuDB's native CSV parser on Windows can misinterpret \r\n
+ * inside quoted fields. We normalize all line endings to \n only.
  */
 const sanitizeUTF8 = (str: string): string => {
   return str
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars except \t \n \r
+    .replace(/\r\n/g, '\n')          // Normalize Windows line endings first
+    .replace(/\r/g, '\n')            // Normalize remaining \r to \n
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars except \t \n
     .replace(/[\uD800-\uDFFF]/g, '') // Remove surrogate pairs (invalid standalone)
     .replace(/[\uFFFE\uFFFF]/g, ''); // Remove BOM and special chars
 };
@@ -133,9 +138,14 @@ export interface CSVData {
 const generateFileCSV = (nodes: GraphNode[], fileContents: Map<string, string>): string => {
   const headers = ['id', 'name', 'filePath', 'content'];
   const rows: string[] = [headers.join(',')];
+  const seenIds = new Set<string>();
   
   for (const node of nodes) {
     if (node.label !== 'File') continue;
+    // Skip duplicates
+    if (seenIds.has(node.id)) continue;
+    seenIds.add(node.id);
+    
     const content = extractContent(node, fileContents);
     rows.push([
       escapeCSVField(node.id),
@@ -170,14 +180,14 @@ const generateFolderCSV = (nodes: GraphNode[]): string => {
 
 /**
  * Generate CSV for code element nodes (Function, Class, Interface, Method, CodeElement)
- * Headers: id,name,filePath,startLine,endLine,content
+ * Headers: id,name,filePath,startLine,endLine,isExported,content
  */
 const generateCodeElementCSV = (
   nodes: GraphNode[],
   label: NodeLabel,
   fileContents: Map<string, string>
 ): string => {
-  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'content'];
+  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'isExported', 'content'];
   const rows: string[] = [headers.join(',')];
   
   for (const node of nodes) {
@@ -189,6 +199,7 @@ const generateCodeElementCSV = (
       escapeCSVField(node.properties.filePath || ''),
       escapeCSVNumber(node.properties.startLine, -1),
       escapeCSVNumber(node.properties.endLine, -1),
+      node.properties.isExported ? 'true' : 'false',
       escapeCSVField(content),
     ].join(','));
   }
