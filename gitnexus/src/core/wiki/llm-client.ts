@@ -42,11 +42,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     baseUrl: overrides?.baseUrl
       || process.env.GITNEXUS_LLM_BASE_URL
       || savedConfig.baseUrl
-      || 'https://api.openai.com/v1',
+      || 'https://openrouter.ai/api/v1',
     model: overrides?.model
       || process.env.GITNEXUS_MODEL
       || savedConfig.model
-      || 'gpt-4o-mini',
+      || 'minimax/minimax-m2.5',
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
   };
@@ -59,14 +59,20 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+export interface CallLLMOptions {
+  onChunk?: (charsReceived: number) => void;
+}
+
 /**
  * Call an OpenAI-compatible LLM API.
- * Retries once on transient failures (5xx, network errors).
+ * Uses streaming when onChunk callback is provided for real-time progress.
+ * Retries up to 3 times on transient failures (429, 5xx, network errors).
  */
 export async function callLLM(
   prompt: string,
   config: LLMConfig,
   systemPrompt?: string,
+  options?: CallLLMOptions,
 ): Promise<LLMResponse> {
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
@@ -75,17 +81,20 @@ export async function callLLM(
   messages.push({ role: 'user', content: prompt });
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const useStream = !!options?.onChunk;
 
-  const body = {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages,
     max_tokens: config.maxTokens,
     temperature: config.temperature,
   };
+  if (useStream) body.stream = true;
 
+  const MAX_RETRIES = 3;
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -99,22 +108,29 @@ export async function callLLM(
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'unknown error');
 
-        // Rate limit — wait and retry
-        if (response.status === 429 && attempt === 0) {
-          const retryAfter = parseInt(response.headers.get('retry-after') || '5', 10);
-          await sleep(retryAfter * 1000);
+        // Rate limit — wait with exponential backoff and retry
+        if (response.status === 429 && attempt < MAX_RETRIES - 1) {
+          const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
+          const delay = retryAfter > 0 ? retryAfter * 1000 : (2 ** attempt) * 3000;
+          await sleep(delay);
           continue;
         }
 
-        // Server error — retry once
-        if (response.status >= 500 && attempt === 0) {
-          await sleep(2000);
+        // Server error — retry with backoff
+        if (response.status >= 500 && attempt < MAX_RETRIES - 1) {
+          await sleep((attempt + 1) * 2000);
           continue;
         }
 
         throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
       }
 
+      // Streaming path
+      if (useStream && response.body) {
+        return await readSSEStream(response.body, options!.onChunk!);
+      }
+
+      // Non-streaming path
       const json = await response.json() as any;
       const choice = json.choices?.[0];
       if (!choice?.message?.content) {
@@ -129,9 +145,9 @@ export async function callLLM(
     } catch (err: any) {
       lastError = err;
 
-      // Network error — retry once
-      if (attempt === 0 && (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))) {
-        await sleep(3000);
+      // Network error — retry with backoff
+      if (attempt < MAX_RETRIES - 1 && (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))) {
+        await sleep((attempt + 1) * 3000);
         continue;
       }
 
@@ -140,6 +156,52 @@ export async function callLLM(
   }
 
   throw lastError || new Error('LLM call failed after retries');
+}
+
+/**
+ * Read an SSE stream from an OpenAI-compatible streaming response.
+ */
+async function readSSEStream(
+  body: ReadableStream<Uint8Array>,
+  onChunk: (charsReceived: number) => void,
+): Promise<LLMResponse> {
+  const decoder = new TextDecoder();
+  const reader = body.getReader();
+  let content = '';
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+      const data = trimmed.slice(6);
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          content += delta;
+          onChunk(content.length);
+        }
+      } catch {
+        // Skip malformed SSE chunks
+      }
+    }
+  }
+
+  if (!content) {
+    throw new Error('LLM returned empty streaming response');
+  }
+
+  return { content };
 }
 
 function sleep(ms: number): Promise<void> {

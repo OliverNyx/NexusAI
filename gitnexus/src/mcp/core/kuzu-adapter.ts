@@ -1,24 +1,44 @@
 /**
  * KuzuDB Adapter (Connection Pool)
  * 
- * Manages a pool of KuzuDB connections keyed by repoId.
- * Connections are lazily opened on first query and evicted
- * after idle timeout or when pool exceeds max size (LRU).
+ * Manages a pool of KuzuDB databases keyed by repoId, each with
+ * multiple Connection objects for safe concurrent query execution.
+ * 
+ * KuzuDB Connections are NOT thread-safe — a single Connection
+ * segfaults if concurrent .query() calls hit it simultaneously.
+ * This adapter provides a checkout/return connection pool so each
+ * concurrent query gets its own Connection from the same Database.
+ * 
+ * @see https://docs.kuzudb.com/concurrency — multiple Connections
+ * from the same Database is the officially supported concurrency pattern.
  */
 
 import fs from 'fs/promises';
 import kuzu from 'kuzu';
 
+/** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
   db: kuzu.Database;
-  conn: kuzu.Connection;
+  /** Available connections ready for checkout */
+  available: kuzu.Connection[];
+  /** Number of connections currently checked out */
+  checkedOut: number;
+  /** Queued waiters for when all connections are busy */
+  waiters: Array<(conn: kuzu.Connection) => void>;
   lastUsed: number;
   dbPath: string;
 }
 
 const pool = new Map<string, PoolEntry>();
+
+/** Max repos in the pool (LRU eviction) */
 const MAX_POOL_SIZE = 5;
+/** Idle timeout before closing a repo's connections */
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+/** Max connections per repo (caps concurrent queries per repo) */
+const MAX_CONNS_PER_REPO = 8;
+/** Connections created eagerly on init */
+const INITIAL_CONNS_PER_REPO = 2;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -35,14 +55,13 @@ function ensureIdleTimer(): void {
       }
     }
   }, 60_000);
-  // Don't keep the process alive just for this timer
   if (idleTimer && typeof idleTimer === 'object' && 'unref' in idleTimer) {
     (idleTimer as NodeJS.Timeout).unref();
   }
 }
 
 /**
- * Evict the least-recently-used connection if pool is at capacity
+ * Evict the least-recently-used repo if pool is at capacity
  */
 function evictLRU(): void {
   if (pool.size < MAX_POOL_SIZE) return;
@@ -61,21 +80,37 @@ function evictLRU(): void {
 }
 
 /**
- * Close a single pool entry
+ * Close all connections for a repo and remove it from the pool
  */
 function closeOne(repoId: string): void {
   const entry = pool.get(repoId);
   if (!entry) return;
-  try { entry.conn.close(); } catch {}
+  for (const conn of entry.available) {
+    try { conn.close(); } catch {}
+  }
   try { entry.db.close(); } catch {}
   pool.delete(repoId);
+}
+
+/**
+ * Create a new Connection from a repo's Database.
+ * Silences stdout to prevent native module output from corrupting MCP stdio.
+ */
+function createConnection(db: kuzu.Database): kuzu.Connection {
+  const origWrite = process.stdout.write;
+  process.stdout.write = (() => true) as any;
+  try {
+    return new kuzu.Connection(db);
+  } finally {
+    process.stdout.write = origWrite;
+  }
 }
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 
 /**
- * Initialize (or reuse) a connection for a specific repo.
+ * Initialize (or reuse) a Database + connection pool for a specific repo.
  * Retries on lock errors (e.g., when `gitnexus analyze` is running).
  */
 export const initKuzu = async (repoId: string, dbPath: string): Promise<void> => {
@@ -99,8 +134,6 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
   // avoids lock conflicts when `gitnexus analyze` is writing.
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-    // Silence stdout during KuzuDB init — native module may write to stdout
-    // which corrupts the MCP stdio protocol.
     const origWrite = process.stdout.write;
     process.stdout.write = (() => true) as any;
     try {
@@ -110,9 +143,15 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
         false, // enableCompression (default)
         true,  // readOnly
       );
-      const conn = new kuzu.Connection(db);
       process.stdout.write = origWrite;
-      pool.set(repoId, { db, conn, lastUsed: Date.now(), dbPath });
+
+      // Pre-create a small pool of connections
+      const available: kuzu.Connection[] = [];
+      for (let i = 0; i < INITIAL_CONNS_PER_REPO; i++) {
+        available.push(createConnection(db));
+      }
+
+      pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath });
       ensureIdleTimer();
       return;
     } catch (err: any) {
@@ -121,7 +160,6 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
       const isLockError = lastError.message.includes('Could not set lock')
         || lastError.message.includes('lock');
       if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
-      // Wait before retrying — analyze may be mid-rebuild
       await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
     }
   }
@@ -133,7 +171,50 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
 };
 
 /**
- * Execute a query on a specific repo's connection
+ * Checkout a connection from the pool.
+ * Returns an available connection, or creates a new one if under the cap.
+ * If all connections are busy and at cap, queues the caller until one is returned.
+ */
+function checkout(entry: PoolEntry): Promise<kuzu.Connection> {
+  // Fast path: grab an available connection
+  if (entry.available.length > 0) {
+    entry.checkedOut++;
+    return Promise.resolve(entry.available.pop()!);
+  }
+
+  // Grow the pool if under the cap
+  const totalConns = entry.available.length + entry.checkedOut;
+  if (totalConns < MAX_CONNS_PER_REPO) {
+    entry.checkedOut++;
+    return Promise.resolve(createConnection(entry.db));
+  }
+
+  // At capacity — queue the caller. checkin() will resolve this when
+  // a connection is returned, handing it directly to the next waiter.
+  return new Promise<kuzu.Connection>(resolve => {
+    entry.waiters.push(resolve);
+  });
+}
+
+/**
+ * Return a connection to the pool after use.
+ * If there are queued waiters, hand the connection directly to the next one
+ * instead of putting it back in the available array (avoids race conditions).
+ */
+function checkin(entry: PoolEntry, conn: kuzu.Connection): void {
+  if (entry.waiters.length > 0) {
+    // Hand directly to the next waiter — no intermediate available state
+    const waiter = entry.waiters.shift()!;
+    waiter(conn);
+  } else {
+    entry.checkedOut--;
+    entry.available.push(conn);
+  }
+}
+
+/**
+ * Execute a query on a specific repo's connection pool.
+ * Automatically checks out a connection, runs the query, and returns it.
  */
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
   const entry = pool.get(repoId);
@@ -142,16 +223,22 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
   }
 
   entry.lastUsed = Date.now();
-  const queryResult = await entry.conn.query(cypher);
-  const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-  const rows = await result.getAll();
-  return rows;
+
+  const conn = await checkout(entry);
+  try {
+    const queryResult = await conn.query(cypher);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const rows = await result.getAll();
+    return rows;
+  } finally {
+    checkin(entry, conn);
+  }
 };
 
 /**
- * Close one or all connections.
- * If repoId is provided, close only that connection.
- * If omitted, close all connections in the pool.
+ * Close one or all repo pools.
+ * If repoId is provided, close only that repo's connections.
+ * If omitted, close all repos.
  */
 export const closeKuzu = async (repoId?: string): Promise<void> => {
   if (repoId) {
@@ -159,7 +246,6 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
     return;
   }
 
-  // Close all
   for (const id of [...pool.keys()]) {
     closeOne(id);
   }
@@ -171,6 +257,6 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
 };
 
 /**
- * Check if a specific repo's connection is active
+ * Check if a specific repo's pool is active
  */
 export const isKuzuReady = (repoId: string): boolean => pool.has(repoId);

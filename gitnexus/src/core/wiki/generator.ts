@@ -27,11 +27,13 @@ import {
   getInterModuleEdgesForOverview,
   type FileWithExports,
 } from './graph-queries.js';
+import { generateHTMLViewer } from './html-viewer.js';
 
 import {
   callLLM,
   estimateTokens,
   type LLMConfig,
+  type CallLLMOptions,
 } from './llm-client.js';
 
 import {
@@ -60,6 +62,7 @@ export interface WikiOptions {
   baseUrl?: string;
   apiKey?: string;
   maxTokensPerModule?: number;
+  concurrency?: number;
 }
 
 export interface WikiMeta {
@@ -93,6 +96,7 @@ export class WikiGenerator {
   private kuzuPath: string;
   private llmConfig: LLMConfig;
   private maxTokensPerModule: number;
+  private concurrency: number;
   private options: WikiOptions;
   private onProgress: ProgressCallback;
   private failedModules: string[] = [];
@@ -112,7 +116,28 @@ export class WikiGenerator {
     this.options = options;
     this.llmConfig = llmConfig;
     this.maxTokensPerModule = options.maxTokensPerModule ?? DEFAULT_MAX_TOKENS_PER_MODULE;
-    this.onProgress = onProgress || (() => {});
+    this.concurrency = options.concurrency ?? 3;
+    const progressFn = onProgress || (() => {});
+    this.onProgress = (phase, percent, detail) => {
+      if (percent > 0) this.lastPercent = percent;
+      progressFn(phase, percent, detail);
+    };
+  }
+
+  private lastPercent = 0;
+
+  /**
+   * Create streaming options that report LLM progress to the progress bar.
+   * Uses the last known percent so streaming doesn't reset the bar backwards.
+   */
+  private streamOpts(label: string, fixedPercent?: number): CallLLMOptions {
+    return {
+      onChunk: (chars: number) => {
+        const tokens = Math.round(chars / 4);
+        const pct = fixedPercent ?? this.lastPercent;
+        this.onProgress('stream', pct, `${label} (${tokens} tok)`);
+      },
+    };
   }
 
   /**
@@ -127,6 +152,8 @@ export class WikiGenerator {
 
     // Up-to-date check (skip if --force)
     if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+      // Still regenerate the HTML viewer in case it's missing
+      await this.ensureHTMLViewer();
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
     }
 
@@ -146,14 +173,34 @@ export class WikiGenerator {
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
     await initWikiDb(this.kuzuPath);
 
+    let result: { pagesGenerated: number; mode: 'full' | 'incremental' | 'up-to-date'; failedModules: string[] };
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
-        return await this.incrementalUpdate(existingMeta, currentCommit);
+        result = await this.incrementalUpdate(existingMeta, currentCommit);
+      } else {
+        result = await this.fullGeneration(currentCommit);
       }
-      return await this.fullGeneration(currentCommit);
     } finally {
       await closeWikiDb();
     }
+
+    // Always generate the HTML viewer after wiki content changes
+    await this.ensureHTMLViewer();
+
+    return result;
+  }
+
+  // ─── HTML Viewer ─────────────────────────────────────────────────────
+
+  private async ensureHTMLViewer(): Promise<void> {
+    // Only generate if there are markdown pages to bundle
+    const dirEntries = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
+    const hasMd = dirEntries.some(f => f.endsWith('.md'));
+    if (!hasMd) return;
+
+    this.onProgress('html', 98, 'Building HTML viewer...');
+    const repoName = path.basename(this.repoPath);
+    await generateHTMLViewer(this.wikiDir, repoName);
   }
 
   // ─── Full Generation ────────────────────────────────────────────────
@@ -184,17 +231,56 @@ export class WikiGenerator {
     const moduleTree = await this.buildModuleTree(enrichedFiles);
     pagesGenerated = 0;
 
-    // Phase 2: Generate module pages (bottom-up)
+    // Phase 2: Generate module pages (parallel with concurrency limit)
     const totalModules = this.countModules(moduleTree);
     let modulesProcessed = 0;
 
-    for (const node of moduleTree) {
-      const generated = await this.generateModulePage(node, () => {
-        modulesProcessed++;
-        const percent = 30 + Math.round((modulesProcessed / totalModules) * 55);
-        this.onProgress('modules', percent, `${modulesProcessed}/${totalModules} modules`);
-      });
-      pagesGenerated += generated;
+    const reportProgress = (moduleName?: string) => {
+      modulesProcessed++;
+      const percent = 30 + Math.round((modulesProcessed / totalModules) * 55);
+      const detail = moduleName
+        ? `${modulesProcessed}/${totalModules} — ${moduleName}`
+        : `${modulesProcessed}/${totalModules} modules`;
+      this.onProgress('modules', percent, detail);
+    };
+
+    // Flatten tree into layers: leaves first, then parents
+    // Leaves can run in parallel; parents must wait for their children
+    const { leaves, parents } = this.flattenModuleTree(moduleTree);
+
+    // Process all leaf modules in parallel
+    pagesGenerated += await this.runParallel(leaves, async (node) => {
+      const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
+      if (await this.fileExists(pagePath)) {
+        reportProgress(node.name);
+        return 0;
+      }
+      try {
+        await this.generateLeafPage(node);
+        reportProgress(node.name);
+        return 1;
+      } catch (err: any) {
+        this.failedModules.push(node.name);
+        reportProgress(`Failed: ${node.name}`);
+        return 0;
+      }
+    });
+
+    // Process parent modules sequentially (they depend on child docs)
+    for (const node of parents) {
+      const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
+      if (await this.fileExists(pagePath)) {
+        reportProgress(node.name);
+        continue;
+      }
+      try {
+        await this.generateParentPage(node);
+        pagesGenerated++;
+        reportProgress(node.name);
+      } catch (err: any) {
+        this.failedModules.push(node.name);
+        reportProgress(`Failed: ${node.name}`);
+      }
     }
 
     // Phase 3: Generate overview
@@ -244,7 +330,10 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
-    const response = await callLLM(prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT);
+    const response = await callLLM(
+      prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
+      this.streamOpts('Grouping files', 15),
+    );
     const grouping = this.parseGroupingResponse(response.content, files);
 
     // Convert to tree nodes
@@ -367,62 +456,6 @@ export class WikiGenerator {
   // ─── Phase 2: Generate Module Pages ─────────────────────────────────
 
   /**
-   * Recursively generate pages for a module tree node.
-   * Returns count of pages generated.
-   */
-  private async generateModulePage(
-    node: ModuleTreeNode,
-    onPageDone: () => void,
-  ): Promise<number> {
-    let count = 0;
-
-    // If node has children, generate children first (bottom-up)
-    if (node.children && node.children.length > 0) {
-      for (const child of node.children) {
-        count += await this.generateModulePage(child, onPageDone);
-      }
-
-      // Then generate parent page from children docs
-      const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
-
-      // Resumability: skip if page already exists
-      if (await this.fileExists(pagePath)) {
-        onPageDone();
-        return count;
-      }
-
-      try {
-        await this.generateParentPage(node);
-        count++;
-      } catch (err: any) {
-        this.failedModules.push(node.name);
-        this.onProgress('modules', 0, `Failed: ${node.name} — ${err.message?.slice(0, 80)}`);
-      }
-      onPageDone();
-      return count;
-    }
-
-    // Leaf module — generate from source code
-    const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
-
-    // Resumability: skip if page already exists
-    if (await this.fileExists(pagePath)) {
-      onPageDone();
-      return count;
-    }
-
-    try {
-      await this.generateLeafPage(node);
-      count++;
-    } catch (err: any) {
-      this.failedModules.push(node.name);
-      this.onProgress('modules', 0, `Failed: ${node.name} — ${err.message?.slice(0, 80)}`);
-    }
-    onPageDone();
-    return count;
-  }
-
-  /**
    * Generate a leaf module page from source code + graph data.
    */
   private async generateLeafPage(node: ModuleTreeNode): Promise<void> {
@@ -454,7 +487,10 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await callLLM(prompt, this.llmConfig, MODULE_SYSTEM_PROMPT);
+    const response = await callLLM(
+      prompt, this.llmConfig, MODULE_SYSTEM_PROMPT,
+      this.streamOpts(node.name),
+    );
 
     // Write page with front matter
     const pageContent = `# ${node.name}\n\n${response.content}`;
@@ -494,7 +530,10 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await callLLM(prompt, this.llmConfig, PARENT_SYSTEM_PROMPT);
+    const response = await callLLM(
+      prompt, this.llmConfig, PARENT_SYSTEM_PROMPT,
+      this.streamOpts(node.name),
+    );
 
     const pageContent = `# ${node.name}\n\n${response.content}`;
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
@@ -538,7 +577,10 @@ export class WikiGenerator {
       TOP_PROCESSES: formatProcesses(topProcesses),
     });
 
-    const response = await callLLM(prompt, this.llmConfig, OVERVIEW_SYSTEM_PROMPT);
+    const response = await callLLM(
+      prompt, this.llmConfig, OVERVIEW_SYSTEM_PROMPT,
+      this.streamOpts('Generating overview', 88),
+    );
 
     const pageContent = `# ${path.basename(this.repoPath)} — Wiki\n\n${response.content}`;
     await fs.writeFile(path.join(this.wikiDir, 'overview.md'), pageContent, 'utf-8');
@@ -602,28 +644,41 @@ export class WikiGenerator {
       affectedModules.add('Other');
     }
 
-    // Regenerate affected module pages
+    // Regenerate affected module pages (parallel)
     let pagesGenerated = 0;
     const moduleTree = existingMeta.moduleTree;
     const affectedArray = Array.from(affectedModules);
 
     this.onProgress('incremental', 20, `Regenerating ${affectedArray.length} module(s)...`);
 
-    for (let i = 0; i < affectedArray.length; i++) {
-      const modSlug = this.slugify(affectedArray[i]);
+    const affectedNodes: ModuleTreeNode[] = [];
+    for (const mod of affectedArray) {
+      const modSlug = this.slugify(mod);
       const node = this.findNodeBySlug(moduleTree, modSlug);
-
       if (node) {
-        // Delete existing page to force re-generation
         try { await fs.unlink(path.join(this.wikiDir, `${node.slug}.md`)); } catch {}
-
-        await this.generateModulePage(node, () => {});
-        pagesGenerated++;
+        affectedNodes.push(node);
       }
-
-      const percent = 20 + Math.round(((i + 1) / affectedArray.length) * 60);
-      this.onProgress('incremental', percent, `${i + 1}/${affectedArray.length} modules`);
     }
+
+    let incProcessed = 0;
+    pagesGenerated += await this.runParallel(affectedNodes, async (node) => {
+      try {
+        if (node.children && node.children.length > 0) {
+          await this.generateParentPage(node);
+        } else {
+          await this.generateLeafPage(node);
+        }
+        incProcessed++;
+        const percent = 20 + Math.round((incProcessed / affectedNodes.length) * 60);
+        this.onProgress('incremental', percent, `${incProcessed}/${affectedNodes.length} — ${node.name}`);
+        return 1;
+      } catch (err: any) {
+        this.failedModules.push(node.name);
+        incProcessed++;
+        return 0;
+      }
+    });
 
     // Regenerate overview if any pages changed
     if (pagesGenerated > 0) {
@@ -762,6 +817,85 @@ export class WikiGenerator {
       }
     }
     return count;
+  }
+
+  /**
+   * Flatten the module tree into leaf nodes and parent nodes.
+   * Leaves can be processed in parallel; parents must wait for children.
+   */
+  private flattenModuleTree(tree: ModuleTreeNode[]): { leaves: ModuleTreeNode[]; parents: ModuleTreeNode[] } {
+    const leaves: ModuleTreeNode[] = [];
+    const parents: ModuleTreeNode[] = [];
+
+    for (const node of tree) {
+      if (node.children && node.children.length > 0) {
+        for (const child of node.children) {
+          leaves.push(child);
+        }
+        parents.push(node);
+      } else {
+        leaves.push(node);
+      }
+    }
+
+    return { leaves, parents };
+  }
+
+  /**
+   * Run async tasks in parallel with a concurrency limit and adaptive rate limiting.
+   * If a 429 rate limit is hit, concurrency is temporarily reduced.
+   */
+  private async runParallel<T>(
+    items: T[],
+    fn: (item: T) => Promise<number>,
+  ): Promise<number> {
+    let total = 0;
+    let activeConcurrency = this.concurrency;
+    let running = 0;
+    let idx = 0;
+
+    return new Promise((resolve, reject) => {
+      const next = () => {
+        while (running < activeConcurrency && idx < items.length) {
+          const item = items[idx++];
+          running++;
+
+          fn(item)
+            .then((count) => {
+              total += count;
+              running--;
+              if (idx >= items.length && running === 0) {
+                resolve(total);
+              } else {
+                next();
+              }
+            })
+            .catch((err) => {
+              running--;
+              // On rate limit, reduce concurrency temporarily
+              if (err.message?.includes('429')) {
+                activeConcurrency = Math.max(1, activeConcurrency - 1);
+                this.onProgress('modules', this.lastPercent, `Rate limited — concurrency → ${activeConcurrency}`);
+                // Re-queue the item
+                idx--;
+                setTimeout(next, 5000);
+              } else {
+                if (idx >= items.length && running === 0) {
+                  resolve(total);
+                } else {
+                  next();
+                }
+              }
+            });
+        }
+      };
+
+      if (items.length === 0) {
+        resolve(0);
+      } else {
+        next();
+      }
+    });
   }
 
   private findNodeBySlug(tree: ModuleTreeNode[], slug: string): ModuleTreeNode | null {
