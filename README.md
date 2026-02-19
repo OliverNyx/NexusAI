@@ -7,7 +7,11 @@ Indexes any codebase into a knowledge graph — every dependency, call chain, cl
 [![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
 
-https://github.com/user-attachments/assets/abfd0300-0aae-4296-b8d3-8b72ed882433
+
+
+https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
+
+
 
 > *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
 
