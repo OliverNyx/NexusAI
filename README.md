@@ -273,183 +273,20 @@ flowchart TB
 
 ---
 
-## How Indexing Works
+## How It Works
 
-Seven-phase pipeline that builds a complete knowledge graph:
+GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
 
-```mermaid
-flowchart TD
-    subgraph P1["Phase 1: Structure (0-15%)"]
-        S1[Walk file tree] --> S2[Create CONTAINS edges]
-    end
-
-    subgraph P2["Phase 2: Parse (15-40%)"]
-        PA1[Load Tree-sitter parsers] --> PA2[Generate ASTs]
-        PA2 --> PA3[Extract functions, classes, methods]
-        PA3 --> PA4[Populate Symbol Table]
-    end
-
-    subgraph P3["Phase 3: Imports (40-55%)"]
-        I1[Find import statements] --> I2[Language-aware resolution]
-        I2 --> I3[Create IMPORTS edges]
-    end
-
-    subgraph P4["Phase 4: Calls + Heritage (55-75%)"]
-        C1[Find function calls] --> C2[Resolve via Symbol Table]
-        C2 --> C3[Create CALLS edges with confidence]
-        C3 --> H1[Find extends/implements]
-        H1 --> H2[Create EXTENDS/IMPLEMENTS edges]
-    end
-
-    subgraph P5["Phase 5: Communities (75-85%)"]
-        CM1[Build CALLS graph] --> CM2[Run Leiden algorithm]
-        CM2 --> CM3[Calculate cohesion scores]
-        CM3 --> CM4[Generate heuristic labels]
-        CM4 --> CM5[Create MEMBER_OF edges]
-    end
-
-    subgraph P6["Phase 6: Processes (85-95%)"]
-        PR1[Score entry points] --> PR2[BFS trace via CALLS]
-        PR2 --> PR3[Detect cross-community flows]
-        PR3 --> PR4[Create STEP_IN_PROCESS edges]
-    end
-
-    subgraph P7["Phase 7: Embeddings (95-100%)"]
-        EM1[Generate embeddings] --> EM2[Build HNSW vector index]
-        EM2 --> EM3[Build BM25 full-text index]
-    end
-
-    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
-    P7 --> DB[(KuzuDB)]
-    DB --> READY[Graph Ready]
-```
+1. **Structure** — Walks the file tree and maps folder/file relationships
+2. **Parsing** — Extracts functions, classes, methods, and interfaces using Tree-sitter ASTs
+3. **Resolution** — Resolves imports and function calls across files with language-aware logic
+4. **Clustering** — Groups related symbols into functional communities
+5. **Processes** — Traces execution flows from entry points through call chains
+6. **Search** — Builds hybrid search indexes for fast retrieval
 
 ### Supported Languages
 
 TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
-
-### Language-Aware Import Resolution
-
-GitNexus doesn't just string-match import paths. It understands language-specific module systems:
-
-| Language             | What's Resolved                                                               |
-| -------------------- | ----------------------------------------------------------------------------- |
-| **TypeScript** | Path aliases from `tsconfig.json` (e.g. `@/lib/auth` -> `src/lib/auth`) |
-| **Rust**       | Module paths (`crate::auth::validate`, `super::utils`, `self::handler`) |
-| **Java**       | Wildcard imports (`com.example.*`) and static imports                       |
-| **Go**         | Module paths via `go.mod`, internal package resolution                      |
-| **C/C++**      | Relative includes, system include detection                                   |
-
-### Confidence Scoring on CALLS
-
-Every function call edge includes a trust score:
-
-| Confidence | Reason                       | Meaning                        |
-| ---------- | ---------------------------- | ------------------------------ |
-| 0.90       | `import-resolved`          | Target found in imported file  |
-| 0.85       | `same-file`                | Target defined in same file    |
-| 0.50       | `fuzzy-global` (1 match)   | Single global match by name    |
-| 0.30       | `fuzzy-global` (N matches) | Multiple matches, first picked |
-
-The `impact` tool uses `minConfidence` to filter out guesses and return only reliable results.
-
-### Symbol Table: Dual HashMap
-
-```mermaid
-flowchart TD
-    CALL["Found call: validateUser"] --> CHECK1{"In Import Map?"}
-    CHECK1 -->|Yes| FOUND1["Import-resolved (90%)"]
-    CHECK1 -->|No| CHECK2{"In Current File?"}
-    CHECK2 -->|Yes| FOUND2["Same-file (85%)"]
-    CHECK2 -->|No| CHECK3{"Global Search"}
-    CHECK3 -->|1 match| FOUND3["Fuzzy single (50%)"]
-    CHECK3 -->|N matches| FOUND4["Fuzzy multiple (30%)"]
-    CHECK3 -->|Not Found| SKIP["Skip - unresolved"]
-
-    FOUND1 & FOUND2 & FOUND3 & FOUND4 --> EDGE["Create CALLS edge with confidence"]
-```
-
-### Community Detection (Leiden Algorithm)
-
-Groups related code into functional clusters by analyzing CALLS edge density:
-
-```mermaid
-flowchart LR
-    CALLS[CALLS edges] --> GRAPH[Build undirected graph]
-    GRAPH --> LEIDEN[Leiden algorithm]
-    LEIDEN --> COMMS["Communities detected"]
-    COMMS --> LABEL["Heuristic labeling
-    (folder names, prefixes)"]
-    LABEL --> COHESION["Calculate cohesion
-    (internal edge density)"]
-    COHESION --> MEMBER["MEMBER_OF edges"]
-```
-
-Instead of "this function is in `/src/auth/validate.ts`", the agent knows "this function is in the **Authentication** cluster with 23 other related symbols."
-
-### Process Detection (Entry Point Tracing)
-
-Finds execution flows by tracing from entry points:
-
-```mermaid
-flowchart TD
-    FUNCS[All Functions/Methods] --> SCORE["Score entry point likelihood"]
-
-    subgraph Scoring["Entry Point Scoring"]
-        BASE["Call ratio: callees/(callers+1)"]
-        EXPORT["x 2.0 if exported"]
-        NAME["x 1.5 if handle*/on*/Controller"]
-        FW["x 3.0 if in /routes/ or /handlers/"]
-    end
-
-    SCORE --> Scoring
-    Scoring --> TOP["Top candidates"]
-    TOP --> BFS["BFS trace via CALLS (max 10 hops)"]
-    BFS --> PROCESS["Process node created"]
-    PROCESS --> STEPS["STEP_IN_PROCESS edges (1, 2, 3...)"]
-```
-
-**Framework detection** boosts scoring for known patterns:
-
-- Next.js: `/pages/`, `/app/page.tsx`, `/api/`
-- Express: `/routes/`, `/handlers/`
-- Django: `views.py`, `urls.py`
-- Spring: `/controllers/`, `*Controller.java`
-- And more for Go, Rust, C#...
-
----
-
-## Graph Schema
-
-### Node Types
-
-| Label         | Description        | Key Properties                                                     |
-| ------------- | ------------------ | ------------------------------------------------------------------ |
-| `Folder`    | Directory          | `name`, `filePath`                                             |
-| `File`      | Source file        | `name`, `filePath`, `content`                                |
-| `Function`  | Function def       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Class`     | Class def          | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Interface` | Interface def      | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Method`    | Class method       | `name`, `filePath`, `startLine`, `endLine`, `isExported` |
-| `Community` | Functional cluster | `label`, `heuristicLabel`, `cohesion`, `symbolCount`       |
-| `Process`   | Execution flow     | `label`, `processType`, `stepCount`, `entryPointId`        |
-
-Plus language-specific nodes: `Struct`, `Enum`, `Trait`, `Impl`, `TypeAlias`, `Namespace`, `Record`, `Delegate`, `Annotation`, `Constructor`, `Template`, `Module` and more.
-
-### Relationship Table: `CodeRelation`
-
-Single edge table with `type` property:
-
-| Type                | From            | To                 | Properties                 |
-| ------------------- | --------------- | ------------------ | -------------------------- |
-| `CONTAINS`        | Folder          | File/Folder        | —                         |
-| `DEFINES`         | File            | Function/Class/etc | —                         |
-| `IMPORTS`         | File            | File               | —                         |
-| `CALLS`           | Function/Method | Function/Method    | `confidence`, `reason` |
-| `EXTENDS`         | Class           | Class              | —                         |
-| `IMPLEMENTS`      | Class           | Interface          | —                         |
-| `MEMBER_OF`       | Symbol          | Community          | —                         |
-| `STEP_IN_PROCESS` | Symbol          | Process            | `step` (1-indexed)       |
 
 ---
 
@@ -594,7 +431,7 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 | **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
 | **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
 | **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
-| **Clustering**      | Graphology + Leiden                   | Graphology + Leiden                     |
+| **Clustering**      | Graphology                            | Graphology                              |
 | **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
 
 ---
@@ -609,24 +446,11 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ### Recently Completed
 
-- [X] **Wiki Generation** — LLM-powered docs from knowledge graph (`gitnexus wiki`)
-- [X] **Multi-File Rename** — Graph-aware rename with confidence tags (`rename` tool)
-- [X] **Git-Diff Impact** — Pre-commit change analysis (`detect_changes` tool)
-- [X] **Process-Grouped Search** — Query results grouped by execution flow (`query` tool)
-- [X] **360-Degree Context** — Categorized refs + process participation (`context` tool)
-- [X] **Claude Code Hooks** — Auto-augment grep/glob with graph context
-- [X] **MCP Prompts** — Guided workflows for impact detection and architecture docs
-- [X] **Multi-Repo MCP** — Global registry + lazy connection pool, one MCP server for all repos
-- [X] **Zero-Config Setup** — `gitnexus setup` auto-configures Cursor, Claude Code, OpenCode
-- [X] **Unified CLI + MCP** — `npm install -g gitnexus` for indexing and MCP server
-- [X] **Language-Aware Imports** — TS path aliases, Rust modules, Java wildcards, Go packages
-- [X] **Community Detection** — Leiden algorithm for functional clustering
-- [X] **Process Detection** — Entry point tracing with framework awareness
-- [X] **9 Language Support** — TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
-- [X] **Confidence Scoring** — Trust levels on CALLS edges (0.3-0.9)
-- [X] **Blast Radius Tool** — `impact` with minConfidence, relationTypes, includeTests
-- [X] **Hybrid Search** — BM25 + semantic + Reciprocal Rank Fusion
-- [X] **Vector Index** — HNSW in KuzuDB for semantic search
+- [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
+- [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
+- [X] Multi-Repo MCP, Zero-Config Setup, 9 Language Support
+- [X] Community Detection, Process Detection, Confidence Scoring
+- [X] Hybrid Search, Vector Index
 
 ---
 
@@ -644,5 +468,5 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 - [KuzuDB](https://kuzudb.com/) — Embedded graph database with vector support
 - [Sigma.js](https://www.sigmajs.org/) — WebGL graph rendering
 - [transformers.js](https://huggingface.co/docs/transformers.js) — Browser ML
-- [Graphology](https://graphology.github.io/) — Graph data structures + Leiden
+- [Graphology](https://graphology.github.io/) — Graph data structures
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol
