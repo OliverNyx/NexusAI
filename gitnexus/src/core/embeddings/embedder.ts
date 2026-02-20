@@ -1,11 +1,18 @@
 /**
  * Embedder Module
- * 
+ *
  * Singleton factory for transformers.js embedding pipeline.
  * Handles model loading, caching, and both single and batch embedding operations.
- * 
+ *
  * Uses snowflake-arctic-embed-xs by default (22M params, 384 dims, ~90MB)
  */
+
+// Suppress ONNX Runtime native warnings (e.g. VerifyEachNodeIsAssignedToAnEp)
+// Must be set BEFORE onnxruntime-node is imported by transformers.js
+// Level 3 = Error only (skips Warning/Info)
+if (!process.env.ORT_LOG_LEVEL) {
+  process.env.ORT_LOG_LEVEL = '3';
+}
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
