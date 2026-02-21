@@ -79,17 +79,16 @@ Add to `~/.config/opencode/config.json`:
 }
 ```
 
-## What It Does
+## How It Works
 
-GitNexus indexes your codebase through 7 phases:
+GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
 
-1. **Structure** — File/folder tree
-2. **Parse** — AST extraction via Tree-sitter (9 languages)
-3. **Imports** — Resolve import paths (including TS path aliases, Rust modules, Java wildcards, Go packages)
-4. **Calls** — Function call resolution with confidence scoring (0.3-0.9)
-5. **Heritage** — Class extends/implements chains
-6. **Communities** — Leiden algorithm clusters related code into functional groups
-7. **Processes** — Entry point detection and execution flow tracing
+1. **Structure** — Walks the file tree and maps folder/file relationships
+2. **Parsing** — Extracts functions, classes, methods, and interfaces using Tree-sitter ASTs
+3. **Resolution** — Resolves imports and function calls across files with language-aware logic
+4. **Clustering** — Groups related symbols into functional communities
+5. **Processes** — Traces execution flows from entry points through call chains
+6. **Search** — Builds hybrid search indexes for fast retrieval
 
 The result is a **KuzuDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
 
@@ -147,7 +146,7 @@ gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-m
 
 ## Multi-Repo Support
 
-GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically with lazy KuzuDB connections (max 5 concurrent, evicted after 5 minutes idle).
+GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.
 
 ## Supported Languages
 
