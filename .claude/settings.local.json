@@ -65,7 +65,13 @@
       "WebFetch(domain:smartlogic.io)",
       "Bash(ls:*)",
       "Bash(wc:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(cmd /c \"dir /s C:\\\\Users\\\\ADMIN\\\\.cache\\\\huggingface 2>nul | findstr /i \"\"File\\(s\\)\"\"\")",
+      "Bash(du:*)",
+      "mcp__desktop-commander__list_directory",
+      "Bash(python3 -c \":*)",
+      "mcp__gitnexus__detect_changes"
     ]
   },
   "enableAllProjectMcpServers": true,

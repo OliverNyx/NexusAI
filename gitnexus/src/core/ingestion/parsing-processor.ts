@@ -209,6 +209,9 @@ const processParsingSequential = async (
 
     if (!language) continue;
 
+    // Skip very large files — they can crash tree-sitter or cause OOM
+    if (file.content.length > 512 * 1024) continue;
+
     await loadLanguage(language, file.path);
 
     let tree;
@@ -335,7 +338,7 @@ export const processParsing = async (
     try {
       return await processParsingWithWorkers(graph, files, symbolTable, astCache, workerPool, onFileProgress);
     } catch (err) {
-      console.warn('Worker pool parsing failed, falling back to sequential:', err);
+      console.warn('Worker pool parsing failed, falling back to sequential:', err instanceof Error ? err.message : err);
     }
   }
 

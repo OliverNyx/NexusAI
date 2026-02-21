@@ -50,29 +50,66 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
     const promises = chunks.map((chunk, i) => {
       const worker = workers[i];
       return new Promise<TResult>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          clearTimeout(timer);
+          worker.removeListener('message', handler);
+          worker.removeListener('error', errorHandler);
+          worker.removeListener('exit', exitHandler);
+        };
+
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(new Error(`Worker ${i} timed out after 5 minutes (chunk: ${chunk.length} items). Worker may have crashed or is processing too much data.`));
+          }
+        }, 5 * 60 * 1000);
+
         const handler = (msg: any) => {
+          if (settled) return;
           if (msg && msg.type === 'progress') {
-            // Intermediate progress from worker
             workerProgress[i] = msg.filesProcessed;
             if (onProgress) {
               const total = workerProgress.reduce((a, b) => a + b, 0);
               onProgress(total);
             }
+          } else if (msg && msg.type === 'error') {
+            // Error reported by worker via postMessage
+            settled = true;
+            cleanup();
+            reject(new Error(`Worker ${i} error: ${msg.error}`));
           } else if (msg && msg.type === 'result') {
-            // Final result
-            worker.removeListener('message', handler);
+            settled = true;
+            cleanup();
             resolve(msg.data);
           } else {
-            // Legacy: treat any non-typed message as result (backward compat)
-            worker.removeListener('message', handler);
+            // Legacy: treat any non-typed message as result
+            settled = true;
+            cleanup();
             resolve(msg);
           }
         };
+
+        const errorHandler = (err: any) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(err);
+          }
+        };
+
+        const exitHandler = (code: number) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(new Error(`Worker ${i} exited unexpectedly with code ${code}. This usually indicates an out-of-memory crash or native addon failure.`));
+          }
+        };
+
         worker.on('message', handler);
-        worker.once('error', (err) => {
-          worker.removeListener('message', handler);
-          reject(err);
-        });
+        worker.once('error', errorHandler);
+        worker.once('exit', exitHandler);
         worker.postMessage(chunk);
       });
     });

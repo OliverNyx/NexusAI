@@ -402,6 +402,9 @@ const processFileGroup = (
   }
 
   for (const file of files) {
+    // Skip very large files — they can crash tree-sitter or cause OOM
+    if (file.content.length > 512 * 1024) continue;
+
     let tree;
     try {
       tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
@@ -528,8 +531,13 @@ const processFileGroup = (
 // ============================================================================
 
 parentPort!.on('message', (files: ParseWorkerInput[]) => {
-  const result = processBatch(files, (filesProcessed) => {
-    parentPort!.postMessage({ type: 'progress', filesProcessed });
-  });
-  parentPort!.postMessage({ type: 'result', data: result });
+  try {
+    const result = processBatch(files, (filesProcessed) => {
+      parentPort!.postMessage({ type: 'progress', filesProcessed });
+    });
+    parentPort!.postMessage({ type: 'result', data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    parentPort!.postMessage({ type: 'error', error: message });
+  }
 });
