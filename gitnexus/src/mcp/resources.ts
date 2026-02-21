@@ -153,8 +153,8 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
 /**
  * Repos resource — list all indexed repositories
  */
-function getReposResource(backend: LocalBackend): string {
-  const repos = backend.listRepos();
+async function getReposResource(backend: LocalBackend): Promise<string> {
+  const repos = await backend.listRepos();
 
   if (repos.length === 0) {
     return 'repos: []\n# No repositories indexed. Run: gitnexus analyze';
@@ -187,7 +187,7 @@ function getReposResource(backend: LocalBackend): string {
  */
 async function getContextResource(backend: LocalBackend, repoName?: string): Promise<string> {
   // Resolve repo
-  const repo = backend.resolveRepo(repoName);
+  const repo = await backend.resolveRepo(repoName);
   const repoId = repo.name.toLowerCase();
   const context = backend.getContext(repoId) || backend.getContext();
 
@@ -432,8 +432,8 @@ async function getProcessDetailResource(name: string, backend: LocalBackend, rep
  * Useful for `gitnexus setup` onboarding or dynamic content injection.
  */
 async function getSetupResource(backend: LocalBackend): Promise<string> {
-  const repos = backend.listRepos();
-  
+  const repos = await backend.listRepos();
+
   if (repos.length === 0) {
     return '# GitNexus\n\nNo repositories indexed. Run: `npx gitnexus analyze` in a repository.';
   }

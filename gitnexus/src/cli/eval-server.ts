@@ -308,7 +308,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     process.exit(1);
   }
 
-  const repos = backend.listRepos();
+  const repos = await backend.listRepos();
   console.error(`GitNexus eval-server: ${repos.length} repo(s) loaded: ${repos.map(r => r.name).join(', ')}`);
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;

@@ -45,7 +45,7 @@ export const mcpCommand = async () => {
     process.exit(1);
   }
 
-  const repoNames = backend.listRepos().map(r => r.name);
+  const repoNames = (await backend.listRepos()).map(r => r.name);
   console.error(`GitNexus: MCP server starting with ${repoNames.length} repo(s): ${repoNames.join(', ')}`);
 
   // Start MCP server (serves all repos)
