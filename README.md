@@ -19,6 +19,11 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://www.star-history.com/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
+
+
 ## Two Ways to Use GitNexus
 
 |                   | **CLI + MCP**                                            | **Web UI**                                             |
