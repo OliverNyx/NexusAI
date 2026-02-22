@@ -486,6 +486,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
+    // Embeddings require the WASM worker DB — skip in backend mode
+    if (isBackendMode) return;
+
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
 
@@ -527,7 +530,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }
       throw error;
     }
-  }, []);
+  }, [isBackendMode]);
 
   const semanticSearch = useCallback(async (
     query: string,
