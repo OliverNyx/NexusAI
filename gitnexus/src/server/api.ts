@@ -143,7 +143,7 @@ export const createServer = async (port: number) => {
       const repo = await backend.resolveRepo(repoName);
       res.json({
         name: repo.name,
-        repoPath: repo.repoPath,
+        path: repo.repoPath,
         indexedAt: repo.indexedAt,
         lastCommit: repo.lastCommit,
         stats: repo.stats || {},

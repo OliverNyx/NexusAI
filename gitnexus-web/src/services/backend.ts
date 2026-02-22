@@ -114,8 +114,11 @@ export const fetchRepos = async (): Promise<BackendRepo[]> => {
 export const fetchGraph = async (
   repo: string,
 ): Promise<{ nodes: unknown[]; relationships: unknown[] }> => {
+  // Graph loading can take a while for large repos — use 60s timeout
   const response = await fetchWithTimeout(
     `${backendUrl}/api/graph?repo=${encodeURIComponent(repo)}`,
+    {},
+    60_000,
   );
   await assertOk(response);
   return response.json() as Promise<{ nodes: unknown[]; relationships: unknown[] }>;

@@ -11,6 +11,7 @@ import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCa
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
+import { runCypherQuery } from '../services/backend';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -465,7 +466,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
     if (isBackendMode && backendRepo) {
-      const { runCypherQuery } = await import('../services/backend');
       return runCypherQuery(backendRepo, cypher);
     }
     const api = apiRef.current;
@@ -474,6 +474,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, [isBackendMode, backendRepo]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    if (isBackendMode) return true; // backend handles DB
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -481,7 +482,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, []);
+  }, [isBackendMode]);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {

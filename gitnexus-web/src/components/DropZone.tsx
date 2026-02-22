@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, DragEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, DragEvent } from 'react';
 import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Server } from 'lucide-react';
 import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
 import { FileEntry } from '../services/zip';
@@ -24,9 +24,11 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState<string | null>(null);
 
+  const hasAutoSwitched = useRef(false);
   useEffect(() => {
-    if (isBackendConnected && backendRepos && backendRepos.length > 0) {
+    if (!hasAutoSwitched.current && isBackendConnected && backendRepos && backendRepos.length > 0) {
       setActiveTab('local');
+      hasAutoSwitched.current = true;
     }
   }, [isBackendConnected, backendRepos]);
 

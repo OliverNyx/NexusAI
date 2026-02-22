@@ -168,6 +168,7 @@ const AppContent = () => {
       setBackendMode(true);
       setBackendRepo(repoName);
       backend.selectRepo(repoName);
+      setProgress(null);
       setViewMode('exploring');
 
       // Initialize agent if LLM configured
