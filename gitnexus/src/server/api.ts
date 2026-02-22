@@ -88,11 +88,18 @@ const buildGraph = async (
         step: row.step,
       });
     }
-  } catch {
-    // ignore relationship query failures
+  } catch (err: any) {
+    console.warn('GitNexus: relationship query failed:', err?.message);
   }
 
   return { nodes, relationships };
+};
+
+const httpStatus = (err: any): number => {
+  const msg = err?.message ?? '';
+  if (msg.includes('not found') || msg.includes('No indexed')) return 404;
+  if (msg.includes('Multiple repositories')) return 400;
+  return 500;
 };
 
 export const createServer = async (port: number) => {
@@ -105,7 +112,16 @@ export const createServer = async (port: number) => {
   }
 
   const app = express();
-  app.use(cors());
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, server-to-server) and localhost origins
+      if (!origin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  }));
   app.use(express.json({ limit: '10mb' }));
 
   // ─── GET /api/repos ─────────────────────────────────────────────
@@ -119,11 +135,11 @@ export const createServer = async (port: number) => {
     }
   });
 
-  // ─── GET /api/repo?name=X ──────────────────────────────────────
+  // ─── GET /api/repo?repo=X ──────────────────────────────────────
   // Get metadata for a specific repo
   app.get('/api/repo', async (req, res) => {
     try {
-      const repoName = req.query.name as string | undefined;
+      const repoName = req.query.repo as string | undefined;
       const repo = await backend.resolveRepo(repoName);
       res.json({
         name: repo.name,
@@ -133,7 +149,8 @@ export const createServer = async (port: number) => {
         stats: repo.stats || {},
       });
     } catch (err: any) {
-      res.status(404).json({ error: err.message || 'Repository not found' });
+      res.status(httpStatus(err))
+        .json({ error: err.message || 'Repository not found' });
     }
   });
 
@@ -147,13 +164,16 @@ export const createServer = async (port: number) => {
       const graph = await buildGraph(backend, repo.name);
       res.json(graph);
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Failed to build graph' });
     }
   });
 
   // ─── POST /api/query ───────────────────────────────────────────
-  // Execute a raw Cypher query
+  // Execute a raw Cypher query.
+  // This endpoint is intentionally unrestricted (no query validation) because
+  // the server binds to 127.0.0.1 only — it exposes full graph query
+  // capabilities to local clients by design.
   app.post('/api/query', async (req, res) => {
     try {
       const repoName = (req.body.repo ?? req.query.repo) as string | undefined;
@@ -165,9 +185,13 @@ export const createServer = async (port: number) => {
       }
 
       const result = await backend.callTool('cypher', { repo: repoName, query: cypher });
+      if (result && !Array.isArray(result) && result.error) {
+        res.status(500).json({ error: result.error });
+        return;
+      }
       res.json({ result });
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Query failed' });
     }
   });
@@ -177,7 +201,7 @@ export const createServer = async (port: number) => {
   app.post('/api/search', async (req, res) => {
     try {
       const repoName = (req.body.repo ?? req.query.repo) as string | undefined;
-      const query = req.body.query as string;
+      const query = (req.body.query ?? '').trim();
       const limit = req.body.limit as number | undefined;
 
       if (!query) {
@@ -192,7 +216,7 @@ export const createServer = async (port: number) => {
       });
       res.json({ results });
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Search failed' });
     }
   });
@@ -225,10 +249,9 @@ export const createServer = async (port: number) => {
     } catch (err: any) {
       if (err.code === 'ENOENT') {
         res.status(404).json({ error: 'File not found' });
-      } else if (err.message?.includes('not found') || err.message?.includes('No indexed')) {
-        res.status(404).json({ error: err.message });
       } else {
-        res.status(500).json({ error: err.message || 'Failed to read file' });
+        res.status(httpStatus(err))
+          .json({ error: err.message || 'Failed to read file' });
       }
     }
   });
@@ -241,7 +264,7 @@ export const createServer = async (port: number) => {
       const result = await backend.queryProcesses(repoName);
       res.json(result);
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Failed to query processes' });
     }
   });
@@ -265,7 +288,7 @@ export const createServer = async (port: number) => {
       }
       res.json(result);
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Failed to query process detail' });
     }
   });
@@ -278,7 +301,7 @@ export const createServer = async (port: number) => {
       const result = await backend.queryClusters(repoName);
       res.json(result);
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Failed to query clusters' });
     }
   });
@@ -302,13 +325,21 @@ export const createServer = async (port: number) => {
       }
       res.json(result);
     } catch (err: any) {
-      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+      res.status(httpStatus(err))
         .json({ error: err.message || 'Failed to query cluster detail' });
     }
   });
 
-  app.listen(port, () => {
+  const server = app.listen(port, '127.0.0.1', () => {
     console.log(`GitNexus server running on http://localhost:${port}`);
     console.log(`Serving ${hasRepos ? 'all indexed repositories' : 'no repositories (run gitnexus analyze first)'}`);
   });
+
+  const shutdown = async () => {
+    server.close();
+    await backend.disconnect();
+    process.exit(0);
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 };
