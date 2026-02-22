@@ -27,7 +27,7 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
-  .option('--skip-embeddings', 'Skip embedding generation (faster)')
+  .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .action(analyzeCommand);
 
 program
