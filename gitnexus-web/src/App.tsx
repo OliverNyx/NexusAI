@@ -11,6 +11,9 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
+import { useBackend } from './hooks/useBackend';
+import { fetchGraph } from './services/backend';
+import { createKnowledgeGraph } from './core/graph/graph';
 
 const AppContent = () => {
   const {
@@ -33,7 +36,11 @@ const AppContent = () => {
     codeReferences,
     selectedNode,
     isCodePanelOpen,
+    setBackendMode,
+    setBackendRepo,
   } = useAppState();
+
+  const backend = useBackend();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
@@ -129,6 +136,59 @@ const AppContent = () => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
 
+  const handleSelectBackendRepo = useCallback(async (repoName: string) => {
+    setViewMode('loading');
+    setProjectName(repoName);
+    setProgress({ phase: 'extracting', percent: 50, message: 'Loading from server...', detail: 'Fetching graph data' });
+
+    try {
+      const graphData = await fetchGraph(repoName);
+
+      // Build KnowledgeGraph from server data
+      const graph = createKnowledgeGraph();
+      for (const node of graphData.nodes) {
+        graph.addNode(node as any);
+      }
+      for (const rel of graphData.relationships) {
+        graph.addRelationship(rel as any);
+      }
+      setGraph(graph);
+
+      // Extract file contents from File nodes (content is in node properties)
+      const contents = new Map<string, string>();
+      for (const node of graphData.nodes) {
+        const n = node as any;
+        if (n.label === 'File' && n.properties?.content && n.properties?.filePath) {
+          contents.set(n.properties.filePath, n.properties.content);
+        }
+      }
+      setFileContents(contents);
+
+      // Enter backend mode
+      setBackendMode(true);
+      setBackendRepo(repoName);
+      backend.selectRepo(repoName);
+      setViewMode('exploring');
+
+      // Initialize agent if LLM configured
+      if (getActiveProviderConfig()) {
+        initializeAgent(repoName);
+      }
+    } catch (error) {
+      console.error('Backend load error:', error);
+      setProgress({
+        phase: 'error',
+        percent: 0,
+        message: 'Error loading from server',
+        detail: error instanceof Error ? error.message : 'Unknown error',
+      });
+      setTimeout(() => {
+        setViewMode('onboarding');
+        setProgress(null);
+      }, 3000);
+    }
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, setBackendMode, setBackendRepo, backend, initializeAgent]);
+
   // Handle settings saved - refresh and reinitialize agent
   // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
   const handleSettingsSaved = useCallback(() => {
@@ -138,7 +198,16 @@ const AppContent = () => {
 
   // Render based on view mode
   if (viewMode === 'onboarding') {
-    return <DropZone onFileSelect={handleFileSelect} onGitClone={handleGitClone} />;
+    return (
+      <DropZone
+        onFileSelect={handleFileSelect}
+        onGitClone={handleGitClone}
+        backendRepos={backend.repos}
+        isBackendConnected={backend.isConnected}
+        backendUrl={backend.backendUrl}
+        onSelectBackendRepo={handleSelectBackendRepo}
+      />
+    );
   }
 
   if (viewMode === 'loading' && progress) {

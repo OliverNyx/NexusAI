@@ -160,6 +160,12 @@ interface AppState {
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
   codeReferenceFocus: CodeReferenceFocus | null;
+
+  // Backend mode
+  isBackendMode: boolean;
+  backendRepo: string | null;
+  setBackendMode: (mode: boolean) => void;
+  setBackendRepo: (repo: string | null) => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -290,6 +296,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
+
+  // Backend mode
+  const [isBackendMode, setIsBackendMode] = useState(false);
+  const [backendRepo, setBackendRepo] = useState<string | null>(null);
 
   const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -454,10 +464,14 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    if (isBackendMode && backendRepo) {
+      const { runCypherQuery } = await import('../services/backend');
+      return runCypherQuery(backendRepo, cypher);
+    }
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, []);
+  }, [isBackendMode, backendRepo]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
     const api = apiRef.current;
@@ -1092,6 +1106,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     clearAICodeReferences,
     clearCodeReferences,
     codeReferenceFocus,
+    // Backend mode
+    isBackendMode,
+    backendRepo,
+    setBackendMode: setIsBackendMode,
+    setBackendRepo,
   };
 
   return (
