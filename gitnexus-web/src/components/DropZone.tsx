@@ -1,22 +1,34 @@
-import { useState, useCallback, DragEvent } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff } from 'lucide-react';
+import { useState, useCallback, useEffect, DragEvent } from 'react';
+import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Server } from 'lucide-react';
 import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
 import { FileEntry } from '../services/zip';
+import { BackendRepo } from '../services/backend';
+import { BackendRepoSelector } from './BackendRepoSelector';
 
 interface DropZoneProps {
   onFileSelect: (file: File) => void;
   onGitClone?: (files: FileEntry[]) => void;
+  backendRepos?: BackendRepo[];
+  isBackendConnected?: boolean;
+  backendUrl?: string;
+  onSelectBackendRepo?: (repoName: string) => void;
 }
 
-export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
+export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConnected, backendUrl, onSelectBackendRepo }: DropZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<'zip' | 'github'>('zip');
+  const [activeTab, setActiveTab] = useState<'zip' | 'github' | 'local'>('zip');
   const [githubUrl, setGithubUrl] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isBackendConnected && backendRepos && backendRepos.length > 0) {
+      setActiveTab('local');
+    }
+  }, [isBackendConnected, backendRepos]);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -145,6 +157,27 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
           >
             <Github className="w-4 h-4" />
             GitHub URL
+          </button>
+          <button
+            onClick={() => { setActiveTab('local'); setError(null); }}
+            className={`
+              flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
+              text-sm font-medium transition-all duration-200
+              ${activeTab === 'local'
+                ? 'bg-accent text-white shadow-md'
+                : isBackendConnected
+                  ? 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+                  : 'text-text-muted cursor-not-allowed opacity-50'
+              }
+            `}
+            disabled={!isBackendConnected}
+            title={!isBackendConnected ? 'Start gitnexus serve to connect' : undefined}
+          >
+            <Server className="w-4 h-4" />
+            Local Server
+            {isBackendConnected && (
+              <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
+            )}
           </button>
         </div>
 
@@ -350,6 +383,16 @@ export const DropZone = ({ onFileSelect, onGitClone }: DropZoneProps) => {
               </span>
             </div>
           </div>
+        )}
+
+        {/* Local Server Tab */}
+        {activeTab === 'local' && isBackendConnected && backendRepos && onSelectBackendRepo && (
+          <BackendRepoSelector
+            repos={backendRepos}
+            onSelectRepo={onSelectBackendRepo}
+            backendUrl={backendUrl ?? 'http://localhost:4747'}
+            isConnected={isBackendConnected}
+          />
         )}
       </div>
     </div>
