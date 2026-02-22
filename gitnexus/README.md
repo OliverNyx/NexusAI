@@ -135,7 +135,7 @@ gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
-gitnexus serve                   # Start HTTP server for web UI
+gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus list                    # List all indexed repositories
 gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
@@ -178,6 +178,8 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 ## Web UI
 
 GitNexus also has a browser-based UI at [gitnexus.vercel.app](https://gitnexus.vercel.app) — 100% client-side, your code never leaves the browser.
+
+**Local Backend Mode:** Run `gitnexus serve` and open the web UI locally — it auto-detects the server and shows all your indexed repos. No need to re-upload or re-index.
 
 ## License
 

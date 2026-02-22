@@ -38,6 +38,8 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 | **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
 | **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
 
+> **Bridge mode:** `gitnexus serve` connects the two — the web UI auto-detects the local server and can browse all your CLI-indexed repos without re-uploading or re-indexing.
+
 ---
 
 ## CLI + MCP (recommended)
@@ -112,7 +114,7 @@ gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
-gitnexus serve                   # Start HTTP server for web UI connection
+gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
 gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
@@ -232,6 +234,8 @@ npm run dev
 ```
 
 The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, KuzuDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
+
+**Local Backend Mode:** Run `gitnexus serve` and open the web UI locally — it auto-detects the server and shows all your indexed repos. No need to re-upload or re-index.
 
 ---
 
