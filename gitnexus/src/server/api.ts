@@ -1,24 +1,29 @@
 /**
- * HTTP API Server
- * 
- * REST API for browser-based clients to query the local .gitnexus/ index.
+ * HTTP API Server (Multi-Repo)
+ *
+ * REST API for browser-based clients to query indexed repositories.
+ * Uses LocalBackend for multi-repo support via the global registry —
+ * the same backend the MCP server uses.
  */
 
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
-import { findRepo, loadMeta } from '../storage/repo-manager.js';
-import { initKuzu, executeQuery } from '../core/kuzu/kuzu-adapter.js';
+import { LocalBackend } from '../mcp/local/local-backend.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
-import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
-import { hybridSearch } from '../core/search/hybrid-search.js';
-import { semanticSearch } from '../core/embeddings/embedding-pipeline.js';
-import { isEmbedderReady } from '../core/embeddings/embedder.js';
 
-const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+/**
+ * Build the full knowledge graph for a repo by querying each node table
+ * and all relationships via the backend's cypher tool.
+ */
+const buildGraph = async (
+  backend: LocalBackend,
+  repoName: string,
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
+
   for (const table of NODE_TABLES) {
     try {
       let query = '';
@@ -34,7 +39,10 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
         query = `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
       }
 
-      const rows = await executeQuery(query);
+      const result = await backend.callTool('cypher', { repo: repoName, query });
+      // cypher returns the rows directly (array), or { error } on failure
+      const rows = Array.isArray(result) ? result : [];
+
       for (const row of rows) {
         nodes.push({
           id: row.id ?? row[0],
@@ -62,108 +70,245 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
   }
 
   const relationships: GraphRelationship[] = [];
-  const relRows = await executeQuery(
-    `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
-  );
-  for (const row of relRows) {
-    relationships.push({
-      id: `${row.sourceId}_${row.type}_${row.targetId}`,
-      type: row.type,
-      sourceId: row.sourceId,
-      targetId: row.targetId,
-      confidence: row.confidence,
-      reason: row.reason,
-      step: row.step,
+  try {
+    const relResult = await backend.callTool('cypher', {
+      repo: repoName,
+      query: `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
     });
+    const relRows = Array.isArray(relResult) ? relResult : [];
+
+    for (const row of relRows) {
+      relationships.push({
+        id: `${row.sourceId}_${row.type}_${row.targetId}`,
+        type: row.type,
+        sourceId: row.sourceId,
+        targetId: row.targetId,
+        confidence: row.confidence,
+        reason: row.reason,
+        step: row.step,
+      });
+    }
+  } catch {
+    // ignore relationship query failures
   }
 
   return { nodes, relationships };
 };
 
 export const createServer = async (port: number) => {
+  const backend = new LocalBackend();
+  const hasRepos = await backend.init();
+
+  if (!hasRepos) {
+    console.warn('GitNexus: No indexed repositories found. The server will start but most endpoints will return errors.');
+    console.warn('Run "gitnexus analyze" in a repository to index it first.');
+  }
+
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
 
-  // Get repo info
-  app.get('/api/repo', async (_req, res) => {
-    const repo = await findRepo(process.cwd());
-    if (!repo) {
-      res.status(404).json({ error: 'Repository not indexed. Run: gitnexus analyze' });
-      return;
+  // ─── GET /api/repos ─────────────────────────────────────────────
+  // List all indexed repositories
+  app.get('/api/repos', async (_req, res) => {
+    try {
+      const repos = await backend.listRepos();
+      res.json(repos);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to list repos' });
     }
-    res.json({
-      repoPath: repo.repoPath,
-      indexedAt: repo.meta.indexedAt,
-      stats: repo.meta.stats || {},
-    });
   });
 
-  // Get full graph
-  app.get('/api/graph', async (_req, res) => {
-    const repo = await findRepo(process.cwd());
-    if (!repo) {
-      res.status(404).json({ error: 'Repository not indexed' });
-      return;
+  // ─── GET /api/repo?name=X ──────────────────────────────────────
+  // Get metadata for a specific repo
+  app.get('/api/repo', async (req, res) => {
+    try {
+      const repoName = req.query.name as string | undefined;
+      const repo = await backend.resolveRepo(repoName);
+      res.json({
+        name: repo.name,
+        repoPath: repo.repoPath,
+        indexedAt: repo.indexedAt,
+        lastCommit: repo.lastCommit,
+        stats: repo.stats || {},
+      });
+    } catch (err: any) {
+      res.status(404).json({ error: err.message || 'Repository not found' });
     }
-    await initKuzu(repo.kuzuPath);
-    const graph = await buildGraph();
-    res.json(graph);
   });
 
-  // Execute Cypher query
+  // ─── GET /api/graph?repo=X ─────────────────────────────────────
+  // Full knowledge graph (all nodes + relationships)
+  app.get('/api/graph', async (req, res) => {
+    try {
+      const repoName = req.query.repo as string | undefined;
+      // Resolve repo to validate it exists and get the name
+      const repo = await backend.resolveRepo(repoName);
+      const graph = await buildGraph(backend, repo.name);
+      res.json(graph);
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Failed to build graph' });
+    }
+  });
+
+  // ─── POST /api/query ───────────────────────────────────────────
+  // Execute a raw Cypher query
   app.post('/api/query', async (req, res) => {
-    const repo = await findRepo(process.cwd());
-    if (!repo) {
-      res.status(404).json({ error: 'Repository not indexed' });
-      return;
+    try {
+      const repoName = (req.body.repo ?? req.query.repo) as string | undefined;
+      const cypher = req.body.cypher as string;
+
+      if (!cypher) {
+        res.status(400).json({ error: 'Missing "cypher" in request body' });
+        return;
+      }
+
+      const result = await backend.callTool('cypher', { repo: repoName, query: cypher });
+      res.json({ result });
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Query failed' });
     }
-    await initKuzu(repo.kuzuPath);
-    const result = await executeQuery(req.body.cypher);
-    res.json({ result });
   });
 
-  // Search
+  // ─── POST /api/search ──────────────────────────────────────────
+  // Process-grouped semantic search
   app.post('/api/search', async (req, res) => {
-    const repo = await findRepo(process.cwd());
-    if (!repo) {
-      res.status(404).json({ error: 'Repository not indexed' });
-      return;
-    }
-    await initKuzu(repo.kuzuPath);
+    try {
+      const repoName = (req.body.repo ?? req.query.repo) as string | undefined;
+      const query = req.body.query as string;
+      const limit = req.body.limit as number | undefined;
 
-    const query = req.body.query ?? '';
-    const limit = req.body.limit ?? 10;
+      if (!query) {
+        res.status(400).json({ error: 'Missing "query" in request body' });
+        return;
+      }
 
-    if (isEmbedderReady()) {
-      const results = await hybridSearch(query, limit, executeQuery, semanticSearch);
+      const results = await backend.callTool('query', {
+        repo: repoName,
+        query,
+        limit,
+      });
       res.json({ results });
-      return;
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Search failed' });
     }
-
-    // FTS-only fallback when embeddings aren't loaded
-    const results = await searchFTSFromKuzu(query, limit);
-    res.json({ results });
   });
 
-  // Read file
+  // ─── GET /api/file?repo=X&path=Y ──────────────────────────────
+  // Read a file from a resolved repo path on disk
   app.get('/api/file', async (req, res) => {
-    const repo = await findRepo(process.cwd());
-    if (!repo) {
-      res.status(404).json({ error: 'Repository not indexed' });
-      return;
+    try {
+      const repoName = req.query.repo as string | undefined;
+      const filePath = req.query.path as string;
+
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing "path" query parameter' });
+        return;
+      }
+
+      const repo = await backend.resolveRepo(repoName);
+
+      // Resolve the full path and validate it stays within the repo root
+      const repoRoot = path.resolve(repo.repoPath);
+      const fullPath = path.resolve(repoRoot, filePath);
+
+      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
+        res.status(403).json({ error: 'Path traversal denied: path escapes repo root' });
+        return;
+      }
+
+      const content = await fs.readFile(fullPath, 'utf-8');
+      res.json({ content });
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        res.status(404).json({ error: 'File not found' });
+      } else if (err.message?.includes('not found') || err.message?.includes('No indexed')) {
+        res.status(404).json({ error: err.message });
+      } else {
+        res.status(500).json({ error: err.message || 'Failed to read file' });
+      }
     }
-    const filePath = req.query.path as string;
-    if (!filePath) {
-      res.status(400).json({ error: 'Missing path' });
-      return;
+  });
+
+  // ─── GET /api/processes?repo=X ─────────────────────────────────
+  // List all processes for a repo
+  app.get('/api/processes', async (req, res) => {
+    try {
+      const repoName = req.query.repo as string | undefined;
+      const result = await backend.queryProcesses(repoName);
+      res.json(result);
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Failed to query processes' });
     }
-    const fullPath = path.join(repo.repoPath, filePath);
-    const content = await fs.readFile(fullPath, 'utf-8');
-    res.json({ content });
+  });
+
+  // ─── GET /api/process?repo=X&name=Y ───────────────────────────
+  // Get detailed process info including steps
+  app.get('/api/process', async (req, res) => {
+    try {
+      const repoName = req.query.repo as string | undefined;
+      const name = req.query.name as string;
+
+      if (!name) {
+        res.status(400).json({ error: 'Missing "name" query parameter' });
+        return;
+      }
+
+      const result = await backend.queryProcessDetail(name, repoName);
+      if (result.error) {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Failed to query process detail' });
+    }
+  });
+
+  // ─── GET /api/clusters?repo=X ─────────────────────────────────
+  // List all clusters for a repo
+  app.get('/api/clusters', async (req, res) => {
+    try {
+      const repoName = req.query.repo as string | undefined;
+      const result = await backend.queryClusters(repoName);
+      res.json(result);
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Failed to query clusters' });
+    }
+  });
+
+  // ─── GET /api/cluster?repo=X&name=Y ───────────────────────────
+  // Get detailed cluster info including members
+  app.get('/api/cluster', async (req, res) => {
+    try {
+      const repoName = req.query.repo as string | undefined;
+      const name = req.query.name as string;
+
+      if (!name) {
+        res.status(400).json({ error: 'Missing "name" query parameter' });
+        return;
+      }
+
+      const result = await backend.queryClusterDetail(name, repoName);
+      if (result.error) {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') || err.message?.includes('No indexed') ? 404 : 500)
+        .json({ error: err.message || 'Failed to query cluster detail' });
+    }
   });
 
   app.listen(port, () => {
     console.log(`GitNexus server running on http://localhost:${port}`);
+    console.log(`Serving ${hasRepos ? 'all indexed repositories' : 'no repositories (run gitnexus analyze first)'}`);
   });
 };
