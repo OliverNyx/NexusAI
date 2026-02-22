@@ -16,7 +16,7 @@ import { SystemMessage } from '@langchain/core/messages';
 import { enrichClustersBatch, ClusterMemberInfo, ClusterEnrichment } from '../core/ingestion/cluster-enricher';
 import { CommunityNode } from '../core/ingestion/community-processor';
 import { PipelineResult } from '../types/pipeline';
-import { buildCodebaseContext } from '../core/llm/context-builder';
+import { buildCodebaseContext, type CodebaseContext } from '../core/llm/context-builder';
 import { 
   buildBM25Index, 
   searchBM25, 
@@ -53,6 +53,65 @@ let enrichmentCancelled = false;
 
 // Chat cancellation flag
 let chatCancelled = false;
+
+// ============================================================
+// HTTP helpers for backend mode
+// ============================================================
+
+const httpFetchWithTimeout = async (
+  url: string,
+  init: RequestInit = {},
+  timeoutMs: number = 30_000,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
+  return async (cypher: string): Promise<any[]> => {
+    const response = await httpFetchWithTimeout(`${backendUrl}/api/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cypher, repo }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Backend query failed: ${response.status}`);
+    }
+    const body = await response.json();
+    return (body.result ?? body) as any[];
+  };
+};
+
+const createHttpTextSearch = (executeQuery: (cypher: string) => Promise<any[]>) => {
+  return async (query: string, k: number = 15): Promise<any[]> => {
+    const sanitized = query.replace(/'/g, "\\'");
+    const cypher = `
+      MATCH (n)
+      WHERE n.name IS NOT NULL AND toLower(n.name) CONTAINS toLower('${sanitized}')
+      RETURN n.id AS id, label(n) AS type, n.name AS name, n.filePath AS filePath, n.content AS content
+      LIMIT ${k}
+    `;
+    try {
+      const results = await executeQuery(cypher);
+      return results.map((r: any, i: number) => ({
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        filePath: r.filePath,
+        content: r.content ?? '',
+        score: 1 - (i * 0.05),
+      }));
+    } catch {
+      return [];
+    }
+  };
+};
 
 /**
  * Worker API exposed via Comlink
@@ -537,6 +596,67 @@ const workerApi = {
         console.error('❌ Agent initialization failed:', error);
       }
       return { success: false, error: message };
+    }
+  },
+
+  /**
+   * Initialize the Graph RAG agent in backend mode (HTTP-backed tools).
+   * Uses HTTP wrappers instead of local KuzuDB for all tool queries.
+   * @param config - Provider configuration for the LLM
+   * @param backendUrl - Base URL of the gitnexus serve backend
+   * @param repoName - Repository name on the backend
+   * @param fileContentsEntries - File contents as [path, content][] (Comlink can't transfer Maps)
+   * @param projectName - Display name for the project
+   */
+  async initializeBackendAgent(
+    config: ProviderConfig,
+    backendUrl: string,
+    repoName: string,
+    fileContentsEntries: [string, string][],
+    projectName?: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Rebuild Map from serializable entries (Comlink can't transfer Maps)
+      const contents = new Map<string, string>(fileContentsEntries);
+      storedFileContents = contents;
+
+      // Create HTTP-based tool wrappers
+      const executeQuery = createHttpExecuteQuery(backendUrl, repoName);
+      const textSearch = createHttpTextSearch(executeQuery);
+
+      // Build codebase context (uses Cypher queries — works via HTTP)
+      let codebaseContext: CodebaseContext | undefined;
+      try {
+        codebaseContext = await buildCodebaseContext(executeQuery, projectName || repoName);
+      } catch {
+        // Non-fatal — agent works without context
+      }
+
+      // Create agent with HTTP-backed tools
+      currentAgent = createGraphRAGAgent(
+        config,
+        executeQuery,          // Cypher via HTTP
+        textSearch,            // semanticSearch → Cypher text search
+        textSearch,            // semanticSearchWithContext → same
+        textSearch,            // hybridSearch → same
+        () => true,            // isEmbeddingReady → always true (routes to textSearch)
+        () => true,            // isBM25Ready → always true (routes to textSearch)
+        contents,              // fileContents Map
+        codebaseContext,
+      );
+
+      currentProviderConfig = config;
+
+      if (import.meta.env.DEV) {
+        console.log('🤖 Backend agent initialized with provider:', config.provider);
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      if (import.meta.env.DEV) {
+        console.error('❌ Backend agent initialization failed:', err);
+      }
+      return { success: false, error: err.message || 'Failed to initialize backend agent' };
     }
   },
 

@@ -11,7 +11,7 @@ import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCa
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
-import { runCypherQuery } from '../services/backend';
+import { runCypherQuery, getBackendUrl } from '../services/backend';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -571,15 +571,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const initializeAgent = useCallback(async (overrideProjectName?: string): Promise<void> => {
-    const api = apiRef.current;
-    if (!api) {
-      setAgentError('Worker not initialized');
-      return;
-    }
-
     const config = getActiveProviderConfig();
     if (!config) {
       setAgentError('Please configure an LLM provider in settings');
+      return;
+    }
+
+    const api = apiRef.current;
+    if (!api) {
+      setAgentError('Worker not initialized');
       return;
     }
 
@@ -587,9 +587,23 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
 
     try {
-      // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
-      const result = await api.initializeAgent(config, effectiveProjectName);
+      let result: { success: boolean; error?: string };
+
+      if (isBackendMode && backendRepo) {
+        // Backend mode: pass HTTP config + file contents to worker
+        const entries = Array.from(fileContents.entries());
+        result = await api.initializeBackendAgent(
+          config,
+          getBackendUrl(),
+          backendRepo,
+          entries,
+          effectiveProjectName,
+        );
+      } else {
+        result = await api.initializeAgent(config, effectiveProjectName);
+      }
+
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -607,7 +621,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName]);
+  }, [projectName, isBackendMode, backendRepo, fileContents]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
