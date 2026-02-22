@@ -9,7 +9,7 @@ import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
 import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
 import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { disposeEmbedder } from '../core/embeddings/embedder.js';
+// disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
@@ -18,7 +18,7 @@ import { registerClaudeHook } from './claude-hooks.js';
 
 export interface AnalyzeOptions {
   force?: boolean;
-  skipEmbeddings?: boolean;
+  embeddings?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -88,13 +88,33 @@ export const analyzeCommand = async (
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
+  // Route all console output through bar.log() so the bar doesn't stamp itself
+  // multiple times when other code writes to stdout/stderr mid-render.
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
+  const barLog = (...args: any[]) => (bar as any).log(args.map(a => (typeof a === 'string' ? a : String(a))).join(' '));
+  console.log = barLog;
+  console.warn = barLog;
+  console.error = barLog;
+
+  // Show elapsed seconds for phases that run longer than 3s
+  let lastPhaseLabel = 'Initializing...';
+  let phaseStart = Date.now();
+  const elapsedTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - phaseStart) / 1000);
+    if (elapsed >= 3) {
+      bar.update({ phase: `${lastPhaseLabel} (${elapsed}s)` });
+    }
+  }, 1000);
+
   const t0Global = Date.now();
 
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
 
-  if (existingMeta && !options?.force) {
+  if (options?.embeddings && existingMeta && !options?.force) {
     try {
       bar.update(0, { phase: 'Caching embeddings...' });
       await initKuzu(kuzuPath);
@@ -111,11 +131,13 @@ export const analyzeCommand = async (
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
+    if (phaseLabel !== lastPhaseLabel) { lastPhaseLabel = phaseLabel; phaseStart = Date.now(); }
     bar.update(scaled, { phase: phaseLabel });
   });
 
   // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
-  bar.update(60, { phase: 'Loading into KuzuDB...' });
+  lastPhaseLabel = 'Loading into KuzuDB...'; phaseStart = Date.now();
+  bar.update(60, { phase: lastPhaseLabel });
 
   await closeKuzu();
   const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
@@ -135,7 +157,8 @@ export const analyzeCommand = async (
   const kuzuWarnings = kuzuResult.warnings;
 
   // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-  bar.update(85, { phase: 'Creating search indexes...' });
+  lastPhaseLabel = 'Creating search indexes...'; phaseStart = Date.now();
+  bar.update(85, { phase: lastPhaseLabel });
 
   const t0Fts = Date.now();
   try {
@@ -168,19 +191,20 @@ export const analyzeCommand = async (
   // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
   const stats = await getKuzuStats();
   let embeddingTime = '0.0';
-  let embeddingSkipped = false;
-  let embeddingSkipReason = '';
+  let embeddingSkipped = true;
+  let embeddingSkipReason = 'off (use --embeddings to enable)';
 
-  if (options?.skipEmbeddings) {
-    embeddingSkipped = true;
-    embeddingSkipReason = 'skipped (--skip-embeddings)';
-  } else if (stats.nodes > EMBEDDING_NODE_LIMIT) {
-    embeddingSkipped = true;
-    embeddingSkipReason = `skipped (${stats.nodes.toLocaleString()} nodes > ${EMBEDDING_NODE_LIMIT.toLocaleString()} limit)`;
+  if (options?.embeddings) {
+    if (stats.nodes > EMBEDDING_NODE_LIMIT) {
+      embeddingSkipReason = `skipped (${stats.nodes.toLocaleString()} nodes > ${EMBEDDING_NODE_LIMIT.toLocaleString()} limit)`;
+    } else {
+      embeddingSkipped = false;
+    }
   }
 
   if (!embeddingSkipped) {
-    bar.update(90, { phase: 'Loading embedding model...' });
+    lastPhaseLabel = 'Loading embedding model...'; phaseStart = Date.now();
+    bar.update(90, { phase: lastPhaseLabel });
     const t0Emb = Date.now();
     await runEmbeddingPipeline(
       executeQuery,
@@ -188,6 +212,7 @@ export const analyzeCommand = async (
       (progress) => {
         const scaled = 90 + Math.round((progress.percent / 100) * 8);
         const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
+        if (label !== lastPhaseLabel) { lastPhaseLabel = label; phaseStart = Date.now(); }
         bar.update(scaled, { phase: label });
       },
       {},
@@ -238,9 +263,16 @@ export const analyzeCommand = async (
   });
 
   await closeKuzu();
-  await disposeEmbedder();
+  // Note: we intentionally do NOT call disposeEmbedder() here.
+  // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs.
+  // Since the process exits immediately after, Node.js reclaims everything.
 
   const totalTime = ((Date.now() - t0Global) / 1000).toFixed(1);
+
+  clearInterval(elapsedTimer);
+  console.log = origLog;
+  console.warn = origWarn;
+  console.error = origError;
 
   bar.update(100, { phase: 'Done' });
   bar.stop();
@@ -275,4 +307,11 @@ export const analyzeCommand = async (
   }
 
   console.log('');
+
+  // ONNX Runtime registers native atexit hooks that segfault during process
+  // shutdown on macOS (#38) and some Linux configs (#40). Force-exit to
+  // bypass them when embeddings were loaded.
+  if (!embeddingSkipped) {
+    process.exit(0);
+  }
 };

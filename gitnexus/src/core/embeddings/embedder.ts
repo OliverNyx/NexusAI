@@ -113,6 +113,7 @@ export const initEmbedder = async (
               device: device,
               dtype: 'fp32',
               progress_callback: progressCallback,
+              session_options: { logSeverityLevel: 3 },
             }
           );
           currentDevice = device;
