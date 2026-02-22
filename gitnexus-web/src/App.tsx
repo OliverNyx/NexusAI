@@ -246,6 +246,9 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
+        backendUrl={backend.backendUrl}
+        isBackendConnected={backend.isConnected}
+        onBackendUrlChange={backend.setBackendUrl}
       />
 
     </div>
