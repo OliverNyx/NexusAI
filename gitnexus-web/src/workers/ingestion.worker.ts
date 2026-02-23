@@ -88,25 +88,51 @@ const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   };
 };
 
-const createHttpTextSearch = (executeQuery: (cypher: string) => Promise<any[]>) => {
+/**
+ * Create a search function that calls the backend's /api/search endpoint,
+ * which runs full hybrid search (BM25 + semantic + RRF) on the server.
+ * Results are flattened from the process-grouped response into the flat
+ * array format expected by createGraphRAGTools.
+ */
+const createHttpHybridSearch = (backendUrl: string, repo: string) => {
   return async (query: string, k: number = 15): Promise<any[]> => {
-    const sanitized = query.replace(/'/g, "\\'");
-    const cypher = `
-      MATCH (n)
-      WHERE n.name IS NOT NULL AND toLower(n.name) CONTAINS toLower('${sanitized}')
-      RETURN n.id AS id, label(n) AS type, n.name AS name, n.filePath AS filePath, n.content AS content
-      LIMIT ${k}
-    `;
     try {
-      const results = await executeQuery(cypher);
-      return results.map((r: any, i: number) => ({
-        id: r.id,
-        name: r.name,
-        type: r.type,
-        filePath: r.filePath,
-        content: r.content ?? '',
-        score: 1 - (i * 0.05),
+      const response = await httpFetchWithTimeout(`${backendUrl}/api/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit: k, repo }),
+      });
+      if (!response.ok) {
+        return [];
+      }
+      const body = await response.json();
+      const data = body.results ?? body;
+
+      // Flatten process_symbols + definitions into a single ranked list
+      const symbols: any[] = (data.process_symbols ?? []).map((s: any, i: number) => ({
+        nodeId: s.id,
+        id: s.id,
+        name: s.name,
+        label: s.type,
+        filePath: s.filePath,
+        startLine: s.startLine,
+        endLine: s.endLine,
+        content: s.content ?? '',
+        sources: ['bm25', 'semantic'],
+        score: 1 - (i * 0.02),
       }));
+
+      const defs: any[] = (data.definitions ?? []).map((d: any, i: number) => ({
+        id: d.name,
+        name: d.name,
+        label: d.type || 'File',
+        filePath: d.filePath,
+        content: '',
+        sources: ['bm25'],
+        score: 0.5 - (i * 0.02),
+      }));
+
+      return [...symbols, ...defs].slice(0, k);
     } catch {
       return [];
     }
@@ -622,7 +648,7 @@ const workerApi = {
 
       // Create HTTP-based tool wrappers
       const executeQuery = createHttpExecuteQuery(backendUrl, repoName);
-      const textSearch = createHttpTextSearch(executeQuery);
+      const hybridSearch = createHttpHybridSearch(backendUrl, repoName);
 
       // Build codebase context (uses Cypher queries — works via HTTP)
       let codebaseContext: CodebaseContext | undefined;
@@ -632,15 +658,18 @@ const workerApi = {
         // Non-fatal — agent works without context
       }
 
-      // Create agent with HTTP-backed tools
+      // Create agent with HTTP-backed tools.
+      // hybridSearch calls /api/search which runs full BM25 + semantic + RRF on the server.
+      // isEmbeddingReady is false — no local embedding model is loaded in backend mode.
+      // isBM25Ready is true — BM25 is available via the server's hybrid search.
       currentAgent = createGraphRAGAgent(
         config,
         executeQuery,          // Cypher via HTTP
-        textSearch,            // semanticSearch → Cypher text search
-        textSearch,            // semanticSearchWithContext → same
-        textSearch,            // hybridSearch → same
-        () => true,            // isEmbeddingReady → always true (routes to textSearch)
-        () => true,            // isBM25Ready → always true (routes to textSearch)
+        hybridSearch,          // semanticSearch → server hybrid search
+        hybridSearch,          // semanticSearchWithContext → same
+        hybridSearch,          // hybridSearch → server hybrid search
+        () => false,           // isEmbeddingReady → no local embedder
+        () => true,            // isBM25Ready → available via server
         contents,              // fileContents Map
         codebaseContext,
       );

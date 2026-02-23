@@ -114,8 +114,15 @@ export const createServer = async (port: number) => {
   const app = express();
   app.use(cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (curl, server-to-server) and localhost origins
-      if (!origin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      // Allow requests with no origin (curl, server-to-server), localhost, and the deployed site.
+      // The server binds to 127.0.0.1 so only the local machine can reach it — CORS just gates
+      // which browser-tab origins may issue the request.
+      if (
+        !origin
+        || origin.startsWith('http://localhost:')
+        || origin.startsWith('http://127.0.0.1:')
+        || origin === 'https://gitnexus.vercel.app'
+      ) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
