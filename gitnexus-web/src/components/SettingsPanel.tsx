@@ -12,6 +12,9 @@ interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onSettingsSaved?: () => void;
+  backendUrl?: string;
+  isBackendConnected?: boolean;
+  onBackendUrlChange?: (url: string) => void;
 }
 
 /**
@@ -209,7 +212,7 @@ const checkOllamaStatus = async (baseUrl: string): Promise<{ ok: boolean; error:
   }
 };
 
-export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPanelProps) => {
+export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, isBackendConnected, onBackendUrlChange }: SettingsPanelProps) => {
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
@@ -312,6 +315,35 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved }: SettingsPane
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Local Server */}
+          {backendUrl !== undefined && onBackendUrlChange && (
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-text-secondary">
+                Local Server
+              </label>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 mb-2">
+                  <Server className="w-4 h-4 text-text-muted" />
+                  <span className="text-sm text-text-secondary">Backend URL</span>
+                  <span className={`w-2 h-2 rounded-full ${isBackendConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+                  <span className="text-xs text-text-muted">
+                    {isBackendConnected ? 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+                <input
+                  type="url"
+                  value={backendUrl}
+                  onChange={(e) => onBackendUrlChange(e.target.value)}
+                  placeholder="http://localhost:4747"
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
+                />
+                <p className="text-xs text-text-muted">
+                  Run <code className="px-1 py-0.5 bg-elevated rounded">gitnexus serve</code> to start the local server
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Provider Selection */}
           <div className="space-y-3">
             <label className="block text-sm font-medium text-text-secondary">

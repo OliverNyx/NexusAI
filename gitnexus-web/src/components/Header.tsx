@@ -29,6 +29,7 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
+    isBackendMode,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -121,6 +122,13 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
           <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary">
             <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
             <span className="truncate max-w-[200px]">{projectName}</span>
+          </div>
+        )}
+
+        {isBackendMode && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-green-500/10 border border-green-500/30 rounded-lg text-xs text-green-400">
+            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+            Local
           </div>
         )}
       </div>

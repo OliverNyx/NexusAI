@@ -16,7 +16,7 @@ import { SystemMessage } from '@langchain/core/messages';
 import { enrichClustersBatch, ClusterMemberInfo, ClusterEnrichment } from '../core/ingestion/cluster-enricher';
 import { CommunityNode } from '../core/ingestion/community-processor';
 import { PipelineResult } from '../types/pipeline';
-import { buildCodebaseContext } from '../core/llm/context-builder';
+import { buildCodebaseContext, type CodebaseContext } from '../core/llm/context-builder';
 import { 
   buildBM25Index, 
   searchBM25, 
@@ -53,6 +53,91 @@ let enrichmentCancelled = false;
 
 // Chat cancellation flag
 let chatCancelled = false;
+
+// ============================================================
+// HTTP helpers for backend mode
+// ============================================================
+
+const httpFetchWithTimeout = async (
+  url: string,
+  init: RequestInit = {},
+  timeoutMs: number = 30_000,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
+  return async (cypher: string): Promise<any[]> => {
+    const response = await httpFetchWithTimeout(`${backendUrl}/api/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cypher, repo }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Backend query failed: ${response.status}`);
+    }
+    const body = await response.json();
+    return (body.result ?? body) as any[];
+  };
+};
+
+/**
+ * Create a search function that calls the backend's /api/search endpoint,
+ * which runs full hybrid search (BM25 + semantic + RRF) on the server.
+ * Results are flattened from the process-grouped response into the flat
+ * array format expected by createGraphRAGTools.
+ */
+const createHttpHybridSearch = (backendUrl: string, repo: string) => {
+  return async (query: string, k: number = 15): Promise<any[]> => {
+    try {
+      const response = await httpFetchWithTimeout(`${backendUrl}/api/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit: k, repo }),
+      });
+      if (!response.ok) {
+        return [];
+      }
+      const body = await response.json();
+      const data = body.results ?? body;
+
+      // Flatten process_symbols + definitions into a single ranked list
+      const symbols: any[] = (data.process_symbols ?? []).map((s: any, i: number) => ({
+        nodeId: s.id,
+        id: s.id,
+        name: s.name,
+        label: s.type,
+        filePath: s.filePath,
+        startLine: s.startLine,
+        endLine: s.endLine,
+        content: s.content ?? '',
+        sources: ['bm25', 'semantic'],
+        score: 1 - (i * 0.02),
+      }));
+
+      const defs: any[] = (data.definitions ?? []).map((d: any, i: number) => ({
+        id: d.name,
+        name: d.name,
+        label: d.type || 'File',
+        filePath: d.filePath,
+        content: '',
+        sources: ['bm25'],
+        score: 0.5 - (i * 0.02),
+      }));
+
+      return [...symbols, ...defs].slice(0, k);
+    } catch {
+      return [];
+    }
+  };
+};
 
 /**
  * Worker API exposed via Comlink
@@ -537,6 +622,70 @@ const workerApi = {
         console.error('❌ Agent initialization failed:', error);
       }
       return { success: false, error: message };
+    }
+  },
+
+  /**
+   * Initialize the Graph RAG agent in backend mode (HTTP-backed tools).
+   * Uses HTTP wrappers instead of local KuzuDB for all tool queries.
+   * @param config - Provider configuration for the LLM
+   * @param backendUrl - Base URL of the gitnexus serve backend
+   * @param repoName - Repository name on the backend
+   * @param fileContentsEntries - File contents as [path, content][] (Comlink can't transfer Maps)
+   * @param projectName - Display name for the project
+   */
+  async initializeBackendAgent(
+    config: ProviderConfig,
+    backendUrl: string,
+    repoName: string,
+    fileContentsEntries: [string, string][],
+    projectName?: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Rebuild Map from serializable entries (Comlink can't transfer Maps)
+      const contents = new Map<string, string>(fileContentsEntries);
+      storedFileContents = contents;
+
+      // Create HTTP-based tool wrappers
+      const executeQuery = createHttpExecuteQuery(backendUrl, repoName);
+      const hybridSearch = createHttpHybridSearch(backendUrl, repoName);
+
+      // Build codebase context (uses Cypher queries — works via HTTP)
+      let codebaseContext: CodebaseContext | undefined;
+      try {
+        codebaseContext = await buildCodebaseContext(executeQuery, projectName || repoName);
+      } catch {
+        // Non-fatal — agent works without context
+      }
+
+      // Create agent with HTTP-backed tools.
+      // hybridSearch calls /api/search which runs full BM25 + semantic + RRF on the server.
+      // isEmbeddingReady is false — no local embedding model is loaded in backend mode.
+      // isBM25Ready is true — BM25 is available via the server's hybrid search.
+      currentAgent = createGraphRAGAgent(
+        config,
+        executeQuery,          // Cypher via HTTP
+        hybridSearch,          // semanticSearch → server hybrid search
+        hybridSearch,          // semanticSearchWithContext → same
+        hybridSearch,          // hybridSearch → server hybrid search
+        () => false,           // isEmbeddingReady → no local embedder
+        () => true,            // isBM25Ready → available via server
+        contents,              // fileContents Map
+        codebaseContext,
+      );
+
+      currentProviderConfig = config;
+
+      if (import.meta.env.DEV) {
+        console.log('🤖 Backend agent initialized with provider:', config.provider);
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      if (import.meta.env.DEV) {
+        console.error('❌ Backend agent initialization failed:', err);
+      }
+      return { success: false, error: err.message || 'Failed to initialize backend agent' };
     }
   },
 

@@ -11,6 +11,7 @@ import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCa
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
+import { runCypherQuery, getBackendUrl } from '../services/backend';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -160,6 +161,12 @@ interface AppState {
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
   codeReferenceFocus: CodeReferenceFocus | null;
+
+  // Backend mode
+  isBackendMode: boolean;
+  backendRepo: string | null;
+  setBackendMode: (mode: boolean) => void;
+  setBackendRepo: (repo: string | null) => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -290,6 +297,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
+
+  // Backend mode
+  const [isBackendMode, setIsBackendMode] = useState(false);
+  const [backendRepo, setBackendRepo] = useState<string | null>(null);
 
   const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -454,12 +465,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    if (isBackendMode && backendRepo) {
+      return runCypherQuery(backendRepo, cypher);
+    }
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, []);
+  }, [isBackendMode, backendRepo]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    if (isBackendMode) return true; // backend handles DB
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -467,10 +482,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, []);
+  }, [isBackendMode]);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
+    // Embeddings require the WASM worker DB — skip in backend mode
+    if (isBackendMode) return;
+
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
 
@@ -512,7 +530,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }
       throw error;
     }
-  }, []);
+  }, [isBackendMode]);
 
   const semanticSearch = useCallback(async (
     query: string,
@@ -553,15 +571,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const initializeAgent = useCallback(async (overrideProjectName?: string): Promise<void> => {
-    const api = apiRef.current;
-    if (!api) {
-      setAgentError('Worker not initialized');
-      return;
-    }
-
     const config = getActiveProviderConfig();
     if (!config) {
       setAgentError('Please configure an LLM provider in settings');
+      return;
+    }
+
+    const api = apiRef.current;
+    if (!api) {
+      setAgentError('Worker not initialized');
       return;
     }
 
@@ -569,9 +587,23 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
 
     try {
-      // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
-      const result = await api.initializeAgent(config, effectiveProjectName);
+      let result: { success: boolean; error?: string };
+
+      if (isBackendMode && backendRepo) {
+        // Backend mode: pass HTTP config + file contents to worker
+        const entries = Array.from(fileContents.entries());
+        result = await api.initializeBackendAgent(
+          config,
+          getBackendUrl(),
+          backendRepo,
+          entries,
+          effectiveProjectName,
+        );
+      } else {
+        result = await api.initializeAgent(config, effectiveProjectName);
+      }
+
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -589,7 +621,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName]);
+  }, [projectName, isBackendMode, backendRepo, fileContents]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -1092,6 +1124,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     clearAICodeReferences,
     clearCodeReferences,
     codeReferenceFocus,
+    // Backend mode
+    isBackendMode,
+    backendRepo,
+    setBackendMode: setIsBackendMode,
+    setBackendRepo,
   };
 
   return (
