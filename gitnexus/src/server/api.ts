@@ -39,7 +39,7 @@ const buildGraph = async (
         query = `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
       }
 
-      const result = await backend.callTool('cypher', { repo: repoName, query });
+      const result = await backend.executeCypher(repoName, query);
       // cypher returns the rows directly (array), or { error } on failure
       const rows = Array.isArray(result) ? result : [];
 
@@ -71,10 +71,10 @@ const buildGraph = async (
 
   const relationships: GraphRelationship[] = [];
   try {
-    const relResult = await backend.callTool('cypher', {
-      repo: repoName,
-      query: `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
-    });
+    const relResult = await backend.executeCypher(
+      repoName,
+      `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
+    );
     const relRows = Array.isArray(relResult) ? relResult : [];
 
     for (const row of relRows) {
