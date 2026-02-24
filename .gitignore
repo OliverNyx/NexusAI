@@ -42,6 +42,9 @@ coverage/
 .env*.local
 .gitnexus
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Assets (screenshots, images)
 assets/
 
