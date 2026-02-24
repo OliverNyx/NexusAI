@@ -366,28 +366,28 @@ export const PHP_QUERIES = `
 (nullsafe_member_call_expression
   name: (name) @call.name) @call
 
-; Static call: Foo::bar()
-(static_call_expression
+; Static call: Foo::bar() (php_only uses scoped_call_expression)
+(scoped_call_expression
   name: (name) @call.name) @call
 
 ; ── Heritage: extends ────────────────────────────────────────────────────────
 (class_declaration
   name: (name) @heritage.class
   (base_clause
-    (qualified_name) @heritage.extends)) @heritage
+    [(name) (qualified_name)] @heritage.extends)) @heritage
 
 ; ── Heritage: implements ─────────────────────────────────────────────────────
 (class_declaration
   name: (name) @heritage.class
-  (class_implements
-    (qualified_name) @heritage.implements)) @heritage.impl
+  (class_interface_clause
+    [(name) (qualified_name)] @heritage.implements)) @heritage.impl
 
 ; ── Heritage: use trait (must capture enclosing class name) ──────────────────
 (class_declaration
   name: (name) @heritage.class
   body: (declaration_list
     (use_declaration
-      (qualified_name) @heritage.trait))) @heritage
+      [(name) (qualified_name)] @heritage.trait))) @heritage
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
