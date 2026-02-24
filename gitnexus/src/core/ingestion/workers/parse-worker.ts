@@ -9,6 +9,7 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getLanguageFromFilename } from '../utils.js';
@@ -100,6 +101,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.PHP]: PHP.php_only,
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -185,6 +187,24 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
     case 'cpp':
       return false;
 
+    case 'php':
+      // Top-level classes/interfaces/traits are always accessible
+      // Methods/properties are exported only if they have 'public' modifier
+      while (current) {
+        if (current.type === 'class_declaration' ||
+            current.type === 'interface_declaration' ||
+            current.type === 'trait_declaration' ||
+            current.type === 'enum_declaration') {
+          return true;
+        }
+        if (current.type === 'visibility_modifier') {
+          return current.text === 'public';
+        }
+        current = current.parent;
+      }
+      // Top-level functions (no parent class) are globally accessible
+      return true;
+
     default:
       return false;
   }
@@ -200,6 +220,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_definition', 'async_function_declaration', 'async_arrow_function',
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
+  'anonymous_function_creation_expression',  // PHP anonymous functions
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -274,6 +295,23 @@ const BUILT_INS = new Set([
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // PHP built-ins
+  'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
+  'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
+  'ltrim', 'rtrim', 'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
+  'sprintf', 'vsprintf', 'printf', 'number_format',
+  'array_map', 'array_filter', 'array_reduce', 'array_push', 'array_pop', 'array_shift',
+  'array_unshift', 'array_slice', 'array_splice', 'array_merge', 'array_keys', 'array_values',
+  'array_key_exists', 'in_array', 'array_search', 'array_unique', 'usort', 'rsort',
+  'json_encode', 'json_decode', 'serialize', 'unserialize',
+  'intval', 'floatval', 'strval', 'boolval', 'is_null', 'is_string', 'is_int', 'is_array',
+  'is_object', 'is_numeric', 'is_bool', 'is_float',
+  'var_dump', 'print_r', 'var_export',
+  'date', 'time', 'strtotime', 'mktime', 'microtime',
+  'file_exists', 'file_get_contents', 'file_put_contents', 'is_file', 'is_dir',
+  'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
+  'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
+  'dd', 'dump',
 ]);
 
 // ============================================================================
