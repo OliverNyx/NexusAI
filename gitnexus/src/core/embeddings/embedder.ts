@@ -15,7 +15,31 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { existsSync } from 'fs';
+import { execSync } from 'child_process';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+
+/**
+ * Check whether CUDA libraries are actually available on this system.
+ * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
+ * without the required shared libraries, so we probe first.
+ */
+function isCudaAvailable(): boolean {
+  // Quick check: nvidia-smi exists and runs
+  try {
+    execSync('nvidia-smi', { stdio: 'ignore', timeout: 3000 });
+    return true;
+  } catch {
+    // No driver or no nvidia-smi
+  }
+  // Fallback: check for the specific library ONNX needs
+  const libPaths = [
+    '/usr/lib/x86_64-linux-gnu/libcublasLt.so.12',
+    '/usr/local/cuda/lib64/libcublasLt.so.12',
+    '/usr/lib64/libcublasLt.so.12',
+  ];
+  return libPaths.some(p => existsSync(p));
+}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -62,8 +86,10 @@ export const initEmbedder = async (
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
   // On Windows, use DirectML for GPU acceleration (via DirectX12)
   // CUDA is only available on Linux x64 with onnxruntime-node
+  // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
+  // if we attempt CUDA without the required shared libraries
   const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'dml' : 'cuda';
+  const gpuDevice = isWindows ? 'dml' : (isCudaAvailable() ? 'cuda' : 'cpu');
   let requestedDevice = forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {
