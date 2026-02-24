@@ -195,8 +195,65 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'c-cpp', entryPointMultiplier: 2.5, reason: 'c-app' };
   }
   
+  // ========== PHP / LARAVEL FRAMEWORKS ==========
+
+  // Laravel routes (highest - these ARE the entry point definitions)
+  if (p.includes('/routes/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'laravel-routes' };
+  }
+
+  // Laravel controllers (very high - receive HTTP requests)
+  if ((p.includes('/http/controllers/') || p.includes('/controllers/')) && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'laravel-controller' };
+  }
+
+  // Laravel controller by file name convention
+  if (p.endsWith('controller.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'laravel-controller-file' };
+  }
+
+  // Laravel console commands
+  if ((p.includes('/console/commands/') || p.includes('/commands/')) && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 2.5, reason: 'laravel-command' };
+  }
+
+  // Laravel jobs (queue entry points)
+  if (p.includes('/jobs/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 2.5, reason: 'laravel-job' };
+  }
+
+  // Laravel listeners (event-driven entry points)
+  if (p.includes('/listeners/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 2.5, reason: 'laravel-listener' };
+  }
+
+  // Laravel middleware
+  if (p.includes('/http/middleware/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 2.5, reason: 'laravel-middleware' };
+  }
+
+  // Laravel service providers
+  if (p.includes('/providers/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 1.8, reason: 'laravel-provider' };
+  }
+
+  // Laravel policies
+  if (p.includes('/policies/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 2.0, reason: 'laravel-policy' };
+  }
+
+  // Laravel models (important but not entry points per se)
+  if (p.includes('/models/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-model' };
+  }
+
+  // Generic PHP MVC: files ending with Controller.php
+  if (p.endsWith('controller.php')) {
+    return { framework: 'php-mvc', entryPointMultiplier: 2.5, reason: 'php-controller-file' };
+  }
+
   // ========== GENERIC PATTERNS ==========
-  
+
   // Any language: index files in API folders
   if (p.includes('/api/') && (
     p.endsWith('/index.ts') || p.endsWith('/index.js') || 
@@ -236,6 +293,10 @@ export const FRAMEWORK_AST_PATTERNS = {
   // Go patterns (function signatures)
   'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
   
+  // PHP/Laravel
+  'laravel': ['Route::get', 'Route::post', 'Route::put', 'Route::delete',
+              'Route::resource', 'Route::apiResource', '#[Route('],
+
   // Rust macros
   'actix': ['#[get', '#[post', '#[put', '#[delete'],
   'axum': ['Router::new'],
