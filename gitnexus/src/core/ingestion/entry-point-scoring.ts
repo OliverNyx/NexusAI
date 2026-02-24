@@ -116,6 +116,12 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^run$/,                  // Command/Job run()
     /^fire$/,                 // Event fire()
     /^dispatch$/,             // Dispatchable jobs
+    /Service$/,               // UserService (Service layer)
+    /Repository$/,            // UserRepository (Repository pattern)
+    /^find$/,                 // Repository::find()
+    /^findAll$/,              // Repository::findAll()
+    /^save$/,                 // Repository::save()
+    /^delete$/,               // Repository::delete()
   ],
 };
 

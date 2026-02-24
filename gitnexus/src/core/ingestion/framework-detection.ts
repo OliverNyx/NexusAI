@@ -247,6 +247,16 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-model' };
   }
 
+  // Laravel services (Service Repository pattern)
+  if (p.includes('/services/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 1.8, reason: 'laravel-service' };
+  }
+
+  // Laravel repositories (Service Repository pattern)
+  if (p.includes('/repositories/') && p.endsWith('.php')) {
+    return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
+  }
+
   // Generic PHP MVC: files ending with Controller.php
   if (p.endsWith('controller.php')) {
     return { framework: 'php-mvc', entryPointMultiplier: 2.5, reason: 'php-controller-file' };
