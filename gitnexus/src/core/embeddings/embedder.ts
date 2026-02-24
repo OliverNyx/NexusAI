@@ -16,29 +16,41 @@ if (!process.env.ORT_LOG_LEVEL) {
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { join } from 'path';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 
 /**
  * Check whether CUDA libraries are actually available on this system.
  * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
  * without the required shared libraries, so we probe first.
+ *
+ * Checks the dynamic linker cache (ldconfig) which covers all architectures
+ * and install paths, then falls back to CUDA_PATH / LD_LIBRARY_PATH env vars.
  */
 function isCudaAvailable(): boolean {
-  // Quick check: nvidia-smi exists and runs
+  // Primary: query the dynamic linker cache — covers all architectures,
+  // distro layouts, and custom install paths registered with ldconfig
   try {
-    execSync('nvidia-smi', { stdio: 'ignore', timeout: 3000 });
-    return true;
+    const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
+    if (out.includes('libcublasLt.so.12')) return true;
   } catch {
-    // No driver or no nvidia-smi
+    // ldconfig not available (e.g. non-standard container)
   }
-  // Fallback: check for the specific library ONNX needs
-  const libPaths = [
-    '/usr/lib/x86_64-linux-gnu/libcublasLt.so.12',
-    '/usr/local/cuda/lib64/libcublasLt.so.12',
-    '/usr/lib64/libcublasLt.so.12',
-  ];
-  return libPaths.some(p => existsSync(p));
+
+  // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
+  // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
+  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
+    const val = process.env[envVar];
+    if (!val) continue;
+    for (const dir of val.split(':').filter(Boolean)) {
+      if (existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'libcublasLt.so.12'))) return true;
+    }
+  }
+
+  return false;
 }
 
 // Module-level state for singleton pattern
