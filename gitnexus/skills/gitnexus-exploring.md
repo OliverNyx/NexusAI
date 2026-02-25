@@ -1,5 +1,5 @@
 ---
-name: exploring
+name: gitnexus-exploring
 description: Navigate unfamiliar code using GitNexus knowledge graph
 ---
 

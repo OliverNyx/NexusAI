@@ -54,12 +54,12 @@ This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} s
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus/guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/cli/SKILL.md\` |
+| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
+| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |
 
 ${GITNEXUS_END_MARKER}`;
 }
@@ -126,27 +126,27 @@ async function installSkills(repoPath: string): Promise<string[]> {
   // Skill definitions bundled with the package
   const skills = [
     {
-      name: 'exploring',
+      name: 'gitnexus-exploring',
       description: 'Navigate unfamiliar code using GitNexus knowledge graph',
     },
     {
-      name: 'debugging',
+      name: 'gitnexus-debugging',
       description: 'Trace bugs through call chains using knowledge graph',
     },
     {
-      name: 'impact-analysis',
+      name: 'gitnexus-impact-analysis',
       description: 'Analyze blast radius before making code changes',
     },
     {
-      name: 'refactoring',
+      name: 'gitnexus-refactoring',
       description: 'Plan safe refactors using blast radius and dependency mapping',
     },
     {
-      name: 'guide',
+      name: 'gitnexus-guide',
       description: 'GitNexus quickstart — tools, resources, schema, and workflow reference',
     },
     {
-      name: 'cli',
+      name: 'gitnexus-cli',
       description: 'GitNexus CLI commands — index, status, clean, and wiki generation',
     },
   ];
@@ -168,7 +168,7 @@ async function installSkills(repoPath: string): Promise<string[]> {
       } catch {
         // Fallback: generate minimal skill content
         skillContent = `---
-name: gitnexus-${skill.name}
+name: ${skill.name}
 description: ${skill.description}
 ---
 

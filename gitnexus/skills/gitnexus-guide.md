@@ -1,5 +1,5 @@
 ---
-name: guide
+name: gitnexus-guide
 description: GitNexus quickstart — tools, resources, schema, and workflow reference
 ---
 
@@ -21,12 +21,12 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 | Task                                         | Skill to read       |
 | -------------------------------------------- | ------------------- |
-| Understand architecture / "How does X work?" | `exploring`         |
-| Blast radius / "What breaks if I change X?"  | `impact-analysis`   |
-| Trace bugs / "Why is X failing?"             | `debugging`         |
-| Rename / extract / split / refactor          | `refactoring`       |
-| Tools, resources, schema reference           | `guide` (this file) |
-| Index, status, clean, wiki CLI commands      | `cli`               |
+| Understand architecture / "How does X work?" | `gitnexus-exploring`         |
+| Blast radius / "What breaks if I change X?"  | `gitnexus-impact-analysis`   |
+| Trace bugs / "Why is X failing?"             | `gitnexus-debugging`         |
+| Rename / extract / split / refactor          | `gitnexus-refactoring`       |
+| Tools, resources, schema reference           | `gitnexus-guide` (this file) |
+| Index, status, clean, wiki CLI commands      | `gitnexus-cli`               |
 
 ## Tools Reference
 

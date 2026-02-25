@@ -1,5 +1,5 @@
 ---
-name: debugging
+name: gitnexus-debugging
 description: Trace bugs through call chains using knowledge graph
 ---
 
