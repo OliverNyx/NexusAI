@@ -1,5 +1,5 @@
 ---
-name: gitnexus-refactoring
+name: refactoring
 description: Plan safe refactors using blast radius and dependency mapping
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: gitnexus-impact-analysis
+name: impact-analysis
 description: Analyze blast radius before making code changes
 ---
 

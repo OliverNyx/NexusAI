@@ -1,5 +1,5 @@
 ---
-name: gitnexus-guide
+name: guide
 description: GitNexus quickstart — tools, resources, schema, and workflow reference
 ---
 

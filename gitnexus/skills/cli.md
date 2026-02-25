@@ -1,5 +1,5 @@
 ---
-name: gitnexus-cli
+name: cli
 description: GitNexus CLI commands — index, status, clean, and wiki generation
 ---
 
