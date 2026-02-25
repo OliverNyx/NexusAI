@@ -22,9 +22,16 @@ interface SetupResult {
 }
 
 /**
- * The MCP server entry for all editors
+ * The MCP server entry for all editors.
+ * On Windows, npx must be invoked via cmd /c since it's a .cmd script.
  */
 function getMcpEntry() {
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+    };
+  }
   return {
     command: 'npx',
     args: ['-y', 'gitnexus@latest', 'mcp'],
