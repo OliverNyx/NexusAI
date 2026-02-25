@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * GitNexus Claude Code Hook
+ * GitNexus Claude Code Plugin Hook
  *
  * PreToolUse handler — intercepts Grep/Glob/Bash searches
  * and augments with graph context from the GitNexus index.
  *
- * NOTE: SessionStart hooks are broken on Windows (Claude Code bug).
+ * NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
  * Session context is injected via CLAUDE.md / skills instead.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -101,11 +101,33 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    const result = execFileSync(
-      'gitnexus',
-      ['augment', pattern],
-      { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+    // augment CLI writes result to stderr (KuzuDB's native module captures
+    // stdout fd at OS level, making it unusable in subprocess contexts).
+    let result = '';
+
+    // Try direct gitnexus binary first (faster if globally installed)
+    try {
+      const child = spawnSync(
+        'gitnexus',
+        ['augment', pattern],
+        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      if (child.status === 0 || (child.stderr && child.stderr.trim())) {
+        result = child.stderr || '';
+      }
+    } catch { /* not on PATH */ }
+
+    // Fallback to npx if direct binary didn't produce output
+    if (!result || !result.trim()) {
+      try {
+        const child = spawnSync(
+          'npx',
+          ['-y', 'gitnexus', 'augment', pattern],
+          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+        result = child.stderr || '';
+      } catch { /* graceful failure */ }
+    }
 
     if (result && result.trim()) {
       console.log(JSON.stringify({
