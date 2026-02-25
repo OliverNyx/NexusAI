@@ -11,7 +11,8 @@ import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCa
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
-import { runCypherQuery, getBackendUrl } from '../services/backend';
+import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
+import { fetchRepos, connectToServer } from '../services/server-connection';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -112,6 +113,13 @@ interface AppState {
   projectName: string;
   setProjectName: (name: string) => void;
 
+  // Multi-repo switching
+  serverBaseUrl: string | null;
+  setServerBaseUrl: (url: string | null) => void;
+  availableRepos: RepoSummary[];
+  setAvailableRepos: (repos: RepoSummary[]) => void;
+  switchRepo: (repoName: string) => Promise<void>;
+
   // Worker API (shared across app)
   runPipeline: (file: File, onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
   runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
@@ -161,12 +169,6 @@ interface AppState {
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
   codeReferenceFocus: CodeReferenceFocus | null;
-
-  // Backend mode
-  isBackendMode: boolean;
-  backendRepo: string | null;
-  setBackendMode: (mode: boolean) => void;
-  setBackendRepo: (repo: string | null) => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -277,6 +279,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Project info
   const [projectName, setProjectName] = useState<string>('');
 
+  // Multi-repo switching
+  const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
+  const [availableRepos, setAvailableRepos] = useState<RepoSummary[]>([]);
+
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
   const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgress | null>(null);
@@ -298,11 +304,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
 
-  // Backend mode
-  const [isBackendMode, setIsBackendMode] = useState(false);
-  const [backendRepo, setBackendRepo] = useState<string | null>(null);
-
-  const normalizePath = useCallback((p: string) => {
+    const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
   }, []);
 
@@ -465,16 +467,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
-    if (isBackendMode && backendRepo) {
-      return runCypherQuery(backendRepo, cypher);
-    }
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, [isBackendMode, backendRepo]);
+  }, []);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
-    if (isBackendMode) return true; // backend handles DB
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -482,13 +480,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, [isBackendMode]);
+  }, []);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
-    // Embeddings require the WASM worker DB — skip in backend mode
-    if (isBackendMode) return;
-
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
 
@@ -530,7 +525,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }
       throw error;
     }
-  }, [isBackendMode]);
+  }, []);
 
   const semanticSearch = useCallback(async (
     query: string,
@@ -571,15 +566,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const initializeAgent = useCallback(async (overrideProjectName?: string): Promise<void> => {
-    const config = getActiveProviderConfig();
-    if (!config) {
-      setAgentError('Please configure an LLM provider in settings');
-      return;
-    }
-
     const api = apiRef.current;
     if (!api) {
       setAgentError('Worker not initialized');
+      return;
+    }
+
+    const config = getActiveProviderConfig();
+    if (!config) {
+      setAgentError('Please configure an LLM provider in settings');
       return;
     }
 
@@ -587,23 +582,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
 
     try {
+      // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
-      let result: { success: boolean; error?: string };
-
-      if (isBackendMode && backendRepo) {
-        // Backend mode: pass HTTP config + file contents to worker
-        const entries = Array.from(fileContents.entries());
-        result = await api.initializeBackendAgent(
-          config,
-          getBackendUrl(),
-          backendRepo,
-          entries,
-          effectiveProjectName,
-        );
-      } else {
-        result = await api.initializeAgent(config, effectiveProjectName);
-      }
-
+      const result = await api.initializeAgent(config, effectiveProjectName);
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -621,7 +602,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName, isBackendMode, backendRepo, fileContents]);
+  }, [projectName]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -991,6 +972,73 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
   }, []);
 
+  // Switch to a different repo on the connected server
+  const switchRepo = useCallback(async (repoName: string) => {
+    if (!serverBaseUrl) return;
+
+    setProgress({ phase: 'extracting', percent: 0, message: 'Switching repository...', detail: `Loading ${repoName}` });
+    setViewMode('loading');
+
+    // Clear stale graph state from previous repo (highlights, selections, blast radius)
+    // Without this, sigma reducers dim ALL nodes/edges because old node IDs don't match
+    setHighlightedNodeIds(new Set());
+    clearAIToolHighlights();
+    clearBlastRadius();
+    setSelectedNode(null);
+    setQueryResult(null);
+    setCodeReferences([]);
+    setCodePanelOpen(false);
+    setCodeReferenceFocus(null);
+
+    try {
+      const result: ConnectToServerResult = await connectToServer(serverBaseUrl, (phase, downloaded, total) => {
+        if (phase === 'validating') {
+          setProgress({ phase: 'extracting', percent: 5, message: 'Switching repository...', detail: 'Validating' });
+        } else if (phase === 'downloading') {
+          const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
+          const mb = (downloaded / (1024 * 1024)).toFixed(1);
+          setProgress({ phase: 'extracting', percent: pct, message: 'Downloading graph...', detail: `${mb} MB downloaded` });
+        } else if (phase === 'extracting') {
+          setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
+        }
+      }, undefined, repoName);
+
+      // Reuse the same handleServerConnect logic inline
+      const repoPath = result.repoInfo.repoPath;
+      const pName = result.repoInfo.name || repoPath.split('/').pop() || 'server-project';
+      setProjectName(pName);
+
+      const graph = createKnowledgeGraph();
+      for (const node of result.nodes) graph.addNode(node);
+      for (const rel of result.relationships) graph.addRelationship(rel);
+      setGraph(graph);
+
+      const fileMap = new Map<string, string>();
+      for (const [p, c] of Object.entries(result.fileContents)) fileMap.set(p, c);
+      setFileContents(fileMap);
+
+      setViewMode('exploring');
+
+      if (getActiveProviderConfig()) initializeAgent(pName);
+
+      startEmbeddings().catch((err) => {
+        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+          startEmbeddings('wasm').catch(console.warn);
+        } else {
+          console.warn('Embeddings auto-start failed:', err);
+        }
+      });
+    } catch (err) {
+      console.error('Repo switch failed:', err);
+      setProgress({
+        phase: 'error', percent: 0,
+        message: 'Failed to switch repository',
+        detail: err instanceof Error ? err.message : 'Unknown error',
+      });
+      setTimeout(() => { setViewMode('exploring'); setProgress(null); }, 3000);
+    }
+  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, initializeAgent, startEmbeddings, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
       const ref = prev.find(r => r.id === id);
@@ -1084,6 +1132,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setProgress,
     projectName,
     setProjectName,
+    // Multi-repo switching
+    serverBaseUrl,
+    setServerBaseUrl,
+    availableRepos,
+    setAvailableRepos,
+    switchRepo,
     runPipeline,
     runPipelineFromFiles,
     runQuery,
@@ -1124,11 +1178,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     clearAICodeReferences,
     clearCodeReferences,
     codeReferenceFocus,
-    // Backend mode
-    isBackendMode,
-    backendRepo,
-    setBackendMode: setIsBackendMode,
-    setBackendRepo,
   };
 
   return (

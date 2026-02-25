@@ -1,12 +1,12 @@
 /**
  * MCP Server (Multi-Repo)
- * 
+ *
  * Model Context Protocol server that runs on stdio.
  * External AI tools (Cursor, Claude) spawn this process and
  * communicate via stdin/stdout using the MCP protocol.
- * 
+ *
  * Supports multiple indexed repositories via the global registry.
- * 
+ *
  * Tools: list_repos, query, cypher, context, impact, detect_changes, rename
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
@@ -28,10 +28,10 @@ import { getResourceDefinitions, getResourceTemplates, readResource } from './re
 
 /**
  * Next-step hints appended to tool responses.
- * 
+ *
  * Agents often stop after one tool call. These hints guide them to the
  * logical next action, creating a self-guiding workflow without hooks.
- * 
+ *
  * Design: Each hint is a short, actionable instruction (not a suggestion).
  * The hint references the specific tool/resource to use next.
  */
@@ -75,7 +75,11 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
   }
 }
 
-export async function startMCPServer(backend: LocalBackend): Promise<void> {
+/**
+ * Create a configured MCP Server with all handlers registered.
+ * Transport-agnostic — caller connects the desired transport.
+ */
+export function createMCPServer(backend: LocalBackend): Server {
   const server = new Server(
     {
       name: 'gitnexus',
@@ -119,7 +123,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // Handle read resource request
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const { uri } = request.params;
-    
+
     try {
       const content = await readResource(uri, backend);
       return {
@@ -209,7 +213,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // Handle get prompt request
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    
+
     if (name === 'detect_impact') {
       const scope = args?.scope || 'all';
       const baseRef = args?.base_ref || '';
@@ -233,7 +237,7 @@ Present the analysis as a clear risk report.`,
         ],
       };
     }
-    
+
     if (name === 'generate_map') {
       const repo = args?.repo || '';
       return {
@@ -247,7 +251,7 @@ Present the analysis as a clear risk report.`,
 Follow these steps:
 1. READ \`gitnexus://repo/${repo || '{name}'}/context\` for codebase stats
 2. READ \`gitnexus://repo/${repo || '{name}'}/clusters\` to see all functional areas
-3. READ \`gitnexus://repo/${repo || '{name}'}/processes\` to see all execution flows  
+3. READ \`gitnexus://repo/${repo || '{name}'}/processes\` to see all execution flows
 4. For the top 5 most important processes, READ \`gitnexus://repo/${repo || '{name}'}/process/{name}\` for step-by-step traces
 5. Generate a mermaid architecture diagram showing the major areas and their connections
 6. Write an ARCHITECTURE.md file with: overview, functional areas, key execution flows, and the mermaid diagram`,
@@ -256,9 +260,18 @@ Follow these steps:
         ],
       };
     }
-    
+
     throw new Error(`Unknown prompt: ${name}`);
   });
+
+  return server;
+}
+
+/**
+ * Start the MCP server on stdio transport (for CLI use).
+ */
+export async function startMCPServer(backend: LocalBackend): Promise<void> {
+  const server = createMCPServer(backend);
 
   // Connect to stdio transport
   const transport = new StdioServerTransport();

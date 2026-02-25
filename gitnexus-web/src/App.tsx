@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { AppStateProvider, useAppState } from './hooks/useAppState';
 import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
@@ -11,9 +11,8 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
-import { useBackend } from './hooks/useBackend';
-import { fetchGraph } from './services/backend';
 import { createKnowledgeGraph } from './core/graph/graph';
+import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
 
 const AppContent = () => {
   const {
@@ -36,11 +35,12 @@ const AppContent = () => {
     codeReferences,
     selectedNode,
     isCodePanelOpen,
-    setBackendMode,
-    setBackendRepo,
+    serverBaseUrl,
+    setServerBaseUrl,
+    availableRepos,
+    setAvailableRepos,
+    switchRepo,
   } = useAppState();
-
-  const backend = useBackend();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
@@ -132,63 +132,105 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
 
-  const handleFocusNode = useCallback((nodeId: string) => {
-    graphCanvasRef.current?.focusNode(nodeId);
-  }, []);
+  const handleServerConnect = useCallback((result: ConnectToServerResult) => {
+    // Extract project name from repoPath
+    const repoPath = result.repoInfo.repoPath;
+    const projectName = repoPath.split('/').pop() || 'server-project';
+    setProjectName(projectName);
 
-  const handleSelectBackendRepo = useCallback(async (repoName: string) => {
+    // Build KnowledgeGraph from server data (bypasses WASM pipeline entirely)
+    const graph = createKnowledgeGraph();
+    for (const node of result.nodes) {
+      graph.addNode(node);
+    }
+    for (const rel of result.relationships) {
+      graph.addRelationship(rel);
+    }
+    setGraph(graph);
+
+    // Set file contents from extracted File node content
+    const fileMap = new Map<string, string>();
+    for (const [path, content] of Object.entries(result.fileContents)) {
+      fileMap.set(path, content);
+    }
+    setFileContents(fileMap);
+
+    // Transition directly to exploring view
+    setViewMode('exploring');
+
+    // Initialize agent if LLM is configured
+    if (getActiveProviderConfig()) {
+      initializeAgent(projectName);
+    }
+
+    // Auto-start embeddings
+    startEmbeddings().catch((err) => {
+      if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+        startEmbeddings('wasm').catch(console.warn);
+      } else {
+        console.warn('Embeddings auto-start failed:', err);
+      }
+    });
+  }, [setViewMode, setGraph, setFileContents, setProjectName, initializeAgent, startEmbeddings]);
+
+  // Auto-connect when ?server query param is present (bookmarkable shortcut)
+  const autoConnectRan = useRef(false);
+  useEffect(() => {
+    if (autoConnectRan.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('server')) return;
+    autoConnectRan.current = true;
+
+    // Clean the URL so a refresh won't re-trigger
+    const cleanUrl = window.location.pathname + window.location.hash;
+    window.history.replaceState(null, '', cleanUrl);
+
+    setProgress({ phase: 'extracting', percent: 0, message: 'Connecting to server...', detail: 'Validating server' });
     setViewMode('loading');
-    setProjectName(repoName);
-    setProgress({ phase: 'extracting', percent: 50, message: 'Loading from server...', detail: 'Fetching graph data' });
 
-    try {
-      const graphData = await fetchGraph(repoName);
+    const serverUrl = params.get('server') || window.location.origin;
 
-      // Build KnowledgeGraph from server data
-      const graph = createKnowledgeGraph();
-      for (const node of graphData.nodes) {
-        graph.addNode(node as any);
+    const baseUrl = normalizeServerUrl(serverUrl);
+
+    connectToServer(serverUrl, (phase, downloaded, total) => {
+      if (phase === 'validating') {
+        setProgress({ phase: 'extracting', percent: 5, message: 'Connecting to server...', detail: 'Validating server' });
+      } else if (phase === 'downloading') {
+        const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
+        const mb = (downloaded / (1024 * 1024)).toFixed(1);
+        setProgress({ phase: 'extracting', percent: pct, message: 'Downloading graph...', detail: `${mb} MB downloaded` });
+      } else if (phase === 'extracting') {
+        setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
       }
-      for (const rel of graphData.relationships) {
-        graph.addRelationship(rel as any);
-      }
-      setGraph(graph);
+    }).then(async (result) => {
+      handleServerConnect(result);
 
-      // Extract file contents from File nodes (content is in node properties)
-      const contents = new Map<string, string>();
-      for (const node of graphData.nodes) {
-        const n = node as any;
-        if (n.label === 'File' && n.properties?.content && n.properties?.filePath) {
-          contents.set(n.properties.filePath, n.properties.content);
-        }
+      // Store server URL and fetch available repos for the repo switcher
+      setServerBaseUrl(baseUrl);
+      try {
+        const repos = await fetchRepos(baseUrl);
+        setAvailableRepos(repos);
+      } catch (e) {
+        console.warn('Failed to fetch repo list:', e);
       }
-      setFileContents(contents);
-
-      // Enter backend mode
-      setBackendMode(true);
-      setBackendRepo(repoName);
-      backend.selectRepo(repoName);
-      setProgress(null);
-      setViewMode('exploring');
-
-      // Initialize agent if LLM configured
-      if (getActiveProviderConfig()) {
-        initializeAgent(repoName);
-      }
-    } catch (error) {
-      console.error('Backend load error:', error);
+    }).catch((err) => {
+      console.error('Auto-connect failed:', err);
       setProgress({
         phase: 'error',
         percent: 0,
-        message: 'Error loading from server',
-        detail: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Failed to connect to server',
+        detail: err instanceof Error ? err.message : 'Unknown error',
       });
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
       }, 3000);
-    }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, setBackendMode, setBackendRepo, backend, initializeAgent]);
+    });
+  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+
+  const handleFocusNode = useCallback((nodeId: string) => {
+    graphCanvasRef.current?.focusNode(nodeId);
+  }, []);
 
   // Handle settings saved - refresh and reinitialize agent
   // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
@@ -203,10 +245,19 @@ const AppContent = () => {
       <DropZone
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
-        backendRepos={backend.repos}
-        isBackendConnected={backend.isConnected}
-        backendUrl={backend.backendUrl}
-        onSelectBackendRepo={handleSelectBackendRepo}
+        onServerConnect={async (result, serverUrl) => {
+          handleServerConnect(result);
+          if (serverUrl) {
+            const baseUrl = normalizeServerUrl(serverUrl);
+            setServerBaseUrl(baseUrl);
+            try {
+              const repos = await fetchRepos(baseUrl);
+              setAvailableRepos(repos);
+            } catch (e) {
+              console.warn('Failed to fetch repo list:', e);
+            }
+          }
+        }}
       />
     );
   }
@@ -218,7 +269,7 @@ const AppContent = () => {
   // Exploring view
   return (
     <div className="flex flex-col h-screen bg-void overflow-hidden">
-      <Header onFocusNode={handleFocusNode} />
+      <Header onFocusNode={handleFocusNode} availableRepos={availableRepos} onSwitchRepo={switchRepo} />
 
       <main className="flex-1 flex min-h-0">
         {/* Left Panel - File Tree */}
@@ -247,9 +298,6 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
-        backendUrl={backend.backendUrl}
-        isBackendConnected={backend.isConnected}
-        onBackendUrlChange={backend.setBackendUrl}
       />
 
     </div>

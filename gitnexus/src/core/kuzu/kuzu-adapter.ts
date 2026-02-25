@@ -13,11 +13,22 @@ import { generateAllCSVs } from './csv-generator.js';
 
 let db: kuzu.Database | null = null;
 let conn: kuzu.Connection | null = null;
+let currentDbPath: string | null = null;
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
 export const initKuzu = async (dbPath: string) => {
-  if (conn) return { db, conn };
+  // If already connected to the SAME database, reuse
+  if (conn && currentDbPath === dbPath) return { db, conn };
+
+  // Different database requested — close the old one first
+  if (conn || db) {
+    try { if (conn) await conn.close(); } catch {}
+    try { if (db) await db.close(); } catch {}
+    conn = null;
+    db = null;
+    currentDbPath = null;
+  }
 
   // kuzu v0.11 stores the database as a single file (not a directory).
   // If the path already exists, it must be a valid kuzu database file.
@@ -58,6 +69,7 @@ export const initKuzu = async (dbPath: string) => {
     }
   }
 
+  currentDbPath = dbPath;
   return { db, conn };
 };
 
@@ -525,6 +537,7 @@ export const closeKuzu = async (): Promise<void> => {
     } catch {}
     db = null;
   }
+  currentDbPath = null;
 };
 
 export const isKuzuReady = (): boolean => conn !== null && db !== null;

@@ -93,7 +93,7 @@ export const analyzeCommand = async (
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
-  const barLog = (...args: any[]) => origLog(args.map(a => (typeof a === 'string' ? a : String(a))).join(' '));
+  const barLog = (...args: any[]) => { const msg = args.map(a => (typeof a === 'string' ? a : String(a))).join(' '); if (typeof (bar as any).log === 'function') { (bar as any).log(msg + '\n'); } };
   console.log = barLog;
   console.warn = barLog;
   console.error = barLog;
