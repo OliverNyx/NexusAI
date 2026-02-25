@@ -180,16 +180,16 @@ const generateFolderCSV = (nodes: GraphNode[]): string => {
 
 /**
  * Generate CSV for code element nodes (Function, Class, Interface, Method, CodeElement)
- * Headers: id,name,filePath,startLine,endLine,isExported,content
+ * Headers: id,name,filePath,startLine,endLine,isExported,content,description
  */
 const generateCodeElementCSV = (
   nodes: GraphNode[],
   label: NodeLabel,
   fileContents: Map<string, string>
 ): string => {
-  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'isExported', 'content'];
+  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'isExported', 'content', 'description'];
   const rows: string[] = [headers.join(',')];
-  
+
   for (const node of nodes) {
     if (node.label !== label) continue;
     const content = extractContent(node, fileContents);
@@ -201,9 +201,10 @@ const generateCodeElementCSV = (
       escapeCSVNumber(node.properties.endLine, -1),
       node.properties.isExported ? 'true' : 'false',
       escapeCSVField(content),
+      escapeCSVField((node.properties as any).description || ''),
     ].join(','));
   }
-  
+
   return rows.join('\n');
 };
 
@@ -268,6 +269,35 @@ const generateProcessCSV = (nodes: GraphNode[]): string => {
 };
 
 /**
+ * Generate CSV for multi-language node tables (Struct, Enum, Trait, Property, etc.)
+ * These use CODE_ELEMENT_BASE schema: id,name,filePath,startLine,endLine,content,description
+ */
+const generateMultiLangNodeCSV = (
+  nodes: GraphNode[],
+  label: string,
+  fileContents: Map<string, string>
+): string => {
+  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'content', 'description'];
+  const rows: string[] = [headers.join(',')];
+
+  for (const node of nodes) {
+    if (node.label !== label) continue;
+    const content = extractContent(node, fileContents);
+    rows.push([
+      escapeCSVField(node.id),
+      escapeCSVField(node.properties.name || ''),
+      escapeCSVField(node.properties.filePath || ''),
+      escapeCSVNumber(node.properties.startLine, -1),
+      escapeCSVNumber(node.properties.endLine, -1),
+      escapeCSVField(content),
+      escapeCSVField((node.properties as any).description || ''),
+    ].join(','));
+  }
+
+  return rows.join('\n');
+};
+
+/**
  * Generate CSV for the single CodeRelation table
  * Headers: from,to,type,confidence,reason
  * 
@@ -317,7 +347,17 @@ export const generateAllCSVs = (
   nodeCSVs.set('CodeElement', generateCodeElementCSV(nodes, 'CodeElement', fileContents));
   nodeCSVs.set('Community', generateCommunityCSV(nodes));
   nodeCSVs.set('Process', generateProcessCSV(nodes));
-  
+
+  // Multi-language node types (CODE_ELEMENT_BASE schema: id,name,filePath,startLine,endLine,content,description)
+  const multiLangTypes = [
+    'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
+    'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation',
+    'Constructor', 'Template', 'Module',
+  ] as const;
+  for (const mlType of multiLangTypes) {
+    nodeCSVs.set(mlType, generateMultiLangNodeCSV(nodes, mlType, fileContents));
+  }
+
   // Generate single relation CSV
   const relCSV = generateRelationCSV(graph);
   

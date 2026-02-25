@@ -282,8 +282,12 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
-  // Code element tables (Function, Class, Interface, Method, CodeElement, and multi-language)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  // Multi-language code element tables (CODE_ELEMENT_BASE: no isExported, has description)
+  if (BACKTICK_TABLES.has(table)) {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  // Core code element tables (Function, Class, Interface, Method, CodeElement)
+  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -320,7 +324,8 @@ export const insertNodeToKuzu = async (
       query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
     } else {
       // Function, Class, Method, Interface, etc. - standard code element schema
-      query = `CREATE (n:${label} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}})`;
+      const descStr = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
+      query = `CREATE (n:${label} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descStr}})`;
     }
     
     // Use per-query connection if dbPath provided (avoids lock conflicts)
@@ -385,7 +390,8 @@ export const batchInsertNodesToKuzu = async (
         } else if (label === 'Folder') {
           query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
         } else {
-          query = `MERGE (n:${label} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}`;
+          const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
+          query = `MERGE (n:${label} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         }
         
         await tempConn.query(query);

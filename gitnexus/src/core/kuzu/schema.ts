@@ -64,6 +64,7 @@ CREATE NODE TABLE Function (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -76,6 +77,7 @@ CREATE NODE TABLE Class (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -88,6 +90,7 @@ CREATE NODE TABLE Interface (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -100,6 +103,7 @@ CREATE NODE TABLE Method (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -112,6 +116,7 @@ CREATE NODE TABLE CodeElement (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -154,6 +159,7 @@ CREATE NODE TABLE Process (
 // ============================================================================
 
 // Generic code element with startLine/endLine for C, C++, Rust, Go, Java, C#
+// description: optional metadata (e.g. Eloquent $fillable fields, relationship targets)
 const CODE_ELEMENT_BASE = (name: string) => `
 CREATE NODE TABLE \`${name}\` (
   id STRING,
@@ -162,6 +168,7 @@ CREATE NODE TABLE \`${name}\` (
   startLine INT64,
   endLine INT64,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
