@@ -347,6 +347,12 @@ export const PHP_QUERIES = `
 (method_declaration
   name: (name) @name) @definition.method
 
+; ── Class properties (including Eloquent $fillable, $casts, etc.) ────────────
+(property_declaration
+  (property_element
+    (variable_name
+      (name) @name))) @definition.property
+
 ; ── Imports: use statements ──────────────────────────────────────────────────
 ; Simple: use App\\Models\\User;
 (namespace_use_declaration
