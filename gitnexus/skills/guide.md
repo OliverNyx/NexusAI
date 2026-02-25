@@ -19,39 +19,39 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 ## Skills
 
-| Task | Skill to read |
-|------|---------------|
-| Understand architecture / "How does X work?" | `exploring` |
-| Blast radius / "What breaks if I change X?" | `impact-analysis` |
-| Trace bugs / "Why is X failing?" | `debugging` |
-| Rename / extract / split / refactor | `refactoring` |
-| Tools, resources, schema reference | `guide` (this file) |
-| Index, status, clean, wiki CLI commands | `cli` |
+| Task                                         | Skill to read       |
+| -------------------------------------------- | ------------------- |
+| Understand architecture / "How does X work?" | `exploring`         |
+| Blast radius / "What breaks if I change X?"  | `impact-analysis`   |
+| Trace bugs / "Why is X failing?"             | `debugging`         |
+| Rename / extract / split / refactor          | `refactoring`       |
+| Tools, resources, schema reference           | `guide` (this file) |
+| Index, status, clean, wiki CLI commands      | `cli`               |
 
 ## Tools Reference
 
-| Tool | What it gives you |
-|------|-------------------|
-| `query` | Process-grouped code intelligence — execution flows related to a concept |
-| `context` | 360-degree symbol view — categorized refs, processes it participates in |
-| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |
-| `detect_changes` | Git-diff impact — what do your current changes affect |
-| `rename` | Multi-file coordinated rename with confidence-tagged edits |
-| `cypher` | Raw graph queries (read `gitnexus://repo/{name}/schema` first) |
-| `list_repos` | Discover indexed repos |
+| Tool             | What it gives you                                                        |
+| ---------------- | ------------------------------------------------------------------------ |
+| `query`          | Process-grouped code intelligence — execution flows related to a concept |
+| `context`        | 360-degree symbol view — categorized refs, processes it participates in  |
+| `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
+| `detect_changes` | Git-diff impact — what do your current changes affect                    |
+| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
+| `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
+| `list_repos`     | Discover indexed repos                                                   |
 
 ## Resources Reference
 
 Lightweight reads (~100-500 tokens) for navigation:
 
-| Resource | Content |
-|----------|---------|
-| `gitnexus://repo/{name}/context` | Stats, staleness check |
-| `gitnexus://repo/{name}/clusters` | All functional areas with cohesion scores |
-| `gitnexus://repo/{name}/cluster/{clusterName}` | Area members |
-| `gitnexus://repo/{name}/processes` | All execution flows |
-| `gitnexus://repo/{name}/process/{processName}` | Step-by-step trace |
-| `gitnexus://repo/{name}/schema` | Graph schema for Cypher |
+| Resource                                       | Content                                   |
+| ---------------------------------------------- | ----------------------------------------- |
+| `gitnexus://repo/{name}/context`               | Stats, staleness check                    |
+| `gitnexus://repo/{name}/clusters`              | All functional areas with cohesion scores |
+| `gitnexus://repo/{name}/cluster/{clusterName}` | Area members                              |
+| `gitnexus://repo/{name}/processes`             | All execution flows                       |
+| `gitnexus://repo/{name}/process/{processName}` | Step-by-step trace                        |
+| `gitnexus://repo/{name}/schema`                | Graph schema for Cypher                   |
 
 ## Graph Schema
 
