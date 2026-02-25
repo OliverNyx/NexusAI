@@ -17,6 +17,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+.claude/settings.local.json
+
 # Environment variables
 .env
 .env.local
@@ -41,6 +43,7 @@ coverage/
 
 .env*.local
 .gitnexus
+.claude/settings.local.json
 
 # Claude Code worktrees
 .claude/worktrees/
