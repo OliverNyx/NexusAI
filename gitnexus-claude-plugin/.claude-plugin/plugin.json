@@ -7,7 +7,5 @@
   },
   "homepage": "https://github.com/nicosxt/gitnexus",
   "repository": "https://github.com/nicosxt/gitnexus",
-  "keywords": ["code-intelligence", "knowledge-graph", "mcp", "static-analysis"],
-  "hooks": "./hooks",
-  "mcpServers": "./.mcp.json"
+  "keywords": ["code-intelligence", "knowledge-graph", "mcp", "static-analysis"]
 }

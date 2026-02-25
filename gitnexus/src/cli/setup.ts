@@ -217,7 +217,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
-const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring', 'guide'];
+const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring', 'guide', 'cli'];
 
 /**
  * Install GitNexus skills to a target directory.

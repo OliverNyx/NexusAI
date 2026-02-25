@@ -59,6 +59,7 @@ This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} s
 | Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/debugging/SKILL.md\` |
 | Rename / extract / split / refactor | \`.claude/skills/gitnexus/refactoring/SKILL.md\` |
 | Tools, resources, schema reference | \`.claude/skills/gitnexus/guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/cli/SKILL.md\` |
 
 ${GITNEXUS_END_MARKER}`;
 }
@@ -143,6 +144,10 @@ async function installSkills(repoPath: string): Promise<string[]> {
     {
       name: 'guide',
       description: 'GitNexus quickstart — tools, resources, schema, and workflow reference',
+    },
+    {
+      name: 'cli',
+      description: 'GitNexus CLI commands — index, status, clean, and wiki generation',
     },
   ];
 

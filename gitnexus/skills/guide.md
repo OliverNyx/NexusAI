@@ -26,6 +26,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | Trace bugs / "Why is X failing?" | `debugging` |
 | Rename / extract / split / refactor | `refactoring` |
 | Tools, resources, schema reference | `guide` (this file) |
+| Index, status, clean, wiki CLI commands | `cli` |
 
 ## Tools Reference
 
