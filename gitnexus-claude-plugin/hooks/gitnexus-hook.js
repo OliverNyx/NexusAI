@@ -112,8 +112,8 @@ function main() {
         ['augment', pattern],
         { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
       );
-      if (child.status === 0 || (child.stderr && child.stderr.trim())) {
-        result = child.stderr || '';
+      if (child.status === 0 && child.stderr && child.stderr.trim()) {
+        result = child.stderr;
       }
     } catch { /* not on PATH */ }
 
@@ -125,7 +125,9 @@ function main() {
           ['-y', 'gitnexus', 'augment', pattern],
           { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
         );
-        result = child.stderr || '';
+        if (child.status === 0 && child.stderr && child.stderr.trim()) {
+          result = child.stderr;
+        }
       } catch { /* graceful failure */ }
     }
 
