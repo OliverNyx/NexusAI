@@ -343,12 +343,13 @@ export const analyzeCommand = async (
     console.log(`  Hooks: ${hookResult.message}`);
   }
 
-  // Show warnings (missing schema pairs, etc.) after the clean output
+  // Show a quiet summary if some edge types needed fallback insertion
   if (kuzuWarnings.length > 0) {
-    console.log(`\n  Warnings (${kuzuWarnings.length}):`);
-    for (const w of kuzuWarnings) {
-      console.log(`    ${w}`);
-    }
+    const totalFallback = kuzuWarnings.reduce((sum, w) => {
+      const m = w.match(/\((\d+) edges\)/);
+      return sum + (m ? parseInt(m[1]) : 0);
+    }, 0);
+    console.log(`  Note: ${totalFallback} edges across ${kuzuWarnings.length} types inserted via fallback (schema will be updated in next release)`);
   }
 
   try {
