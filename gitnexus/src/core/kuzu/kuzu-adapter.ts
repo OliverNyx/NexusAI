@@ -1,4 +1,6 @@
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
 import path from 'path';
 import kuzu from 'kuzu';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -9,7 +11,7 @@ import {
   EMBEDDING_TABLE_NAME,
   NodeTableName,
 } from './schema.js';
-import { generateAllCSVs } from './csv-generator.js';
+import { streamAllCSVsToDisk } from './csv-generator.js';
 
 let db: kuzu.Database | null = null;
 let conn: kuzu.Connection | null = null;
@@ -65,7 +67,7 @@ export type KuzuProgressCallback = (message: string) => void;
 
 export const loadGraphToKuzu = async (
   graph: KnowledgeGraph,
-  fileContents: Map<string, string>,
+  repoPath: string,
   storagePath: string,
   onProgress?: KuzuProgressCallback
 ) => {
@@ -75,23 +77,11 @@ export const loadGraphToKuzu = async (
 
   const log = onProgress || (() => {});
 
-  const csvData = generateAllCSVs(graph, fileContents);
   const csvDir = path.join(storagePath, 'csv');
-  await fs.mkdir(csvDir, { recursive: true });
 
-  log('Generating CSVs...');
+  log('Streaming CSVs to disk...');
+  const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
 
-  const nodeFiles: Array<{ table: NodeTableName; path: string; rows: number }> = [];
-  for (const [tableName, csv] of csvData.nodes.entries()) {
-    const rowCount = csv.split('\n').length - 1;
-    if (rowCount <= 0) continue;
-    const filePath = path.join(csvDir, `${tableName.toLowerCase()}.csv`);
-    await fs.writeFile(filePath, csv, 'utf-8');
-    nodeFiles.push({ table: tableName, path: filePath, rows: rowCount });
-  }
-
-  // Write relationship CSV to disk for bulk COPY
-  const relCsvPath = path.join(csvDir, 'relations.csv');
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);
   const getNodeLabel = (nodeId: string): string => {
     if (nodeId.startsWith('comm_')) return 'Community';
@@ -99,34 +89,16 @@ export const loadGraphToKuzu = async (
     return nodeId.split(':')[0];
   };
 
-  const relLines = csvData.relCSV.split('\n');
-  const relHeader = relLines[0];
-  const validRelLines = [relHeader];
-  let skippedRels = 0;
-  for (let i = 1; i < relLines.length; i++) {
-    const line = relLines[i];
-    if (!line.trim()) continue;
-    const match = line.match(/"([^"]*)","([^"]*)"/);
-    if (!match) { skippedRels++; continue; }
-    const fromLabel = getNodeLabel(match[1]);
-    const toLabel = getNodeLabel(match[2]);
-    if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
-      skippedRels++;
-      continue;
-    }
-    validRelLines.push(line);
-  }
-  await fs.writeFile(relCsvPath, validRelLines.join('\n'), 'utf-8');
-
-  // Bulk COPY all node CSVs
+  // Bulk COPY all node CSVs (sequential — KuzuDB allows only one write txn at a time)
+  const nodeFiles = [...csvResult.nodeFiles.entries()];
   const totalSteps = nodeFiles.length + 1; // +1 for relationships
   let stepsDone = 0;
 
-  for (const { table, path: filePath, rows } of nodeFiles) {
+  for (const [table, { csvPath, rows }] of nodeFiles) {
     stepsDone++;
     log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
 
-    const normalizedPath = normalizeCopyPath(filePath);
+    const normalizedPath = normalizeCopyPath(csvPath);
     const copyQuery = getCopyQuery(table, normalizedPath);
 
     try {
@@ -143,21 +115,39 @@ export const loadGraphToKuzu = async (
   }
 
   // Bulk COPY relationships — split by FROM→TO label pair (KuzuDB requires it)
-  const insertedRels = validRelLines.length - 1;
-  const warnings: string[] = [];
-  if (insertedRels > 0) {
-    const relsByPair = new Map<string, string[]>();
-    for (let i = 1; i < validRelLines.length; i++) {
-      const line = validRelLines[i];
+  // Stream-read the relation CSV line by line to avoid exceeding V8 max string length
+  let relHeader = '';
+  const relsByPair = new Map<string, string[]>();
+  let skippedRels = 0;
+  let totalValidRels = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    const rl = createInterface({ input: createReadStream(csvResult.relCsvPath, 'utf-8'), crlfDelay: Infinity });
+    let isFirst = true;
+    rl.on('line', (line) => {
+      if (isFirst) { relHeader = line; isFirst = false; return; }
+      if (!line.trim()) return;
       const match = line.match(/"([^"]*)","([^"]*)"/);
-      if (!match) continue;
+      if (!match) { skippedRels++; return; }
       const fromLabel = getNodeLabel(match[1]);
       const toLabel = getNodeLabel(match[2]);
+      if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
+        skippedRels++;
+        return;
+      }
       const pairKey = `${fromLabel}|${toLabel}`;
       let list = relsByPair.get(pairKey);
       if (!list) { list = []; relsByPair.set(pairKey, list); }
       list.push(line);
-    }
+      totalValidRels++;
+    });
+    rl.on('close', resolve);
+    rl.on('error', reject);
+  });
+
+  const insertedRels = totalValidRels;
+  const warnings: string[] = [];
+  if (insertedRels > 0) {
 
     log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
@@ -200,9 +190,9 @@ export const loadGraphToKuzu = async (
   }
 
   // Cleanup all CSVs
-  try { await fs.unlink(relCsvPath); } catch {}
-  for (const { path: filePath } of nodeFiles) {
-    try { await fs.unlink(filePath); } catch {}
+  try { await fs.unlink(csvResult.relCsvPath); } catch {}
+  for (const [, { csvPath }] of csvResult.nodeFiles) {
+    try { await fs.unlink(csvPath); } catch {}
   }
   try {
     const remaining = await fs.readdir(csvDir);
@@ -268,6 +258,9 @@ const fallbackRelationshipInserts = async (
   }
 };
 
+/** Tables with isExported column (TypeScript/JS-native types) */
+const TABLES_WITH_EXPORTED = new Set<string>(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
+
 const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
@@ -282,12 +275,12 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
-  // Multi-language code element tables (CODE_ELEMENT_BASE: no isExported, has description)
-  if (BACKTICK_TABLES.has(table)) {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  // TypeScript/JS code element tables have isExported; multi-language tables do not
+  if (TABLES_WITH_EXPORTED.has(table)) {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
-  // Core code element tables (Function, Class, Interface, Method, CodeElement)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -316,16 +309,20 @@ export const insertNodeToKuzu = async (
     };
 
     // Build INSERT query based on node type
+    const t = escapeTableName(label);
     let query: string;
-    
+
     if (label === 'File') {
       query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}})`;
     } else if (label === 'Folder') {
       query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
+    } else if (TABLES_WITH_EXPORTED.has(label)) {
+      const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
+      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     } else {
-      // Function, Class, Method, Interface, etc. - standard code element schema
-      const descStr = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
-      query = `CREATE (n:${label} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descStr}})`;
+      // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
+      const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
+      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     }
     
     // Use per-query connection if dbPath provided (avoids lock conflicts)
@@ -385,13 +382,17 @@ export const batchInsertNodesToKuzu = async (
         let query: string;
         
         // Use MERGE instead of CREATE for upsert behavior (handles duplicates gracefully)
+        const t = escapeTableName(label);
         if (label === 'File') {
           query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}`;
         } else if (label === 'Folder') {
           query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
+        } else if (TABLES_WITH_EXPORTED.has(label)) {
+          const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
+          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         } else {
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
-          query = `MERGE (n:${label} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         }
         
         await tempConn.query(query);
@@ -457,7 +458,7 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
   let totalNodes = 0;
   for (const tableName of NODE_TABLES) {
     try {
-      const queryResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
+      const queryResult = await conn.query(`MATCH (n:${escapeTableName(tableName)}) RETURN count(n) AS cnt`);
       const nodeResult = Array.isArray(queryResult) ? queryResult[0] : queryResult;
       const nodeRows = await nodeResult.getAll();
       if (nodeRows.length > 0) {
@@ -531,6 +532,7 @@ export const closeKuzu = async (): Promise<void> => {
     } catch {}
     db = null;
   }
+  ftsLoaded = false;
 };
 
 export const isKuzuReady = (): boolean => conn !== null && db !== null;
@@ -569,17 +571,18 @@ export const deleteNodesForFile = async (filePath: string, dbPath?: string): Pro
       
       try {
         // First count how many we'll delete
+        const tn = escapeTableName(tableName);
         const countResult = await targetConn!.query(
-          `MATCH (n:${tableName}) WHERE n.filePath = '${escapedPath}' RETURN count(n) AS cnt`
+          `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' RETURN count(n) AS cnt`
         );
         const result = Array.isArray(countResult) ? countResult[0] : countResult;
         const rows = await result.getAll();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-        
+
         if (count > 0) {
           // Delete nodes (and implicitly their relationships via DETACH)
           await targetConn!.query(
-            `MATCH (n:${tableName}) WHERE n.filePath = '${escapedPath}' DETACH DELETE n`
+            `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' DETACH DELETE n`
           );
           deletedNodes += count;
         }
@@ -616,9 +619,12 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 // ============================================================================
 
 /**
- * Load the FTS extension (required before using FTS functions)
+ * Load the FTS extension (required before using FTS functions).
+ * Safe to call multiple times — tracks loaded state.
  */
+let ftsLoaded = false;
 export const loadFTSExtension = async (): Promise<void> => {
+  if (ftsLoaded) return;
   if (!conn) {
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
@@ -628,6 +634,7 @@ export const loadFTSExtension = async (): Promise<void> => {
   } catch {
     // Extension may already be loaded
   }
+  ftsLoaded = true;
 };
 
 /**
@@ -646,16 +653,15 @@ export const createFTSIndex = async (
   if (!conn) {
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
-  
+
   await loadFTSExtension();
-  
+
   const propList = properties.map(p => `'${p}'`).join(', ');
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
-  
+
   try {
     await conn.query(query);
   } catch (e: any) {
-    // Index may already exist
     if (!e.message?.includes('already exists')) {
       throw e;
     }

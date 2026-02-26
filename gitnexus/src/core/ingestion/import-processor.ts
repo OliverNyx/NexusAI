@@ -18,6 +18,27 @@ export type ImportMap = Map<string, Set<string>>;
 
 export const createImportMap = (): ImportMap => new Map();
 
+/** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
+export interface ImportResolutionContext {
+  allFilePaths: Set<string>;
+  allFileList: string[];
+  normalizedFileList: string[];
+  suffixIndex: SuffixIndex;
+  resolveCache: Map<string, string | null>;
+}
+
+/** Max entries in the resolve cache. Beyond this, the cache is cleared to bound memory.
+ *  100K entries ≈ 15MB — covers the most common import patterns. */
+const RESOLVE_CACHE_CAP = 100_000;
+
+export function buildImportResolutionContext(allPaths: string[]): ImportResolutionContext {
+  const allFileList = allPaths;
+  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
+  const allFilePaths = new Set(allFileList);
+  const suffixIndex = buildSuffixIndex(normalizedFileList, allFileList);
+  return { allFilePaths, allFileList, normalizedFileList, suffixIndex, resolveCache: new Map() };
+}
+
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG
 // ============================================================================
@@ -309,6 +330,15 @@ const resolveImportPath = (
   if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
 
   const cache = (result: string | null): string | null => {
+    // Evict oldest 20% when cap is reached instead of clearing all
+    if (resolveCache.size >= RESOLVE_CACHE_CAP) {
+      const evictCount = Math.floor(RESOLVE_CACHE_CAP * 0.2);
+      const iter = resolveCache.keys();
+      for (let i = 0; i < evictCount; i++) {
+        const key = iter.next().value;
+        if (key !== undefined) resolveCache.delete(key);
+      }
+    }
     resolveCache.set(cacheKey, result);
     return result;
   };
@@ -637,12 +667,13 @@ export const processImports = async (
   importMap: ImportMap,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
+  allPaths?: string[],
 ) => {
-  // Create a Set of all file paths for fast lookup during resolution
-  const allFilePaths = new Set(files.map(f => f.path));
+  // Use allPaths (full repo) when available for cross-chunk resolution, else fall back to chunk files
+  const allFileList = allPaths ?? files.map(f => f.path);
+  const allFilePaths = new Set(allFileList);
   const parser = await loadParser();
   const resolveCache = new Map<string, string | null>();
-  const allFileList = files.map(f => f.path);
   // Pre-compute normalized file list once (forward slashes)
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
   // Build suffix index for O(1) lookups
@@ -823,18 +854,15 @@ export const processImports = async (
 
 export const processImportsFromExtracted = async (
   graph: KnowledgeGraph,
-  files: { path: string; content: string }[],
+  files: { path: string }[],
   extractedImports: ExtractedImport[],
   importMap: ImportMap,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
+  prebuiltCtx?: ImportResolutionContext,
 ) => {
-  const allFilePaths = new Set(files.map(f => f.path));
-  const resolveCache = new Map<string, string | null>();
-  const allFileList = files.map(f => f.path);
-  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
-  // Build suffix index for O(1) lookups
-  const index = buildSuffixIndex(normalizedFileList, allFileList);
+  const ctx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
+  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = ctx;
 
   let totalImportsFound = 0;
   let totalImportsResolved = 0;

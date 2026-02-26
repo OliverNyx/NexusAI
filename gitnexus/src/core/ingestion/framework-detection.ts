@@ -257,13 +257,8 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
   }
 
-  // Generic PHP MVC: files ending with Controller.php
-  if (p.endsWith('controller.php')) {
-    return { framework: 'php-mvc', entryPointMultiplier: 2.5, reason: 'php-controller-file' };
-  }
-
   // ========== GENERIC PATTERNS ==========
-  
+
   // Any language: index files in API folders
   if (p.includes('/api/') && (
     p.endsWith('/index.ts') || p.endsWith('/index.js') || 
@@ -302,7 +297,7 @@ export const FRAMEWORK_AST_PATTERNS = {
   
   // Go patterns (function signatures)
   'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
-  
+
   // PHP/Laravel
   'laravel': ['Route::get', 'Route::post', 'Route::put', 'Route::delete',
               'Route::resource', 'Route::apiResource', '#[Route('],

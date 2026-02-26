@@ -51,10 +51,16 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     get nodes(){
       return Array.from(nodeMap.values())
     },
-  
+
     get relationships(){
       return Array.from(relationshipMap.values())
     },
+
+    iterNodes: () => nodeMap.values(),
+    iterRelationships: () => relationshipMap.values(),
+    forEachNode(fn: (node: GraphNode) => void) { nodeMap.forEach(fn); },
+    forEachRelationship(fn: (rel: GraphRelationship) => void) { relationshipMap.forEach(fn); },
+    getNode: (id: string) => nodeMap.get(id),
 
     // O(1) count getters - avoid creating arrays just for length
     get nodeCount() {

@@ -90,12 +90,18 @@ export const processCommunities = async (
 ): Promise<CommunityDetectionResult> => {
   onProgress?.('Building graph for community detection...', 0);
 
-  // Step 1: Build a graphology graph from the knowledge graph
-  // We only include symbol nodes (Function, Class, Method) and CALLS edges
-  const graph = buildGraphologyGraph(knowledgeGraph);
-  
+  // Pre-check total symbol count to determine large-graph mode before building
+  let symbolCount = 0;
+  knowledgeGraph.forEachNode(node => {
+    if (node.label === 'Function' || node.label === 'Class' || node.label === 'Method' || node.label === 'Interface') {
+      symbolCount++;
+    }
+  });
+  const isLarge = symbolCount > 10_000;
+
+  const graph = buildGraphologyGraph(knowledgeGraph, isLarge);
+
   if (graph.order === 0) {
-    // No nodes to cluster
     return {
       communities: [],
       memberships: [],
@@ -103,13 +109,37 @@ export const processCommunities = async (
     };
   }
 
-  onProgress?.(`Running Leiden algorithm on ${graph.order} nodes...`, 30);
+  const nodeCount = graph.order;
+  const edgeCount = graph.size;
 
-  // Step 2: Run Leiden algorithm for community detection
-  const details = (leiden as any).detailed(graph, {
-    resolution: 1.0,  // Default resolution, can be tuned
-    randomWalk: true,
-  });
+  onProgress?.(`Running Leiden on ${nodeCount} nodes, ${edgeCount} edges${isLarge ? ` (filtered from ${symbolCount} symbols)` : ''}...`, 30);
+
+  // Large graphs: higher resolution + capped iterations (matching Python leidenalg default of 2).
+  // The first 2 iterations capture ~95%+ of modularity; additional iterations have diminishing returns.
+  // Timeout: abort after 60s for pathological graph structures.
+  const LEIDEN_TIMEOUT_MS = 60_000;
+  let details: any;
+  try {
+    details = await Promise.race([
+      Promise.resolve((leiden as any).detailed(graph, {
+        resolution: isLarge ? 2.0 : 1.0,
+        maxIterations: isLarge ? 3 : 0,
+      })),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Leiden timeout')), LEIDEN_TIMEOUT_MS)
+      ),
+    ]);
+  } catch (e: any) {
+    if (e.message === 'Leiden timeout') {
+      onProgress?.('Community detection timed out, using fallback...', 60);
+      // Fallback: assign all nodes to community 0
+      const communities: Record<string, number> = {};
+      graph.forEachNode((node: string) => { communities[node] = 0; });
+      details = { communities, count: 1, modularity: 0 };
+    } else {
+      throw e;
+    }
+  }
 
   onProgress?.(`Found ${details.count} communities...`, 60);
 
@@ -150,46 +180,49 @@ export const processCommunities = async (
 // ============================================================================
 
 /**
- * Build a graphology graph containing only symbol nodes and CALLS edges
- * This is what the Leiden algorithm will cluster
+ * Build a graphology graph containing only symbol nodes and clustering edges.
+ * For large graphs (>10K symbols), filter out low-confidence fuzzy-global edges
+ * and degree-1 nodes that add noise and massively increase Leiden runtime.
  */
-const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph): any => {
-  // Use undirected graph for Leiden - it looks at edge density, not direction
+const MIN_CONFIDENCE_LARGE = 0.5;
+
+const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean): any => {
   const graph = new (Graph as any)({ type: 'undirected', allowSelfLoops: false });
 
-  // Symbol types that should be clustered
   const symbolTypes = new Set<NodeLabel>(['Function', 'Class', 'Method', 'Interface']);
-
-  // First pass: collect which nodes participate in clustering edges
   const clusteringRelTypes = new Set(['CALLS', 'EXTENDS', 'IMPLEMENTS']);
   const connectedNodes = new Set<string>();
+  const nodeDegree = new Map<string, number>();
 
-  knowledgeGraph.relationships.forEach(rel => {
-    if (clusteringRelTypes.has(rel.type) && rel.sourceId !== rel.targetId) {
-      connectedNodes.add(rel.sourceId);
-      connectedNodes.add(rel.targetId);
-    }
+  knowledgeGraph.forEachRelationship(rel => {
+    if (!clusteringRelTypes.has(rel.type) || rel.sourceId === rel.targetId) return;
+    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
+
+    connectedNodes.add(rel.sourceId);
+    connectedNodes.add(rel.targetId);
+    nodeDegree.set(rel.sourceId, (nodeDegree.get(rel.sourceId) || 0) + 1);
+    nodeDegree.set(rel.targetId, (nodeDegree.get(rel.targetId) || 0) + 1);
   });
 
-  // Only add nodes that have at least one clustering edge
-  // Isolated nodes would just become singletons (skipped anyway)
-  knowledgeGraph.nodes.forEach(node => {
-    if (symbolTypes.has(node.label) && connectedNodes.has(node.id)) {
-      graph.addNode(node.id, {
-        name: node.properties.name,
-        filePath: node.properties.filePath,
-        type: node.label,
-      });
-    }
+  knowledgeGraph.forEachNode(node => {
+    if (!symbolTypes.has(node.label) || !connectedNodes.has(node.id)) return;
+    // For large graphs, skip degree-1 nodes — they just become singletons or
+    // get absorbed into their single neighbor's community, but cost iteration time.
+    if (isLarge && (nodeDegree.get(node.id) || 0) < 2) return;
+
+    graph.addNode(node.id, {
+      name: node.properties.name,
+      filePath: node.properties.filePath,
+      type: node.label,
+    });
   });
 
-  // Add edges
-  knowledgeGraph.relationships.forEach(rel => {
-    if (clusteringRelTypes.has(rel.type)) {
-      if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId) && rel.sourceId !== rel.targetId) {
-        if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-          graph.addEdge(rel.sourceId, rel.targetId);
-        }
+  knowledgeGraph.forEachRelationship(rel => {
+    if (!clusteringRelTypes.has(rel.type)) return;
+    if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
+    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId) && rel.sourceId !== rel.targetId) {
+      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
+        graph.addEdge(rel.sourceId, rel.targetId);
       }
     }
   });
@@ -222,11 +255,11 @@ const createCommunityNodes = (
 
   // Build node lookup for file paths
   const nodePathMap = new Map<string, string>();
-  knowledgeGraph.nodes.forEach(node => {
+  for (const node of knowledgeGraph.iterNodes()) {
     if (node.properties.filePath) {
       nodePathMap.set(node.id, node.properties.filePath);
     }
-  });
+  }
 
   // Create community nodes - SKIP SINGLETONS (isolated nodes)
   const communityNodes: CommunityNode[] = [];

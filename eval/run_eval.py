@@ -178,7 +178,7 @@ def process_instance(
         env_class_name = env_config.pop("environment_class", "docker")
 
         if env_class_name == "eval.environments.gitnexus_docker.GitNexusDockerEnvironment":
-            from eval.environments.gitnexus_docker import GitNexusDockerEnvironment
+            from environments.gitnexus_docker import GitNexusDockerEnvironment
             env_config["image"] = get_swebench_docker_image(instance)
             env = GitNexusDockerEnvironment(**env_config)
         else:
@@ -189,7 +189,7 @@ def process_instance(
         agent_config = dict(config.get("agent", {}))
         agent_class_name = agent_config.pop("agent_class", "eval.agents.gitnexus_agent.GitNexusAgent")
 
-        from eval.agents.gitnexus_agent import GitNexusAgent
+        from agents.gitnexus_agent import GitNexusAgent
         traj_path = instance_dir / f"{instance_id}.traj.json"
         agent_config["output_path"] = traj_path
         agent = GitNexusAgent(model, env, **agent_config)
@@ -199,10 +199,17 @@ def process_instance(
         info = agent.run(instance["problem_statement"])
 
         result["exit_status"] = info.get("exit_status")
-        result["submission"] = info.get("submission", "")
         result["cost"] = agent.cost
         result["n_calls"] = agent.n_calls
         result["gitnexus_metrics"] = agent.gitnexus_metrics.to_dict()
+
+        # Extract git diff patch from the container (SWE-bench needs the model_patch)
+        try:
+            patch_output = env.execute({"command": "cd /testbed && git diff"})
+            result["submission"] = patch_output.get("output", "").strip()
+        except Exception as patch_err:
+            logger.warning(f"[{run_id}] Failed to extract patch: {patch_err}")
+            result["submission"] = info.get("submission", "")
 
     except Exception as e:
         logger.error(f"[{run_id}] Error on {instance_id}: {e}")

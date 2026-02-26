@@ -29,6 +29,7 @@ interface ParsedNode {
     endLine: number;
     language: string;
     isExported: boolean;
+    description?: string;
   };
 }
 
@@ -273,6 +274,7 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
 };
 
 const BUILT_INS = new Set([
+  // JavaScript/TypeScript
   'console', 'log', 'warn', 'error', 'info', 'debug',
   'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite',
@@ -291,10 +293,32 @@ const BUILT_INS = new Set([
   'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
   'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
   'hasOwnProperty', 'toString', 'valueOf',
+  // Python
   'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // C/C++ standard library
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
+  'scanf', 'fscanf', 'sscanf',
+  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
+  'sizeof', 'offsetof', 'typeof',
+  'assert', 'abort', 'exit', '_exit',
+  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
+  // Linux kernel common macros/helpers (not real call targets)
+  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
+  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
+  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
+  'min', 'max', 'clamp', 'abs', 'swap',
+  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
+  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
+  'GFP_KERNEL', 'GFP_ATOMIC',
+  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
+  'mutex_lock', 'mutex_unlock', 'mutex_init',
+  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
+  'get', 'put',
   // PHP built-ins
   'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
   'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
@@ -678,15 +702,57 @@ const processFileGroup = (
 };
 
 // ============================================================================
-// Worker message handler
+// Worker message handler — supports sub-batch streaming
 // ============================================================================
 
-parentPort!.on('message', (files: ParseWorkerInput[]) => {
+/** Accumulated result across sub-batches */
+let accumulated: ParseWorkerResult = {
+  nodes: [], relationships: [], symbols: [],
+  imports: [], calls: [], heritage: [], fileCount: 0,
+};
+let cumulativeProcessed = 0;
+
+const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
+  target.nodes.push(...src.nodes);
+  target.relationships.push(...src.relationships);
+  target.symbols.push(...src.symbols);
+  target.imports.push(...src.imports);
+  target.calls.push(...src.calls);
+  target.heritage.push(...src.heritage);
+  target.fileCount += src.fileCount;
+};
+
+parentPort!.on('message', (msg: any) => {
   try {
-    const result = processBatch(files, (filesProcessed) => {
-      parentPort!.postMessage({ type: 'progress', filesProcessed });
-    });
-    parentPort!.postMessage({ type: 'result', data: result });
+    // Sub-batch mode: { type: 'sub-batch', files: [...] }
+    if (msg && msg.type === 'sub-batch') {
+      const result = processBatch(msg.files, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed: cumulativeProcessed + filesProcessed });
+      });
+      cumulativeProcessed += result.fileCount;
+      mergeResult(accumulated, result);
+      // Signal ready for next sub-batch
+      parentPort!.postMessage({ type: 'sub-batch-done' });
+      return;
+    }
+
+    // Flush: send accumulated results
+    if (msg && msg.type === 'flush') {
+      parentPort!.postMessage({ type: 'result', data: accumulated });
+      // Reset for potential reuse
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], fileCount: 0 };
+      cumulativeProcessed = 0;
+      return;
+    }
+
+    // Legacy single-message mode (backward compat): array of files
+    if (Array.isArray(msg)) {
+      const result = processBatch(msg, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed });
+      });
+      parentPort!.postMessage({ type: 'result', data: result });
+      return;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     parentPort!.postMessage({ type: 'error', error: message });

@@ -286,39 +286,59 @@ const resolveCallTarget = (
  * Filter out common built-in functions and noise
  * that shouldn't be tracked as calls
  */
-const isBuiltInOrNoise = (name: string): boolean => {
-  const builtIns = new Set([
-    // JavaScript/TypeScript built-ins
-    'console', 'log', 'warn', 'error', 'info', 'debug',
-    'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-    'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-    'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
-    'JSON', 'parse', 'stringify',
-    'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
-    'Map', 'Set', 'WeakMap', 'WeakSet',
-    'Promise', 'resolve', 'reject', 'then', 'catch', 'finally',
-    'Math', 'Date', 'RegExp', 'Error',
-    'require', 'import', 'export',
-    'fetch', 'Response', 'Request',
-    // React hooks and common functions
-    'useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext',
-    'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
-    'createElement', 'createContext', 'createRef', 'forwardRef', 'memo', 'lazy',
-    // Common array/object methods
-    'map', 'filter', 'reduce', 'forEach', 'find', 'findIndex', 'some', 'every',
-    'includes', 'indexOf', 'slice', 'splice', 'concat', 'join', 'split',
-    'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
-    'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
-    'hasOwnProperty', 'toString', 'valueOf',
-    // Python built-ins
-    'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-    'open', 'read', 'write', 'close', 'append', 'extend', 'update',
-    'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
-    'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
-  ]);
+/** Pre-built set (module-level singleton) to avoid re-creating per call */
+const BUILT_IN_NAMES = new Set([
+  // JavaScript/TypeScript built-ins
+  'console', 'log', 'warn', 'error', 'info', 'debug',
+  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
+  'JSON', 'parse', 'stringify',
+  'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
+  'Map', 'Set', 'WeakMap', 'WeakSet',
+  'Promise', 'resolve', 'reject', 'then', 'catch', 'finally',
+  'Math', 'Date', 'RegExp', 'Error',
+  'require', 'import', 'export',
+  'fetch', 'Response', 'Request',
+  // React hooks and common functions
+  'useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext',
+  'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
+  'createElement', 'createContext', 'createRef', 'forwardRef', 'memo', 'lazy',
+  // Common array/object methods
+  'map', 'filter', 'reduce', 'forEach', 'find', 'findIndex', 'some', 'every',
+  'includes', 'indexOf', 'slice', 'splice', 'concat', 'join', 'split',
+  'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
+  'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
+  'hasOwnProperty', 'toString', 'valueOf',
+  // Python built-ins
+  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
+  'open', 'read', 'write', 'close', 'append', 'extend', 'update',
+  'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
+  'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // C/C++ standard library and common kernel helpers
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
+  'scanf', 'fscanf', 'sscanf',
+  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
+  'sizeof', 'offsetof', 'typeof',
+  'assert', 'abort', 'exit', '_exit',
+  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
+  // Linux kernel common macros/helpers (not real call targets)
+  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
+  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
+  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
+  'min', 'max', 'clamp', 'abs', 'swap',
+  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
+  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
+  'GFP_KERNEL', 'GFP_ATOMIC',
+  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
+  'mutex_lock', 'mutex_unlock', 'mutex_init',
+  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
+  'get', 'put',
+]);
 
-  return builtIns.has(name);
-};
+const isBuiltInOrNoise = (name: string): boolean => BUILT_IN_NAMES.has(name);
 
 /**
  * Fast path: resolve pre-extracted call sites from workers.
