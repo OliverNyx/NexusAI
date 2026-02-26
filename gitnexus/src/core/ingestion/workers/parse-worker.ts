@@ -9,6 +9,7 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getLanguageFromFilename } from '../utils.js';
@@ -28,6 +29,7 @@ interface ParsedNode {
     endLine: number;
     language: string;
     isExported: boolean;
+    description?: string;
   };
 }
 
@@ -100,6 +102,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.PHP]: PHP.php_only,
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -185,6 +188,24 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
     case 'cpp':
       return false;
 
+    case 'php':
+      // Top-level classes/interfaces/traits are always accessible
+      // Methods/properties are exported only if they have 'public' modifier
+      while (current) {
+        if (current.type === 'class_declaration' ||
+            current.type === 'interface_declaration' ||
+            current.type === 'trait_declaration' ||
+            current.type === 'enum_declaration') {
+          return true;
+        }
+        if (current.type === 'visibility_modifier') {
+          return current.text === 'public';
+        }
+        current = current.parent;
+      }
+      // Top-level functions (no parent class) are globally accessible
+      return true;
+
     default:
       return false;
   }
@@ -200,6 +221,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_definition', 'async_function_declaration', 'async_arrow_function',
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
+  'anonymous_function_creation_expression',  // PHP anonymous functions
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -252,6 +274,7 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
 };
 
 const BUILT_INS = new Set([
+  // JavaScript/TypeScript
   'console', 'log', 'warn', 'error', 'info', 'debug',
   'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite',
@@ -270,10 +293,49 @@ const BUILT_INS = new Set([
   'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
   'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
   'hasOwnProperty', 'toString', 'valueOf',
+  // Python
   'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // C/C++ standard library
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
+  'scanf', 'fscanf', 'sscanf',
+  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
+  'sizeof', 'offsetof', 'typeof',
+  'assert', 'abort', 'exit', '_exit',
+  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
+  // Linux kernel common macros/helpers (not real call targets)
+  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
+  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
+  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
+  'min', 'max', 'clamp', 'abs', 'swap',
+  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
+  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
+  'GFP_KERNEL', 'GFP_ATOMIC',
+  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
+  'mutex_lock', 'mutex_unlock', 'mutex_init',
+  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
+  'get', 'put',
+  // PHP built-ins
+  'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
+  'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
+  'ltrim', 'rtrim', 'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
+  'sprintf', 'vsprintf', 'printf', 'number_format',
+  'array_map', 'array_filter', 'array_reduce', 'array_push', 'array_pop', 'array_shift',
+  'array_unshift', 'array_slice', 'array_splice', 'array_merge', 'array_keys', 'array_values',
+  'array_key_exists', 'in_array', 'array_search', 'array_unique', 'usort', 'rsort',
+  'json_encode', 'json_decode', 'serialize', 'unserialize',
+  'intval', 'floatval', 'strval', 'boolval', 'is_null', 'is_string', 'is_int', 'is_array',
+  'is_object', 'is_numeric', 'is_bool', 'is_float',
+  'var_dump', 'print_r', 'var_export',
+  'date', 'time', 'strtotime', 'mktime', 'microtime',
+  'file_exists', 'file_get_contents', 'file_put_contents', 'is_file', 'is_dir',
+  'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
+  'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
+  'dd', 'dump',
 ]);
 
 // ============================================================================
@@ -386,6 +448,109 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
   return result;
 };
 
+// ============================================================================
+// PHP Eloquent metadata extraction
+// ============================================================================
+
+/** Eloquent model properties whose array values are worth indexing */
+const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
+
+/** Eloquent relationship method names */
+const ELOQUENT_RELATIONS = new Set([
+  'hasMany', 'hasOne', 'belongsTo', 'belongsToMany',
+  'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
+  'hasManyThrough', 'hasOneThrough',
+]);
+
+function findDescendant(node: any, type: string): any {
+  if (node.type === type) return node;
+  for (const child of (node.children ?? [])) {
+    const found = findDescendant(child, type);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractStringContent(node: any): string | null {
+  if (!node) return null;
+  const content = node.children?.find((c: any) => c.type === 'string_content');
+  if (content) return content.text;
+  if (node.type === 'string_content') return node.text;
+  return null;
+}
+
+/**
+ * For a PHP property_declaration node, extract array values as a description string.
+ * Returns null if not an Eloquent model property or no array values found.
+ */
+function extractPhpPropertyDescription(propName: string, propDeclNode: any): string | null {
+  if (!ELOQUENT_ARRAY_PROPS.has(propName)) return null;
+
+  const arrayNode = findDescendant(propDeclNode, 'array_creation_expression');
+  if (!arrayNode) return null;
+
+  const items: string[] = [];
+  for (const child of (arrayNode.children ?? [])) {
+    if (child.type !== 'array_element_initializer') continue;
+    const children = child.children ?? [];
+    const arrowIdx = children.findIndex((c: any) => c.type === '=>');
+    if (arrowIdx !== -1) {
+      // key => value pair (used in $casts)
+      const key = extractStringContent(children[arrowIdx - 1]);
+      const val = extractStringContent(children[arrowIdx + 1]);
+      if (key && val) items.push(`${key}:${val}`);
+    } else {
+      // Simple value (used in $fillable, $hidden, etc.)
+      const val = extractStringContent(children[0]);
+      if (val) items.push(val);
+    }
+  }
+
+  return items.length > 0 ? items.join(', ') : null;
+}
+
+/**
+ * For a PHP method_declaration node, detect if it defines an Eloquent relationship.
+ * Returns description like "hasMany(Post)" or null.
+ */
+function extractEloquentRelationDescription(methodNode: any): string | null {
+  function findRelationCall(node: any): any {
+    if (node.type === 'member_call_expression') {
+      const children = node.children ?? [];
+      const objectNode = children.find((c: any) => c.type === 'variable_name' && c.text === '$this');
+      const nameNode = children.find((c: any) => c.type === 'name');
+      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
+    }
+    for (const child of (node.children ?? [])) {
+      const found = findRelationCall(child);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const callNode = findRelationCall(methodNode);
+  if (!callNode) return null;
+
+  const relType = callNode.children?.find((c: any) => c.type === 'name')?.text;
+  const argsNode = callNode.children?.find((c: any) => c.type === 'arguments');
+  let targetModel: string | null = null;
+  if (argsNode) {
+    const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
+    if (firstArg) {
+      const classConstant = firstArg.children?.find((c: any) =>
+        c.type === 'class_constant_access_expression'
+      );
+      if (classConstant) {
+        targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
+      }
+    }
+  }
+
+  if (relType && targetModel) return `${relType}(${targetModel})`;
+  if (relType) return relType;
+  return null;
+}
+
 const processFileGroup = (
   files: ParseWorkerInput[],
   language: SupportedLanguages,
@@ -492,6 +657,15 @@ const processFileGroup = (
       const nodeName = nameNode.text;
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
+      let description: string | undefined;
+      if (language === SupportedLanguages.PHP) {
+        if (nodeLabel === 'Property' && captureMap['definition.property']) {
+          description = extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
+        } else if (nodeLabel === 'Method' && captureMap['definition.method']) {
+          description = extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
+        }
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -502,6 +676,7 @@ const processFileGroup = (
           endLine: nameNode.endPosition.row,
           language: language,
           isExported: isNodeExported(nameNode, nodeName, language),
+          ...(description !== undefined ? { description } : {}),
         },
       });
 
@@ -527,15 +702,57 @@ const processFileGroup = (
 };
 
 // ============================================================================
-// Worker message handler
+// Worker message handler — supports sub-batch streaming
 // ============================================================================
 
-parentPort!.on('message', (files: ParseWorkerInput[]) => {
+/** Accumulated result across sub-batches */
+let accumulated: ParseWorkerResult = {
+  nodes: [], relationships: [], symbols: [],
+  imports: [], calls: [], heritage: [], fileCount: 0,
+};
+let cumulativeProcessed = 0;
+
+const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
+  target.nodes.push(...src.nodes);
+  target.relationships.push(...src.relationships);
+  target.symbols.push(...src.symbols);
+  target.imports.push(...src.imports);
+  target.calls.push(...src.calls);
+  target.heritage.push(...src.heritage);
+  target.fileCount += src.fileCount;
+};
+
+parentPort!.on('message', (msg: any) => {
   try {
-    const result = processBatch(files, (filesProcessed) => {
-      parentPort!.postMessage({ type: 'progress', filesProcessed });
-    });
-    parentPort!.postMessage({ type: 'result', data: result });
+    // Sub-batch mode: { type: 'sub-batch', files: [...] }
+    if (msg && msg.type === 'sub-batch') {
+      const result = processBatch(msg.files, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed: cumulativeProcessed + filesProcessed });
+      });
+      cumulativeProcessed += result.fileCount;
+      mergeResult(accumulated, result);
+      // Signal ready for next sub-batch
+      parentPort!.postMessage({ type: 'sub-batch-done' });
+      return;
+    }
+
+    // Flush: send accumulated results
+    if (msg && msg.type === 'flush') {
+      parentPort!.postMessage({ type: 'result', data: accumulated });
+      // Reset for potential reuse
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], fileCount: 0 };
+      cumulativeProcessed = 0;
+      return;
+    }
+
+    // Legacy single-message mode (backward compat): array of files
+    if (Array.isArray(msg)) {
+      const result = processBatch(msg, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed });
+      });
+      parentPort!.postMessage({ type: 'result', data: result });
+      return;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     parentPort!.postMessage({ type: 'error', error: message });

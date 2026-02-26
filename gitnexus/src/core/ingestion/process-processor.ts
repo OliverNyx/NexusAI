@@ -93,7 +93,7 @@ export const processProcesses = async (
   const callsEdges = buildCallsGraph(knowledgeGraph);
   const reverseCallsEdges = buildReverseCallsGraph(knowledgeGraph);
   const nodeMap = new Map<string, GraphNode>();
-  knowledgeGraph.nodes.forEach(n => nodeMap.set(n.id, n));
+  for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
   
   // Step 1: Find entry points (functions that call others but have few callers)
   const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges);
@@ -221,29 +221,29 @@ const MIN_TRACE_CONFIDENCE = 0.5;
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
   
-  graph.relationships.forEach(rel => {
+  for (const rel of graph.iterRelationships()) {
     if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
       if (!adj.has(rel.sourceId)) {
         adj.set(rel.sourceId, []);
       }
       adj.get(rel.sourceId)!.push(rel.targetId);
     }
-  });
-  
+  }
+
   return adj;
 };
 
 const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
-  
-  graph.relationships.forEach(rel => {
+
+  for (const rel of graph.iterRelationships()) {
     if (rel.type === 'CALLS' && rel.confidence >= MIN_TRACE_CONFIDENCE) {
       if (!adj.has(rel.targetId)) {
         adj.set(rel.targetId, []);
       }
       adj.get(rel.targetId)!.push(rel.sourceId);
     }
-  });
+  }
   
   return adj;
 };
@@ -270,20 +270,20 @@ const findEntryPoints = (
     reasons: string[];
   }[] = [];
   
-  graph.nodes.forEach(node => {
-    if (!symbolTypes.has(node.label)) return;
+  for (const node of graph.iterNodes()) {
+    if (!symbolTypes.has(node.label)) continue;
     
     const filePath = node.properties.filePath || '';
     
     // Skip test files entirely
-    if (isTestFile(filePath)) return;
-    
+    if (isTestFile(filePath)) continue;
+
     const callers = reverseCallsEdges.get(node.id) || [];
     const callees = callsEdges.get(node.id) || [];
-    
+
     // Must have at least 1 outgoing call to trace forward
-    if (callees.length === 0) return;
-    
+    if (callees.length === 0) continue;
+
     // Calculate entry point score using new scoring system
     const { score, reasons } = calculateEntryPointScore(
       node.properties.name,
@@ -293,11 +293,11 @@ const findEntryPoints = (
       callees.length,
       filePath  // Pass filePath for framework detection
     );
-    
+
     if (score > 0) {
       entryPointCandidates.push({ id: node.id, score, reasons });
     }
-  });
+  }
   
   // Sort by score descending and return top candidates
   const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
@@ -306,7 +306,7 @@ const findEntryPoints = (
   if (sorted.length > 0 && isDev) {
     console.log(`[Process] Top 10 entry point candidates (new scoring):`);
     sorted.slice(0, 10).forEach((c, i) => {
-      const node = graph.nodes.find(n => n.id === c.id);
+      const node = graph.getNode(c.id);
       const exported = node?.properties.isExported ? '✓' : '✗';
       const shortPath = node?.properties.filePath?.split('/').slice(-2).join('/') || '';
       console.log(`  ${i+1}. ${node?.properties.name} [exported:${exported}] (${shortPath})`);

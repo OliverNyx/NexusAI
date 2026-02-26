@@ -1,4 +1,25 @@
 #!/usr/bin/env node
+
+// Raise Node heap limit for large repos (e.g. Linux kernel).
+// Must run before any heavy allocation. If already set by the user, respect it.
+if (!process.env.NODE_OPTIONS?.includes('--max-old-space-size')) {
+  const execArgv = process.execArgv.join(' ');
+  if (!execArgv.includes('--max-old-space-size')) {
+    // Re-spawn with a larger heap (8 GB)
+    const { execFileSync } = await import('node:child_process');
+    try {
+      execFileSync(process.execPath, ['--max-old-space-size=8192', ...process.argv.slice(1)], {
+        stdio: 'inherit',
+        env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim() },
+      });
+      process.exit(0);
+    } catch (e: any) {
+      // If the child exited with an error code, propagate it
+      process.exit(e.status ?? 1);
+    }
+  }
+}
+
 import { Command } from 'commander';
 import { analyzeCommand } from './analyze.js';
 import { serveCommand } from './serve.js';

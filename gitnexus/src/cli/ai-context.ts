@@ -42,11 +42,7 @@ function generateGitNexusContent(projectName: string, stats: RepoStats): string 
 
 This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows).
 
-GitNexus provides a knowledge graph over this codebase — call chains, blast radius, execution flows, and semantic search.
-
 ## Always Start Here
-
-For any task involving code understanding, debugging, impact analysis, or refactoring, you must:
 
 1. **Read \`gitnexus://repo/{name}/context\`** — codebase overview + check index freshness
 2. **Match your task to a skill below** and **read that skill file**
@@ -58,45 +54,12 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/refactoring/SKILL.md\` |
-
-## Tools Reference
-
-| Tool | What it gives you |
-|------|-------------------|
-| \`query\` | Process-grouped code intelligence — execution flows related to a concept |
-| \`context\` | 360-degree symbol view — categorized refs, processes it participates in |
-| \`impact\` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |
-| \`detect_changes\` | Git-diff impact — what do your current changes affect |
-| \`rename\` | Multi-file coordinated rename with confidence-tagged edits |
-| \`cypher\` | Raw graph queries (read \`gitnexus://repo/{name}/schema\` first) |
-| \`list_repos\` | Discover indexed repos |
-
-## Resources Reference
-
-Lightweight reads (~100-500 tokens) for navigation:
-
-| Resource | Content |
-|----------|---------|
-| \`gitnexus://repo/{name}/context\` | Stats, staleness check |
-| \`gitnexus://repo/{name}/clusters\` | All functional areas with cohesion scores |
-| \`gitnexus://repo/{name}/cluster/{clusterName}\` | Area members |
-| \`gitnexus://repo/{name}/processes\` | All execution flows |
-| \`gitnexus://repo/{name}/process/{processName}\` | Step-by-step trace |
-| \`gitnexus://repo/{name}/schema\` | Graph schema for Cypher |
-
-## Graph Schema
-
-**Nodes:** File, Function, Class, Interface, Method, Community, Process
-**Edges (via CodeRelation.type):** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
-
-\`\`\`cypher
-MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunc"})
-RETURN caller.name, caller.filePath
-\`\`\`
+| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
+| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |
 
 ${GITNEXUS_END_MARKER}`;
 }
@@ -163,20 +126,28 @@ async function installSkills(repoPath: string): Promise<string[]> {
   // Skill definitions bundled with the package
   const skills = [
     {
-      name: 'exploring',
-      description: 'Navigate unfamiliar code using GitNexus knowledge graph',
+      name: 'gitnexus-exploring',
+      description: 'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
     },
     {
-      name: 'debugging',
-      description: 'Trace bugs through call chains using knowledge graph',
+      name: 'gitnexus-debugging',
+      description: 'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
     },
     {
-      name: 'impact-analysis',
-      description: 'Analyze blast radius before making code changes',
+      name: 'gitnexus-impact-analysis',
+      description: 'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
     },
     {
-      name: 'refactoring',
-      description: 'Plan safe refactors using blast radius and dependency mapping',
+      name: 'gitnexus-refactoring',
+      description: 'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
+    },
+    {
+      name: 'gitnexus-guide',
+      description: 'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
+    },
+    {
+      name: 'gitnexus-cli',
+      description: 'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
     },
   ];
 
@@ -197,7 +168,7 @@ async function installSkills(repoPath: string): Promise<string[]> {
       } catch {
         // Fallback: generate minimal skill content
         skillContent = `---
-name: gitnexus-${skill.name}
+name: ${skill.name}
 description: ${skill.description}
 ---
 

@@ -102,6 +102,27 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^Run$/,                  // Run methods
     /^Start$/,                // Start methods
   ],
+
+  // PHP / Laravel
+  'php': [
+    /Controller$/,            // UserController (class name convention)
+    /^handle$/,               // Job::handle(), Listener::handle()
+    /^execute$/,              // Command::execute()
+    /^boot$/,                 // ServiceProvider::boot()
+    /^register$/,             // ServiceProvider::register()
+    /^__invoke$/,             // Invokable controllers/actions
+    /^(index|show|store|update|destroy|create|edit)$/,  // RESTful resource methods
+    /^(get|post|put|delete|patch)[A-Z]/,  // Explicit HTTP method actions
+    /^run$/,                  // Command/Job run()
+    /^fire$/,                 // Event fire()
+    /^dispatch$/,             // Dispatchable jobs
+    /Service$/,               // UserService (Service layer)
+    /Repository$/,            // UserRepository (Repository pattern)
+    /^find$/,                 // Repository::find()
+    /^findAll$/,              // Repository::findAll()
+    /^save$/,                 // Repository::save()
+    /^delete$/,               // Repository::delete()
+  ],
 };
 
 // ============================================================================
@@ -252,7 +273,12 @@ export function isTestFile(filePath: string): boolean {
     p.includes('/tests/') ||
     // C# test patterns
     p.includes('.tests/') ||
-    p.includes('tests.cs')
+    p.includes('tests.cs') ||
+    // PHP/Laravel test patterns
+    p.endsWith('test.php') ||
+    p.endsWith('spec.php') ||
+    p.includes('/tests/feature/') ||
+    p.includes('/tests/unit/')
   );
 }
 

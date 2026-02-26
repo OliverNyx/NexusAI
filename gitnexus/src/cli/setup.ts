@@ -22,9 +22,16 @@ interface SetupResult {
 }
 
 /**
- * The MCP server entry for all editors
+ * The MCP server entry for all editors.
+ * On Windows, npx must be invoked via cmd /c since it's a .cmd script.
  */
 function getMcpEntry() {
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+    };
+  }
   return {
     command: 'npx',
     args: ['-y', 'gitnexus@latest', 'mcp'],
@@ -217,7 +224,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
-const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring'];
+const SKILL_NAMES = ['gitnexus-exploring', 'gitnexus-debugging', 'gitnexus-impact-analysis', 'gitnexus-refactoring', 'gitnexus-guide', 'gitnexus-cli'];
 
 /**
  * Install GitNexus skills to a target directory.
@@ -233,7 +240,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
   const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
   for (const skillName of SKILL_NAMES) {
-    const skillDir = path.join(targetDir, `gitnexus-${skillName}`);
+    const skillDir = path.join(targetDir, skillName);
 
     try {
       // Try directory-based skill first (skills/{name}/SKILL.md)

@@ -64,6 +64,7 @@ CREATE NODE TABLE Function (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -76,6 +77,7 @@ CREATE NODE TABLE Class (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -88,6 +90,7 @@ CREATE NODE TABLE Interface (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -100,6 +103,7 @@ CREATE NODE TABLE Method (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -112,6 +116,7 @@ CREATE NODE TABLE CodeElement (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -154,6 +159,7 @@ CREATE NODE TABLE Process (
 // ============================================================================
 
 // Generic code element with startLine/endLine for C, C++, Rust, Go, Java, C#
+// description: optional metadata (e.g. Eloquent $fillable fields, relationship targets)
 const CODE_ELEMENT_BASE = (name: string) => `
 CREATE NODE TABLE \`${name}\` (
   id STRING,
@@ -162,6 +168,7 @@ CREATE NODE TABLE \`${name}\` (
   startLine INT64,
   endLine INT64,
   content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -232,6 +239,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Function TO \`Impl\`,
   FROM Function TO Interface,
   FROM Function TO \`Constructor\`,
+  FROM Function TO \`Const\`,
+  FROM Function TO \`Typedef\`,
+  FROM Function TO \`Union\`,
   FROM Class TO Method,
   FROM Class TO Function,
   FROM Class TO Class,
@@ -243,6 +253,12 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Class TO \`Enum\`,
   FROM Class TO \`Annotation\`,
   FROM Class TO \`Constructor\`,
+  FROM Class TO \`Trait\`,
+  FROM Class TO \`Macro\`,
+  FROM Class TO \`Impl\`,
+  FROM Class TO \`Union\`,
+  FROM Class TO \`Namespace\`,
+  FROM Class TO \`Typedef\`,
   FROM Method TO Function,
   FROM Method TO Method,
   FROM Method TO Class,
@@ -257,6 +273,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Method TO \`Impl\`,
   FROM Method TO Interface,
   FROM Method TO \`Constructor\`,
+  FROM Method TO \`Property\`,
   FROM \`Template\` TO \`Template\`,
   FROM \`Template\` TO Function,
   FROM \`Template\` TO Method,
@@ -279,6 +296,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Interface TO \`Constructor\`,
   FROM \`Struct\` TO Community,
   FROM \`Struct\` TO \`Trait\`,
+  FROM \`Struct\` TO \`Struct\`,
+  FROM \`Struct\` TO Class,
+  FROM \`Struct\` TO \`Enum\`,
   FROM \`Struct\` TO Function,
   FROM \`Struct\` TO Method,
   FROM \`Enum\` TO Community,
@@ -290,10 +310,14 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Typedef\` TO Community,
   FROM \`Union\` TO Community,
   FROM \`Namespace\` TO Community,
+  FROM \`Namespace\` TO \`Struct\`,
   FROM \`Trait\` TO Community,
   FROM \`Impl\` TO Community,
   FROM \`Impl\` TO \`Trait\`,
+  FROM \`Impl\` TO \`Struct\`,
+  FROM \`Impl\` TO \`Impl\`,
   FROM \`TypeAlias\` TO Community,
+  FROM \`TypeAlias\` TO \`Trait\`,
   FROM \`Const\` TO Community,
   FROM \`Static\` TO Community,
   FROM \`Property\` TO Community,

@@ -279,8 +279,10 @@ export class LocalBackend {
     switch (method) {
       case 'query':
         return this.query(repo, params);
-      case 'cypher':
-        return this.cypher(repo, params);
+      case 'cypher': {
+        const raw = await this.cypher(repo, params);
+        return this.formatCypherAsMarkdown(raw);
+      }
       case 'context':
         return this.context(repo, params);
       case 'impact':
@@ -395,16 +397,18 @@ export class LocalBackend {
         `);
       } catch { /* symbol might not be in any process */ }
       
-      // Get cluster cohesion as internal ranking signal (never exposed)
+      // Get cluster membership + cohesion (cohesion used as internal ranking signal)
       let cohesion = 0;
+      let module: string | undefined;
       try {
         const cohesionRows = await executeQuery(repo.id, `
           MATCH (n {id: '${escaped}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          RETURN c.cohesion AS cohesion
+          RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
           LIMIT 1
         `);
         if (cohesionRows.length > 0) {
           cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
+          module = cohesionRows[0].module ?? cohesionRows[0][1];
         }
       } catch { /* no cluster info */ }
       
@@ -429,6 +433,7 @@ export class LocalBackend {
         filePath: sym.filePath,
         startLine: sym.startLine,
         endLine: sym.endLine,
+        ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
       
@@ -577,6 +582,10 @@ export class LocalBackend {
    */
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     try {
+      // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
+      const tableCheck = await executeQuery(repo.id, `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`);
+      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
+
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
@@ -630,8 +639,8 @@ export class LocalBackend {
       }
       
       return results;
-    } catch (err: any) {
-      console.error('GitNexus: Semantic search unavailable -', err.message);
+    } catch {
+      // Expected when embeddings are disabled — silently fall back to BM25-only
       return [];
     }
   }
@@ -643,17 +652,47 @@ export class LocalBackend {
 
   private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     if (!isKuzuReady(repo.id)) {
       return { error: 'KuzuDB not ready. Index may be corrupted.' };
     }
-    
+
     try {
       const result = await executeQuery(repo.id, params.query);
       return result;
     } catch (err: any) {
       return { error: err.message || 'Query failed' };
     }
+  }
+
+  /**
+   * Format raw Cypher result rows as a markdown table for LLM readability.
+   * Falls back to raw result if rows aren't tabular objects.
+   */
+  private formatCypherAsMarkdown(result: any): any {
+    if (!Array.isArray(result) || result.length === 0) return result;
+
+    const firstRow = result[0];
+    if (typeof firstRow !== 'object' || firstRow === null) return result;
+
+    const keys = Object.keys(firstRow);
+    if (keys.length === 0) return result;
+
+    const header = '| ' + keys.join(' | ') + ' |';
+    const separator = '| ' + keys.map(() => '---').join(' | ') + ' |';
+    const dataRows = result.map((row: any) =>
+      '| ' + keys.map(k => {
+        const v = row[k];
+        if (v === null || v === undefined) return '';
+        if (typeof v === 'object') return JSON.stringify(v);
+        return String(v);
+      }).join(' | ') + ' |'
+    );
+
+    return {
+      markdown: [header, separator, ...dataRows].join('\n'),
+      row_count: result.length,
+    };
   }
 
   /**
@@ -1318,7 +1357,69 @@ export class LocalBackend {
       if (!grouped[item.depth]) grouped[item.depth] = [];
       grouped[item.depth].push(item);
     }
-    
+
+    // ── Enrichment: affected processes, modules, risk ──────────────
+    const directCount = (grouped[1] || []).length;
+    let affectedProcesses: any[] = [];
+    let affectedModules: any[] = [];
+
+    if (impacted.length > 0) {
+      const allIds = impacted.map(i => `'${i.id.replace(/'/g, "''")}'`).join(', ');
+      const d1Ids = (grouped[1] || []).map((i: any) => `'${i.id.replace(/'/g, "''")}'`).join(', ');
+
+      // Affected processes: which execution flows are broken and at which step
+      const [processRows, moduleRows, directModuleRows] = await Promise.all([
+        executeQuery(repo.id, `
+          MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE s.id IN [${allIds}]
+          RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
+          ORDER BY hits DESC
+          LIMIT 20
+        `).catch(() => []),
+        executeQuery(repo.id, `
+          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+          WHERE s.id IN [${allIds}]
+          RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
+          ORDER BY hits DESC
+          LIMIT 20
+        `).catch(() => []),
+        d1Ids ? executeQuery(repo.id, `
+          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+          WHERE s.id IN [${d1Ids}]
+          RETURN DISTINCT c.heuristicLabel AS name
+        `).catch(() => []) : Promise.resolve([]),
+      ]);
+
+      affectedProcesses = processRows.map((r: any) => ({
+        name: r.name || r[0],
+        hits: r.hits || r[1],
+        broken_at_step: r.minStep ?? r[2],
+        step_count: r.stepCount ?? r[3],
+      }));
+
+      const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
+      affectedModules = moduleRows.map((r: any) => {
+        const name = r.name || r[0];
+        return {
+          name,
+          hits: r.hits || r[1],
+          impact: directModuleSet.has(name) ? 'direct' : 'indirect',
+        };
+      });
+    }
+
+    // Risk scoring
+    const processCount = affectedProcesses.length;
+    const moduleCount = affectedModules.length;
+    let risk = 'LOW';
+    if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
+      risk = 'CRITICAL';
+    } else if (directCount >= 15 || processCount >= 3 || moduleCount >= 3 || impacted.length >= 100) {
+      risk = 'HIGH';
+    } else if (directCount >= 5 || impacted.length >= 30) {
+      risk = 'MEDIUM';
+    }
+
     return {
       target: {
         id: symId,
@@ -1328,6 +1429,14 @@ export class LocalBackend {
       },
       direction,
       impactedCount: impacted.length,
+      risk,
+      summary: {
+        direct: directCount,
+        processes_affected: processCount,
+        modules_affected: moduleCount,
+      },
+      affected_processes: affectedProcesses,
+      affected_modules: affectedModules,
       byDepth: grouped,
     };
   }
