@@ -7,6 +7,23 @@ import { SupportedLanguages } from '../../config/supported-languages.js';
 export const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 /**
+ * Find a child of `childType` within a sibling node of `siblingType`.
+ * Used for Kotlin AST traversal where visibility_modifier lives inside a modifiers sibling.
+ */
+export const findSiblingChild = (parent: any, siblingType: string, childType: string): any | null => {
+  for (let i = 0; i < parent.childCount; i++) {
+    const sibling = parent.child(i);
+    if (sibling?.type === siblingType) {
+      for (let j = 0; j < sibling.childCount; j++) {
+        const child = sibling.child(j);
+        if (child?.type === childType) return child;
+      }
+    }
+  }
+  return null;
+};
+
+/**
  * Map file extension to SupportedLanguage enum
  */
 export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {
@@ -31,6 +48,8 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
   if (filename.endsWith('.go')) return SupportedLanguages.Go;
   // Rust
   if (filename.endsWith('.rs')) return SupportedLanguages.Rust;
+  // Kotlin
+  if (filename.endsWith('.kt') || filename.endsWith('.kts')) return SupportedLanguages.Kotlin;
   // PHP (all common extensions)
   if (filename.endsWith('.php') || filename.endsWith('.phtml') ||
       filename.endsWith('.php3') || filename.endsWith('.php4') ||

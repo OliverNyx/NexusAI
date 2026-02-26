@@ -10,9 +10,10 @@ import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
+import Kotlin from 'tree-sitter-kotlin';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
-import { getLanguageFromFilename } from '../utils.js';
+import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
 import { generateId } from '../../../lib/utils.js';
 
 // ============================================================================
@@ -103,6 +104,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
   [SupportedLanguages.PHP]: PHP.php_only,
+  [SupportedLanguages.Kotlin]: Kotlin,
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -206,6 +208,23 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       // Top-level functions (no parent class) are globally accessible
       return true;
 
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
+      while (current) {
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
+        }
+        current = current.parent;
+      }
+      // No visibility modifier = public (Kotlin default)
+      return true;
+
     default:
       return false;
   }
@@ -222,6 +241,8 @@ const FUNCTION_NODE_TYPES = new Set([
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
   'anonymous_function_creation_expression',  // PHP anonymous functions
+  // Kotlin (function_declaration already included above via JS/TS)
+  'anonymous_function', 'lambda_literal',
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -336,6 +357,12 @@ const BUILT_INS = new Set([
   'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
   'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
   'dd', 'dump',
+  // Kotlin stdlib
+  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
+  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
+  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
+  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
+  'repeat', 'synchronized',
 ]);
 
 // ============================================================================

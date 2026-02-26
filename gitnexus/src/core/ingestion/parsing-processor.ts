@@ -5,7 +5,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { findSiblingChild, getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage } from './workers/parse-worker.js';
 
@@ -113,6 +113,23 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
     case 'c':
     case 'cpp':
       return false;
+
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
+      while (current) {
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
+        }
+        current = current.parent;
+      }
+      // No visibility modifier = public (Kotlin default)
+      return true;
 
     default:
       return false;

@@ -396,6 +396,68 @@ export const PHP_QUERIES = `
       [(name) (qualified_name)] @heritage.trait))) @heritage
 `;
 
+// Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)
+// Based on official tags.scm; functions use simple_identifier, classes use type_identifier
+export const KOTLIN_QUERIES = `
+; ── Classes (regular, data, sealed, enum) ────────────────────────────────
+(class_declaration
+  (type_identifier) @name) @definition.class
+
+; ── Interfaces ─────────────────────────────────────────────────────────────
+(interface_declaration
+  (type_identifier) @name) @definition.interface
+
+; ── Object declarations (Kotlin singletons) ──────────────────────────────
+(object_declaration
+  (type_identifier) @name) @definition.class
+
+; ── Companion objects (named only) ───────────────────────────────────────
+(companion_object
+  (type_identifier) @name) @definition.class
+
+; ── Functions (top-level, member, extension) ──────────────────────────────
+(function_declaration
+  (simple_identifier) @name) @definition.function
+
+; ── Properties ───────────────────────────────────────────────────────────
+(property_declaration
+  (variable_declaration
+    (simple_identifier) @name)) @definition.property
+
+; ── Enum entries ─────────────────────────────────────────────────────────
+(enum_entry
+  (simple_identifier) @name) @definition.property
+
+; ── Type aliases ─────────────────────────────────────────────────────────
+(type_alias
+  (type_identifier) @name) @definition.type
+
+; ── Imports ──────────────────────────────────────────────────────────────
+(import_header
+  (identifier) @import.source) @import
+
+; ── Function calls (direct) ──────────────────────────────────────────────
+(call_expression
+  (simple_identifier) @call.name) @call
+
+; ── Method calls (via navigation: obj.method()) ──────────────────────────
+(call_expression
+  (navigation_expression
+    (navigation_suffix
+      (simple_identifier) @call.name))) @call
+
+; ── Constructor invocations ──────────────────────────────────────────────
+(constructor_invocation
+  (user_type
+    (type_identifier) @call.name)) @call
+
+; ── Heritage: extends / implements via delegation_specifier ──────────────
+(class_declaration
+  (type_identifier) @heritage.class
+  (delegation_specifier
+    (user_type (type_identifier) @heritage.extends))) @heritage
+`;
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -407,5 +469,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.CSharp]: CSHARP_QUERIES,
   [SupportedLanguages.Rust]: RUST_QUERIES,
   [SupportedLanguages.PHP]: PHP_QUERIES,
+  [SupportedLanguages.Kotlin]: KOTLIN_QUERIES,
 };
  

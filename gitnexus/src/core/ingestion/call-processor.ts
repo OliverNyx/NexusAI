@@ -37,6 +37,9 @@ const FUNCTION_NODE_TYPES = new Set([
   // Rust
   'function_item',
   'impl_item', // Methods inside impl blocks
+  // Kotlin (function_declaration already included above via JS/TS)
+  'anonymous_function',
+  'lambda_literal',
 ]);
 
 /**
@@ -336,6 +339,12 @@ const BUILT_IN_NAMES = new Set([
   'mutex_lock', 'mutex_unlock', 'mutex_init',
   'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
   'get', 'put',
+  // Kotlin stdlib
+  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
+  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
+  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
+  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
+  'repeat', 'synchronized',
 ]);
 
 const isBuiltInOrNoise = (name: string): boolean => BUILT_IN_NAMES.has(name);
