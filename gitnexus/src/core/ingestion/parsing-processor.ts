@@ -207,7 +207,7 @@ const processParsingSequential = async (
     if (!language) continue;
 
     // Skip very large files — they can crash tree-sitter or cause OOM
-    if (file.content.length > 2 * 1024 * 1024) continue;
+    if (file.content.length > 512 * 1024) continue;
 
     await loadLanguage(language, file.path);
 

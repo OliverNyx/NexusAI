@@ -426,7 +426,7 @@ const processFileGroup = (
 
   for (const file of files) {
     // Skip very large files — they can crash tree-sitter or cause OOM
-    if (file.content.length > 2 * 1024 * 1024) continue;
+    if (file.content.length > 512 * 1024) continue;
 
     let tree;
     try {

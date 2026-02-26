@@ -21,8 +21,8 @@ export interface FilePath {
 
 const READ_CONCURRENCY = 32;
 
-/** Skip files larger than 2MB — covers all real source files, excludes minified bundles/generated code */
-const MAX_FILE_SIZE = 2 * 1024 * 1024;
+/** Skip files larger than 512KB — they're usually generated/vendored and crash tree-sitter */
+const MAX_FILE_SIZE = 512 * 1024;
 
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
@@ -69,7 +69,7 @@ export const walkRepositoryPaths = async (
   }
 
   if (skippedLarge > 0) {
-    console.warn(`  Skipped ${skippedLarge} files larger than ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB (likely generated/vendored)`);
+    console.warn(`  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`);
   }
 
   return entries;
