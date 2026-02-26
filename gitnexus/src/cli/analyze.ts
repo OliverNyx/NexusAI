@@ -5,6 +5,8 @@
  */
 
 import path from 'path';
+import { execFileSync } from 'child_process';
+import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
 import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
@@ -15,6 +17,28 @@ import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
 import { registerClaudeHook } from './claude-hooks.js';
+
+const HEAP_MB = 8192;
+const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
+
+/** Re-exec the process with an 8GB heap if we're currently below that. */
+function ensureHeap(): boolean {
+  const nodeOpts = process.env.NODE_OPTIONS || '';
+  if (nodeOpts.includes('--max-old-space-size')) return false;
+
+  const v8Heap = v8.getHeapStatistics().heap_size_limit;
+  if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+
+  try {
+    execFileSync(process.execPath, [HEAP_FLAG, ...process.argv.slice(1)], {
+      stdio: 'inherit',
+      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
+    });
+  } catch (e: any) {
+    process.exitCode = e.status ?? 1;
+  }
+  return true;
+}
 
 export interface AnalyzeOptions {
   force?: boolean;
@@ -44,6 +68,8 @@ export const analyzeCommand = async (
   inputPath?: string,
   options?: AnalyzeOptions
 ) => {
+  if (ensureHeap()) return;
+
   console.log('\n  GitNexus Analyzer\n');
 
   let repoPath: string;
@@ -88,19 +114,47 @@ export const analyzeCommand = async (
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
+  // Graceful SIGINT handling — clean up resources and exit
+  let aborted = false;
+  const sigintHandler = () => {
+    if (aborted) process.exit(1); // Second Ctrl-C: force exit
+    aborted = true;
+    bar.stop();
+    console.log('\n  Interrupted — cleaning up...');
+    closeKuzu().catch(() => {}).finally(() => process.exit(130));
+  };
+  process.on('SIGINT', sigintHandler);
+
   // Route all console output through bar.log() so the bar doesn't stamp itself
   // multiple times when other code writes to stdout/stderr mid-render.
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
-  const barLog = (...args: any[]) => origLog(args.map(a => (typeof a === 'string' ? a : String(a))).join(' '));
+  const barLog = (...args: any[]) => {
+    // Clear the bar line, print the message, then let the next bar.update redraw
+    process.stdout.write('\x1b[2K\r');
+    origLog(args.map(a => (typeof a === 'string' ? a : String(a))).join(' '));
+  };
   console.log = barLog;
   console.warn = barLog;
   console.error = barLog;
 
-  // Show elapsed seconds for phases that run longer than 3s
+  // Track elapsed time per phase — both updateBar and the interval use the
+  // same format so they don't flicker against each other.
   let lastPhaseLabel = 'Initializing...';
   let phaseStart = Date.now();
+
+  /** Update bar with phase label + elapsed seconds (shown after 3s). */
+  const updateBar = (value: number, phaseLabel: string) => {
+    if (phaseLabel !== lastPhaseLabel) { lastPhaseLabel = phaseLabel; phaseStart = Date.now(); }
+    const elapsed = Math.round((Date.now() - phaseStart) / 1000);
+    const display = elapsed >= 3 ? `${phaseLabel} (${elapsed}s)` : phaseLabel;
+    bar.update(value, { phase: display });
+  };
+
+  // Tick elapsed seconds for phases with infrequent progress callbacks
+  // (e.g. CSV streaming, FTS indexing). Uses the same display format as
+  // updateBar so there's no flickering.
   const elapsedTimer = setInterval(() => {
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
     if (elapsed >= 3) {
@@ -116,7 +170,7 @@ export const analyzeCommand = async (
 
   if (options?.embeddings && existingMeta && !options?.force) {
     try {
-      bar.update(0, { phase: 'Caching embeddings...' });
+      updateBar(0, 'Caching embeddings...');
       await initKuzu(kuzuPath);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
@@ -131,13 +185,11 @@ export const analyzeCommand = async (
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
-    if (phaseLabel !== lastPhaseLabel) { lastPhaseLabel = phaseLabel; phaseStart = Date.now(); }
-    bar.update(scaled, { phase: phaseLabel });
+    updateBar(scaled, phaseLabel);
   });
 
   // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
-  lastPhaseLabel = 'Loading into KuzuDB...'; phaseStart = Date.now();
-  bar.update(60, { phase: lastPhaseLabel });
+  updateBar(60, 'Loading into KuzuDB...');
 
   await closeKuzu();
   const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
@@ -148,17 +200,16 @@ export const analyzeCommand = async (
   const t0Kuzu = Date.now();
   await initKuzu(kuzuPath);
   let kuzuMsgCount = 0;
-  const kuzuResult = await loadGraphToKuzu(pipelineResult.graph, pipelineResult.fileContents, storagePath, (msg) => {
+  const kuzuResult = await loadGraphToKuzu(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
     kuzuMsgCount++;
     const progress = Math.min(84, 60 + Math.round((kuzuMsgCount / (kuzuMsgCount + 10)) * 24));
-    bar.update(progress, { phase: msg });
+    updateBar(progress, msg);
   });
   const kuzuTime = ((Date.now() - t0Kuzu) / 1000).toFixed(1);
   const kuzuWarnings = kuzuResult.warnings;
 
   // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-  lastPhaseLabel = 'Creating search indexes...'; phaseStart = Date.now();
-  bar.update(85, { phase: lastPhaseLabel });
+  updateBar(85, 'Creating search indexes...');
 
   const t0Fts = Date.now();
   try {
@@ -174,7 +225,7 @@ export const analyzeCommand = async (
 
   // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
   if (cachedEmbeddings.length > 0) {
-    bar.update(88, { phase: `Restoring ${cachedEmbeddings.length} cached embeddings...` });
+    updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
     const EMBED_BATCH = 200;
     for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
       const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
@@ -203,8 +254,7 @@ export const analyzeCommand = async (
   }
 
   if (!embeddingSkipped) {
-    lastPhaseLabel = 'Loading embedding model...'; phaseStart = Date.now();
-    bar.update(90, { phase: lastPhaseLabel });
+    updateBar(90, 'Loading embedding model...');
     const t0Emb = Date.now();
     await runEmbeddingPipeline(
       executeQuery,
@@ -212,8 +262,7 @@ export const analyzeCommand = async (
       (progress) => {
         const scaled = 90 + Math.round((progress.percent / 100) * 8);
         const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
-        if (label !== lastPhaseLabel) { lastPhaseLabel = label; phaseStart = Date.now(); }
-        bar.update(scaled, { phase: label });
+        updateBar(scaled, label);
       },
       {},
       cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
@@ -222,14 +271,14 @@ export const analyzeCommand = async (
   }
 
   // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
-  bar.update(98, { phase: 'Saving metadata...' });
+  updateBar(98, 'Saving metadata...');
 
   const meta = {
     repoPath,
     lastCommit: currentCommit,
     indexedAt: new Date().toISOString(),
     stats: {
-      files: pipelineResult.fileContents.size,
+      files: pipelineResult.totalFileCount,
       nodes: stats.nodes,
       edges: stats.edges,
       communities: pipelineResult.communityResult?.stats.totalCommunities,
@@ -254,7 +303,7 @@ export const analyzeCommand = async (
   }
 
   const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
-    files: pipelineResult.fileContents.size,
+    files: pipelineResult.totalFileCount,
     nodes: stats.nodes,
     edges: stats.edges,
     communities: pipelineResult.communityResult?.stats.totalCommunities,
@@ -270,6 +319,8 @@ export const analyzeCommand = async (
   const totalTime = ((Date.now() - t0Global) / 1000).toFixed(1);
 
   clearInterval(elapsedTimer);
+  process.removeListener('SIGINT', sigintHandler);
+
   console.log = origLog;
   console.warn = origWarn;
   console.error = origError;
@@ -292,12 +343,13 @@ export const analyzeCommand = async (
     console.log(`  Hooks: ${hookResult.message}`);
   }
 
-  // Show warnings (missing schema pairs, etc.) after the clean output
+  // Show a quiet summary if some edge types needed fallback insertion
   if (kuzuWarnings.length > 0) {
-    console.log(`\n  Warnings (${kuzuWarnings.length}):`);
-    for (const w of kuzuWarnings) {
-      console.log(`    ${w}`);
-    }
+    const totalFallback = kuzuWarnings.reduce((sum, w) => {
+      const m = w.match(/\((\d+) edges\)/);
+      return sum + (m ? parseInt(m[1]) : 0);
+    }, 0);
+    console.log(`  Note: ${totalFallback} edges across ${kuzuWarnings.length} types inserted via fallback (schema will be updated in next release)`);
   }
 
   try {

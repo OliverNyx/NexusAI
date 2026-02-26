@@ -4,15 +4,12 @@ import os from 'node:os';
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into chunks (one per worker),
-   * each worker processes its chunk, and results are concatenated back in order.
-   *
-   * @param onProgress - Called with cumulative files processed across all workers
+   * each worker processes its chunk via sub-batches to limit peak memory,
+   * and results are concatenated back in order.
    */
   dispatch<TInput, TResult>(items: TInput[], onProgress?: (filesProcessed: number) => void): Promise<TResult[]>;
 
-  /**
-   * Terminate all workers. Must be called when done.
-   */
+  /** Terminate all workers. Must be called when done. */
   terminate(): Promise<void>;
 
   /** Number of workers in the pool */
@@ -20,13 +17,20 @@ export interface WorkerPool {
 }
 
 /**
+ * Max files to send to a worker in a single postMessage.
+ * Keeps structured-clone memory bounded per sub-batch.
+ */
+const SUB_BATCH_SIZE = 1500;
+
+/** Per sub-batch timeout. If a single sub-batch takes longer than this,
+ *  likely a pathological file (e.g. minified 50MB JS). Fail fast. */
+const SUB_BATCH_TIMEOUT_MS = 30_000;
+
+/**
  * Create a pool of worker threads.
- *
- * @param workerUrl - URL to the worker script (use `new URL('./parse-worker.js', import.meta.url)`)
- * @param poolSize - Number of workers (defaults to cpus - 1, minimum 1)
  */
 export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool => {
-  const size = poolSize ?? Math.max(1, os.cpus().length - 1);
+  const size = poolSize ?? Math.min(8, Math.max(1, os.cpus().length - 1));
   const workers: Worker[] = [];
 
   for (let i = 0; i < size; i++) {
@@ -36,35 +40,51 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
   const dispatch = <TInput, TResult>(items: TInput[], onProgress?: (filesProcessed: number) => void): Promise<TResult[]> => {
     if (items.length === 0) return Promise.resolve([]);
 
-    // Split items into one chunk per worker
     const chunkSize = Math.ceil(items.length / size);
     const chunks: TInput[][] = [];
     for (let i = 0; i < items.length; i += chunkSize) {
       chunks.push(items.slice(i, i + chunkSize));
     }
 
-    // Track per-worker progress for cumulative reporting
     const workerProgress = new Array(chunks.length).fill(0);
 
-    // Send one chunk to each worker, collect results
     const promises = chunks.map((chunk, i) => {
       const worker = workers[i];
       return new Promise<TResult>((resolve, reject) => {
         let settled = false;
+        let subBatchTimer: ReturnType<typeof setTimeout> | null = null;
+
         const cleanup = () => {
-          clearTimeout(timer);
+          if (subBatchTimer) clearTimeout(subBatchTimer);
           worker.removeListener('message', handler);
           worker.removeListener('error', errorHandler);
           worker.removeListener('exit', exitHandler);
         };
 
-        const timer = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            cleanup();
-            reject(new Error(`Worker ${i} timed out after 5 minutes (chunk: ${chunk.length} items). Worker may have crashed or is processing too much data.`));
+        const resetSubBatchTimer = () => {
+          if (subBatchTimer) clearTimeout(subBatchTimer);
+          subBatchTimer = setTimeout(() => {
+            if (!settled) {
+              settled = true;
+              cleanup();
+              reject(new Error(`Worker ${i} sub-batch timed out after ${SUB_BATCH_TIMEOUT_MS / 1000}s (chunk: ${chunk.length} items).`));
+            }
+          }, SUB_BATCH_TIMEOUT_MS);
+        };
+
+        let subBatchIdx = 0;
+
+        const sendNextSubBatch = () => {
+          const start = subBatchIdx * SUB_BATCH_SIZE;
+          if (start >= chunk.length) {
+            worker.postMessage({ type: 'flush' });
+            return;
           }
-        }, 5 * 60 * 1000);
+          const subBatch = chunk.slice(start, start + SUB_BATCH_SIZE);
+          subBatchIdx++;
+          resetSubBatchTimer();
+          worker.postMessage({ type: 'sub-batch', files: subBatch });
+        };
 
         const handler = (msg: any) => {
           if (settled) return;
@@ -74,8 +94,9 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
               const total = workerProgress.reduce((a, b) => a + b, 0);
               onProgress(total);
             }
+          } else if (msg && msg.type === 'sub-batch-done') {
+            sendNextSubBatch();
           } else if (msg && msg.type === 'error') {
-            // Error reported by worker via postMessage
             settled = true;
             cleanup();
             reject(new Error(`Worker ${i} error: ${msg.error}`));
@@ -84,7 +105,6 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
             cleanup();
             resolve(msg.data);
           } else {
-            // Legacy: treat any non-typed message as result
             settled = true;
             cleanup();
             resolve(msg);
@@ -92,25 +112,21 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
         };
 
         const errorHandler = (err: any) => {
-          if (!settled) {
-            settled = true;
-            cleanup();
-            reject(err);
-          }
+          if (!settled) { settled = true; cleanup(); reject(err); }
         };
 
         const exitHandler = (code: number) => {
           if (!settled) {
             settled = true;
             cleanup();
-            reject(new Error(`Worker ${i} exited unexpectedly with code ${code}. This usually indicates an out-of-memory crash or native addon failure.`));
+            reject(new Error(`Worker ${i} exited with code ${code}. Likely OOM or native addon failure.`));
           }
         };
 
         worker.on('message', handler);
         worker.once('error', errorHandler);
         worker.once('exit', exitHandler);
-        worker.postMessage(chunk);
+        sendNextSubBatch();
       });
     });
 

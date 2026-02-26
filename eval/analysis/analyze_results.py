@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -164,7 +165,7 @@ def run_swebench_evaluation(results_dir: Path, run_id: str, subset: str = "lite"
     try:
         eval_output = results_dir / run_id / "swebench_eval"
         cmd = [
-            "python", "-m", "swebench.harness.run_evaluation",
+            sys.executable, "-m", "swebench.harness.run_evaluation",
             "--dataset_name", dataset_mapping.get(subset, subset),
             "--predictions_path", str(preds_path),
             "--max_workers", "4",

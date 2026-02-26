@@ -191,9 +191,9 @@ export const createServer = async (port: number) => {
         return;
       }
 
-      const result = await backend.callTool('cypher', { repo: repoName, query: cypher });
-      if (result && !Array.isArray(result) && result.error) {
-        res.status(500).json({ error: result.error });
+      const result = await backend.executeCypher(repoName, cypher);
+      if (result && !Array.isArray(result) && (result as any).error) {
+        res.status(500).json({ error: (result as any).error });
         return;
       }
       res.json({ result });

@@ -19,7 +19,10 @@ export interface PipelineProgress {
 // Original result type (used internally in pipeline)
 export interface PipelineResult {
   graph: KnowledgeGraph;
-  fileContents: Map<string, string>;
+  /** Absolute path to the repo root — used for lazy file reads during KuzuDB loading */
+  repoPath: string;
+  /** Total files scanned (for stats) */
+  totalFileCount: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
 }
@@ -29,14 +32,16 @@ export interface PipelineResult {
 export interface SerializablePipelineResult {
   nodes: GraphNode[];
   relationships: GraphRelationship[];
-  fileContents: Record<string, string>; // Object instead of Map
+  repoPath: string;
+  totalFileCount: number;
 }
 
 // Helper to convert PipelineResult to serializable format
 export const serializePipelineResult = (result: PipelineResult): SerializablePipelineResult => ({
-  nodes: result.graph.nodes,
-  relationships: result.graph.relationships,
-  fileContents: Object.fromEntries(result.fileContents),
+  nodes: [...result.graph.iterNodes()],
+  relationships: [...result.graph.iterRelationships()],
+  repoPath: result.repoPath,
+  totalFileCount: result.totalFileCount,
 });
 
 // Helper to reconstruct from serializable format (used in main thread)
@@ -47,10 +52,11 @@ export const deserializePipelineResult = (
   const graph = createGraph();
   serialized.nodes.forEach(node => graph.addNode(node));
   serialized.relationships.forEach(rel => graph.addRelationship(rel));
-  
+
   return {
     graph,
-    fileContents: new Map(Object.entries(serialized.fileContents)),
+    repoPath: serialized.repoPath,
+    totalFileCount: serialized.totalFileCount,
   };
 };
 
