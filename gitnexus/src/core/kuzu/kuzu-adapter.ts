@@ -14,13 +14,32 @@ import { generateAllCSVs } from './csv-generator.js';
 let db: kuzu.Database | null = null;
 let conn: kuzu.Connection | null = null;
 let currentDbPath: string | null = null;
+let ftsLoaded = false;
+
+// Mutex: prevents concurrent initKuzu calls from racing on module-level globals.
+// Two simultaneous requests for different repos would otherwise close each other's connections.
+let initLock: Promise<{ db: kuzu.Database | null; conn: kuzu.Connection | null }> | null = null;
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
 export const initKuzu = async (dbPath: string) => {
-  // If already connected to the SAME database, reuse
+  // Fast path: already connected to this database
   if (conn && currentDbPath === dbPath) return { db, conn };
 
+  // Serialize concurrent callers through the lock
+  if (initLock) await initLock;
+  // Re-check after awaiting — another caller may have opened what we need
+  if (conn && currentDbPath === dbPath) return { db, conn };
+
+  initLock = doInitKuzu(dbPath);
+  try {
+    return await initLock;
+  } finally {
+    initLock = null;
+  }
+};
+
+const doInitKuzu = async (dbPath: string) => {
   // Different database requested — close the old one first
   if (conn || db) {
     try { if (conn) await conn.close(); } catch {}
@@ -28,6 +47,7 @@ export const initKuzu = async (dbPath: string) => {
     conn = null;
     db = null;
     currentDbPath = null;
+    ftsLoaded = false;
   }
 
   // kuzu v0.11 stores the database as a single file (not a directory).
@@ -538,6 +558,7 @@ export const closeKuzu = async (): Promise<void> => {
     db = null;
   }
   currentDbPath = null;
+  ftsLoaded = false;
 };
 
 export const isKuzuReady = (): boolean => conn !== null && db !== null;
@@ -629,11 +650,14 @@ export const loadFTSExtension = async (): Promise<void> => {
   if (!conn) {
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
+  if (ftsLoaded) return;
   try {
     await conn.query('INSTALL fts');
     await conn.query('LOAD EXTENSION fts');
+    ftsLoaded = true;
   } catch {
     // Extension may already be loaded
+    ftsLoaded = true;
   }
 };
 

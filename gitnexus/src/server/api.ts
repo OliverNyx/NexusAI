@@ -3,6 +3,9 @@
  *
  * REST API for browser-based clients to query the local .gitnexus/ index.
  * Also hosts the MCP server over StreamableHTTP for remote AI tool access.
+ *
+ * Security: binds to 127.0.0.1 by default (use --host to override).
+ * CORS is restricted to localhost and the deployed site.
  */
 
 import express from 'express';
@@ -10,7 +13,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { findRepo, loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
-import { initKuzu, executeQuery } from '../core/kuzu/kuzu-adapter.js';
+import { initKuzu, executeQuery, closeKuzu } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
 import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
@@ -83,9 +86,25 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
   return { nodes, relationships };
 };
 
-export const createServer = async (port: number) => {
+export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
-  app.use(cors());
+
+  // CORS: only allow localhost origins and the deployed site.
+  // Non-browser requests (curl, server-to-server) have no origin and are allowed.
+  app.use(cors({
+    origin: (origin, callback) => {
+      if (
+        !origin
+        || origin.startsWith('http://localhost:')
+        || origin.startsWith('http://127.0.0.1:')
+        || origin === 'https://gitnexus.vercel.app'
+      ) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  }));
   app.use(express.json({ limit: '10mb' }));
 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
@@ -103,97 +122,160 @@ export const createServer = async (port: number) => {
 
   // List all registered repos
   app.get('/api/repos', async (_req, res) => {
-    const repos = await listRegisteredRepos();
-    res.json(repos.map(r => ({
-      name: r.name, path: r.path, indexedAt: r.indexedAt,
-      lastCommit: r.lastCommit, stats: r.stats,
-    })));
+    try {
+      const repos = await listRegisteredRepos();
+      res.json(repos.map(r => ({
+        name: r.name, path: r.path, indexedAt: r.indexedAt,
+        lastCommit: r.lastCommit, stats: r.stats,
+      })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to list repos' });
+    }
   });
 
   // Get repo info
   app.get('/api/repo', async (req, res) => {
-    const entry = await resolveRepo(req.query.repo as string | undefined);
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found. Run: gitnexus analyze' });
-      return;
+    try {
+      const entry = await resolveRepo(req.query.repo as string | undefined);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found. Run: gitnexus analyze' });
+        return;
+      }
+      const meta = await loadMeta(entry.storagePath);
+      res.json({
+        name: entry.name,
+        repoPath: entry.path,
+        indexedAt: meta?.indexedAt ?? entry.indexedAt,
+        stats: meta?.stats ?? entry.stats ?? {},
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }
-    const meta = await loadMeta(entry.storagePath);
-    res.json({
-      name: entry.name,
-      repoPath: entry.path,
-      indexedAt: meta?.indexedAt ?? entry.indexedAt,
-      stats: meta?.stats ?? entry.stats ?? {},
-    });
   });
 
   // Get full graph
   app.get('/api/graph', async (req, res) => {
-    const entry = await resolveRepo(req.query.repo as string | undefined);
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const entry = await resolveRepo(req.query.repo as string | undefined);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const kuzuPath = path.join(entry.storagePath, 'kuzu');
+      await initKuzu(kuzuPath);
+      const graph = await buildGraph();
+      res.json(graph);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to build graph' });
     }
-    const kuzuPath = path.join(entry.storagePath, 'kuzu');
-    await initKuzu(kuzuPath);
-    const graph = await buildGraph();
-    res.json(graph);
   });
 
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
-    const entry = await resolveRepo(req.query.repo as string | undefined);
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const cypher = req.body.cypher as string;
+      if (!cypher) {
+        res.status(400).json({ error: 'Missing "cypher" in request body' });
+        return;
+      }
+
+      const entry = await resolveRepo(req.query.repo as string | undefined);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const kuzuPath = path.join(entry.storagePath, 'kuzu');
+      await initKuzu(kuzuPath);
+      const result = await executeQuery(cypher);
+      res.json({ result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Query failed' });
     }
-    const kuzuPath = path.join(entry.storagePath, 'kuzu');
-    await initKuzu(kuzuPath);
-    const result = await executeQuery(req.body.cypher);
-    res.json({ result });
   });
 
   // Search
   app.post('/api/search', async (req, res) => {
-    const entry = await resolveRepo(req.query.repo as string | undefined);
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
-    }
-    const kuzuPath = path.join(entry.storagePath, 'kuzu');
-    await initKuzu(kuzuPath);
+    try {
+      const query = (req.body.query ?? '').trim();
+      if (!query) {
+        res.status(400).json({ error: 'Missing "query" in request body' });
+        return;
+      }
 
-    const query = req.body.query ?? '';
-    const limit = req.body.limit ?? 10;
+      const entry = await resolveRepo(req.query.repo as string | undefined);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const kuzuPath = path.join(entry.storagePath, 'kuzu');
+      await initKuzu(kuzuPath);
 
-    if (isEmbedderReady()) {
-      const results = await hybridSearch(query, limit, executeQuery, semanticSearch);
+      const limit = req.body.limit ?? 10;
+
+      if (isEmbedderReady()) {
+        const results = await hybridSearch(query, limit, executeQuery, semanticSearch);
+        res.json({ results });
+        return;
+      }
+
+      // FTS-only fallback when embeddings aren't loaded
+      const results = await searchFTSFromKuzu(query, limit);
       res.json({ results });
-      return;
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Search failed' });
     }
-
-    // FTS-only fallback when embeddings aren't loaded
-    const results = await searchFTSFromKuzu(query, limit);
-    res.json({ results });
   });
 
-  // Read file
+  // Read file — with path traversal guard
   app.get('/api/file', async (req, res) => {
-    const entry = await resolveRepo(req.query.repo as string | undefined);
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const entry = await resolveRepo(req.query.repo as string | undefined);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const filePath = req.query.path as string;
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing path' });
+        return;
+      }
+
+      // Prevent path traversal — resolve and verify the path stays within the repo root
+      const repoRoot = path.resolve(entry.path);
+      const fullPath = path.resolve(repoRoot, filePath);
+      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
+        res.status(403).json({ error: 'Path traversal denied' });
+        return;
+      }
+
+      const content = await fs.readFile(fullPath, 'utf-8');
+      res.json({ content });
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        res.status(404).json({ error: 'File not found' });
+      } else {
+        res.status(500).json({ error: err.message || 'Failed to read file' });
+      }
     }
-    const filePath = req.query.path as string;
-    if (!filePath) {
-      res.status(400).json({ error: 'Missing path' });
-      return;
-    }
-    const fullPath = path.join(entry.path, filePath);
-    const content = await fs.readFile(fullPath, 'utf-8');
-    res.json({ content });
   });
 
-  app.listen(port, () => {
-    console.log(`GitNexus server running on http://localhost:${port}`);
+  // Global error handler — catch anything the route handlers miss
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Unhandled error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   });
+
+  const server = app.listen(port, host, () => {
+    console.log(`GitNexus server running on http://${host}:${port}`);
+  });
+
+  // Graceful shutdown — close Express + KuzuDB cleanly
+  const shutdown = async () => {
+    server.close();
+    await closeKuzu();
+    await backend.disconnect();
+    process.exit(0);
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 };
