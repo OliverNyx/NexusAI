@@ -212,7 +212,7 @@ export const streamAllCSVsToDisk = async (
   // Create writers for every node type up-front
   const fileWriter = new BufferedCSVWriter(path.join(csvDir, 'file.csv'), 'id,name,filePath,content');
   const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
-  const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content';
+  const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
   const functionWriter = new BufferedCSVWriter(path.join(csvDir, 'function.csv'), codeElementHeader);
   const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
   const interfaceWriter = new BufferedCSVWriter(path.join(csvDir, 'interface.csv'), codeElementHeader);
@@ -222,7 +222,7 @@ export const streamAllCSVsToDisk = async (
   const processWriter = new BufferedCSVWriter(path.join(csvDir, 'process.csv'), 'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId');
 
   // Multi-language node types share the same CSV shape (no isExported column)
-  const multiLangHeader = 'id,name,filePath,startLine,endLine,content';
+  const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
   const MULTI_LANG_TYPES = ['Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
     'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'] as const;
   const multiLangWriters = new Map<string, BufferedCSVWriter>();
@@ -305,6 +305,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVNumber(node.properties.endLine, -1),
             node.properties.isExported ? 'true' : 'false',
             escapeCSVField(content),
+            escapeCSVField((node.properties as any).description || ''),
           ].join(','));
         } else {
           // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
@@ -318,6 +319,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.startLine, -1),
               escapeCSVNumber(node.properties.endLine, -1),
               escapeCSVField(content),
+              escapeCSVField((node.properties as any).description || ''),
             ].join(','));
           }
         }

@@ -8,6 +8,7 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 let parser: Parser | null = null;
@@ -23,6 +24,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.PHP]: PHP.php_only,
 };
 
 export const loadParser = async (): Promise<Parser> => {
