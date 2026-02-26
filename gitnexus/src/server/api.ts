@@ -12,8 +12,8 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
-import { findRepo, loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
-import { initKuzu, executeQuery, closeKuzu } from '../core/kuzu/kuzu-adapter.js';
+import { loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
+import { executeQuery, closeKuzu, withKuzuDb } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
 import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
@@ -86,6 +86,24 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
   return { nodes, relationships };
 };
 
+const statusFromError = (err: any): number => {
+  const msg = String(err?.message ?? '');
+  if (msg.includes('No indexed repositories') || msg.includes('not found')) return 404;
+  if (msg.includes('Multiple repositories')) return 400;
+  return 500;
+};
+
+const requestedRepo = (req: express.Request): string | undefined => {
+  const fromQuery = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+  if (fromQuery) return fromQuery;
+
+  if (req.body && typeof req.body === 'object' && typeof req.body.repo === 'string') {
+    return req.body.repo;
+  }
+
+  return undefined;
+};
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
 
@@ -110,7 +128,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  mountMCPEndpoints(app, backend);
+  const cleanupMcp = mountMCPEndpoints(app, backend);
 
   // Helper: resolve a repo by name from the global registry, or default to first
   const resolveRepo = async (repoName?: string) => {
@@ -136,7 +154,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Get repo info
   app.get('/api/repo', async (req, res) => {
     try {
-      const entry = await resolveRepo(req.query.repo as string | undefined);
+      const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found. Run: gitnexus analyze' });
         return;
@@ -156,14 +174,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Get full graph
   app.get('/api/graph', async (req, res) => {
     try {
-      const entry = await resolveRepo(req.query.repo as string | undefined);
+      const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
       const kuzuPath = path.join(entry.storagePath, 'kuzu');
-      await initKuzu(kuzuPath);
-      const graph = await buildGraph();
+      const graph = await withKuzuDb(kuzuPath, async () => buildGraph());
       res.json(graph);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to build graph' });
@@ -179,14 +196,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const entry = await resolveRepo(req.query.repo as string | undefined);
+      const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
       const kuzuPath = path.join(entry.storagePath, 'kuzu');
-      await initKuzu(kuzuPath);
-      const result = await executeQuery(cypher);
+      const result = await withKuzuDb(kuzuPath, () => executeQuery(cypher));
       res.json({ result });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
@@ -202,24 +218,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const entry = await resolveRepo(req.query.repo as string | undefined);
+      const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
       const kuzuPath = path.join(entry.storagePath, 'kuzu');
-      await initKuzu(kuzuPath);
+      const parsedLimit = Number(req.body.limit ?? 10);
+      const limit = Number.isFinite(parsedLimit)
+        ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
+        : 10;
 
-      const limit = req.body.limit ?? 10;
-
-      if (isEmbedderReady()) {
-        const results = await hybridSearch(query, limit, executeQuery, semanticSearch);
-        res.json({ results });
-        return;
-      }
-
-      // FTS-only fallback when embeddings aren't loaded
-      const results = await searchFTSFromKuzu(query, limit);
+      const results = await withKuzuDb(kuzuPath, async () => {
+        if (isEmbedderReady()) {
+          return hybridSearch(query, limit, executeQuery, semanticSearch);
+        }
+        // FTS-only fallback when embeddings aren't loaded
+        return searchFTSFromKuzu(query, limit);
+      });
       res.json({ results });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Search failed' });
@@ -229,7 +245,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Read file — with path traversal guard
   app.get('/api/file', async (req, res) => {
     try {
-      const entry = await resolveRepo(req.query.repo as string | undefined);
+      const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
@@ -259,6 +275,66 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // List all processes
+  app.get('/api/processes', async (req, res) => {
+    try {
+      const result = await backend.queryProcesses(requestedRepo(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query processes' });
+    }
+  });
+
+  // Process detail
+  app.get('/api/process', async (req, res) => {
+    try {
+      const name = String(req.query.name ?? '').trim();
+      if (!name) {
+        res.status(400).json({ error: 'Missing "name" query parameter' });
+        return;
+      }
+
+      const result = await backend.queryProcessDetail(name, requestedRepo(req));
+      if (result?.error) {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query process detail' });
+    }
+  });
+
+  // List all clusters
+  app.get('/api/clusters', async (req, res) => {
+    try {
+      const result = await backend.queryClusters(requestedRepo(req));
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query clusters' });
+    }
+  });
+
+  // Cluster detail
+  app.get('/api/cluster', async (req, res) => {
+    try {
+      const name = String(req.query.name ?? '').trim();
+      if (!name) {
+        res.status(400).json({ error: 'Missing "name" query parameter' });
+        return;
+      }
+
+      const result = await backend.queryClusterDetail(name, requestedRepo(req));
+      if (result?.error) {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query cluster detail' });
+    }
+  });
+
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled error:', err);
@@ -272,6 +348,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Graceful shutdown — close Express + KuzuDB cleanly
   const shutdown = async () => {
     server.close();
+    await cleanupMcp();
     await closeKuzu();
     await backend.disconnect();
     process.exit(0);

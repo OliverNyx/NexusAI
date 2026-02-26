@@ -16,27 +16,48 @@ let conn: kuzu.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 
-// Mutex: prevents concurrent initKuzu calls from racing on module-level globals.
-// Two simultaneous requests for different repos would otherwise close each other's connections.
-let initLock: Promise<{ db: kuzu.Database | null; conn: kuzu.Connection | null }> | null = null;
+// Global session lock for operations that touch module-level kuzu globals.
+// This guarantees no DB switch can happen while an operation is running.
+let sessionLock: Promise<void> = Promise.resolve();
+
+const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const previous = sessionLock;
+  let release: (() => void) | null = null;
+  sessionLock = new Promise<void>(resolve => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release?.();
+  }
+};
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
 export const initKuzu = async (dbPath: string) => {
-  // Fast path: already connected to this database
-  if (conn && currentDbPath === dbPath) return { db, conn };
+  return runWithSessionLock(() => ensureKuzuInitialized(dbPath));
+};
 
-  // Serialize concurrent callers through the lock
-  if (initLock) await initLock;
-  // Re-check after awaiting — another caller may have opened what we need
-  if (conn && currentDbPath === dbPath) return { db, conn };
+/**
+ * Execute multiple queries against one repo DB atomically.
+ * While the callback runs, no other request can switch the active DB.
+ */
+export const withKuzuDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+  return runWithSessionLock(async () => {
+    await ensureKuzuInitialized(dbPath);
+    return operation();
+  });
+};
 
-  initLock = doInitKuzu(dbPath);
-  try {
-    return await initLock;
-  } finally {
-    initLock = null;
+const ensureKuzuInitialized = async (dbPath: string) => {
+  if (conn && currentDbPath === dbPath) {
+    return { db, conn };
   }
+  await doInitKuzu(dbPath);
+  return { db, conn };
 };
 
 const doInitKuzu = async (dbPath: string) => {

@@ -27,7 +27,7 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 /** Cleanup sweep runs every 5 minutes */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-export function mountMCPEndpoints(app: Express, backend: LocalBackend): void {
+export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Promise<void> {
   const sessions = new Map<string, MCPSession>();
 
   // Periodic cleanup of idle sessions (guards against network drops)
@@ -44,7 +44,7 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): void {
     (cleanupTimer as NodeJS.Timeout).unref();
   }
 
-  app.all('/api/mcp', async (req: Request, res: Response) => {
+  const handleMcpRequest = async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId && sessions.has(sessionId)) {
@@ -81,7 +81,31 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): void {
         id: null,
       });
     }
+  };
+
+  app.all('/api/mcp', (req: Request, res: Response) => {
+    void handleMcpRequest(req, res).catch((err: any) => {
+      console.error('MCP HTTP request failed:', err);
+      if (res.headersSent) return;
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Internal MCP server error' },
+        id: null,
+      });
+    });
   });
 
+  const cleanup = async () => {
+    clearInterval(cleanupTimer);
+    const closers = [...sessions.values()].map(async session => {
+      try {
+        await Promise.resolve(session.server.close());
+      } catch {}
+    });
+    sessions.clear();
+    await Promise.allSettled(closers);
+  };
+
   console.log('MCP HTTP endpoints mounted at /api/mcp');
+  return cleanup;
 }
