@@ -15,7 +15,43 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join } from 'path';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+
+/**
+ * Check whether CUDA libraries are actually available on this system.
+ * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
+ * without the required shared libraries, so we probe first.
+ *
+ * Checks the dynamic linker cache (ldconfig) which covers all architectures
+ * and install paths, then falls back to CUDA_PATH / LD_LIBRARY_PATH env vars.
+ */
+function isCudaAvailable(): boolean {
+  // Primary: query the dynamic linker cache — covers all architectures,
+  // distro layouts, and custom install paths registered with ldconfig
+  try {
+    const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
+    if (out.includes('libcublasLt.so.12')) return true;
+  } catch {
+    // ldconfig not available (e.g. non-standard container)
+  }
+
+  // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
+  // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
+  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
+    const val = process.env[envVar];
+    if (!val) continue;
+    for (const dir of val.split(':').filter(Boolean)) {
+      if (existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'libcublasLt.so.12'))) return true;
+    }
+  }
+
+  return false;
+}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -62,8 +98,10 @@ export const initEmbedder = async (
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
   // On Windows, use DirectML for GPU acceleration (via DirectX12)
   // CUDA is only available on Linux x64 with onnxruntime-node
+  // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
+  // if we attempt CUDA without the required shared libraries
   const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'dml' : 'cuda';
+  const gpuDevice = isWindows ? 'dml' : (isCudaAvailable() ? 'cuda' : 'cpu');
   let requestedDevice = forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {
