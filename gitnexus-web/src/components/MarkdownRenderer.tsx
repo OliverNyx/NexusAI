@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ToolCallCard } from './ToolCallCard';
+import { Copy, Check } from 'lucide-react';
 
 // Custom syntax theme
 const customTheme = {
@@ -28,13 +29,26 @@ interface MarkdownRendererProps {
     content: string;
     onLinkClick?: (href: string) => void;
     toolCalls?: any[]; // Keep flexible for now
+    showCopyButton?: boolean;
 }
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     content,
     onLinkClick,
-    toolCalls
+    toolCalls,
+    showCopyButton = false
 }) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = async () => {
+        try {
+            await navigator.clipboard.writeText(content);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy:', err);
+        }
+    };
 
     // Helper to format text for display (convert [[links]] to markdown links)
     const formatMarkdownForDisplay = (md: string) => {
@@ -165,6 +179,20 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             >
                 {formattedContent}
             </ReactMarkdown>
+
+            {/* Copy Button */}
+            {showCopyButton && (
+                <div className="mt-2 flex justify-end">
+                    <button
+                        onClick={handleCopy}
+                        className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-muted hover:text-text-primary hover:bg-surface border border-transparent hover:border-border-subtle rounded transition-all"
+                        title="Copy to clipboard"
+                    >
+                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copied ? 'Copied' : 'Copy'}</span>
+                    </button>
+                </div>
+            )}
 
             {/* Tool Call Cards appended at the bottom if provided */}
             {toolCalls && toolCalls.length > 0 && (
