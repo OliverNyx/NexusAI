@@ -129,28 +129,25 @@ const processParsingWithWorkers = async (
   symbolTable: SymbolTable,
   astCache: ASTCache,
   workerPool: WorkerPool,
-  onFileProgress?: FileProgressCallback
+  onFileProgress?: FileProgressCallback,
 ): Promise<WorkerExtractedData> => {
   // Filter to parseable files only
   const parseableFiles: ParseWorkerInput[] = [];
   for (const file of files) {
     const lang = getLanguageFromFilename(file.path);
-    if (lang) {
-      parseableFiles.push({ path: file.path, content: file.content });
-    }
+    if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
   if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [] };
 
   const total = files.length;
 
-  // Dispatch to worker pool — pool handles splitting into chunks
-  // Workers send progress messages during parsing so the bar updates smoothly
+  // Dispatch to worker pool — pool handles splitting into chunks and sub-batching
   const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
     parseableFiles,
     (filesProcessed) => {
       onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
-    }
+    },
   );
 
   // Merge results from all workers into graph and symbol table
