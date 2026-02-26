@@ -1,6 +1,6 @@
 ---
 name: gitnexus-debugging
-description: Trace bugs through call chains using knowledge graph
+description: "Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: \"Why is X failing?\", \"Where does this error come from?\", \"Trace this bug\""
 ---
 
 # Debugging with GitNexus

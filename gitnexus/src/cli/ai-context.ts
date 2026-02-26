@@ -127,27 +127,27 @@ async function installSkills(repoPath: string): Promise<string[]> {
   const skills = [
     {
       name: 'gitnexus-exploring',
-      description: 'Navigate unfamiliar code using GitNexus knowledge graph',
+      description: 'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
     },
     {
       name: 'gitnexus-debugging',
-      description: 'Trace bugs through call chains using knowledge graph',
+      description: 'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
     },
     {
       name: 'gitnexus-impact-analysis',
-      description: 'Analyze blast radius before making code changes',
+      description: 'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
     },
     {
       name: 'gitnexus-refactoring',
-      description: 'Plan safe refactors using blast radius and dependency mapping',
+      description: 'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
     },
     {
       name: 'gitnexus-guide',
-      description: 'GitNexus quickstart — tools, resources, schema, and workflow reference',
+      description: 'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
     },
     {
       name: 'gitnexus-cli',
-      description: 'GitNexus CLI commands — index, status, clean, and wiki generation',
+      description: 'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
     },
   ];
 
