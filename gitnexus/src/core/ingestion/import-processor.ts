@@ -794,7 +794,9 @@ export const processImports = async (
           const importNode = captureMap['import'];
           for (let ci = 0; ci < importNode.childCount; ci++) {
             if (importNode.child(ci)?.type === 'wildcard_import') {
-              rawImportPath += '.*';
+              if (!rawImportPath.endsWith('.*')) {
+                rawImportPath += '.*';
+              }
               break;
             }
           }

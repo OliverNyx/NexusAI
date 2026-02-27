@@ -629,7 +629,9 @@ const processFileGroup = (
           const importNode = captureMap['import'];
           for (let i = 0; i < importNode.childCount; i++) {
             if (importNode.child(i)?.type === 'wildcard_import') {
-              rawImportPath += '.*';
+              if (!rawImportPath.endsWith('.*')) {
+                rawImportPath += '.*';
+              }
               break;
             }
           }
