@@ -1592,8 +1592,11 @@ export class LocalBackend {
 
   async disconnect(): Promise<void> {
     await closeKuzu(); // close all connections
-    const { disposeEmbedder } = await import('../core/embedder.js');
-    await disposeEmbedder();
+    // Note: we intentionally do NOT call disposeEmbedder() here.
+    // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
+    // and importing the embedder module on Node v24+ crashes if onnxruntime
+    // was never loaded during the session. Since process.exit(0) follows
+    // immediately after disconnect(), the OS reclaims everything. See #38, #89.
     this.repos.clear();
     this.contextCache.clear();
     this.initializedRepos.clear();
