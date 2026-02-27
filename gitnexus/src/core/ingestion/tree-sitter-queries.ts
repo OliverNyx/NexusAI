@@ -399,13 +399,19 @@ export const PHP_QUERIES = `
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)
 // Based on official tags.scm; functions use simple_identifier, classes use type_identifier
 export const KOTLIN_QUERIES = `
-; ── Classes (regular, data, sealed, enum) ────────────────────────────────
-(class_declaration
-  (type_identifier) @name) @definition.class
-
 ; ── Interfaces ─────────────────────────────────────────────────────────────
-(interface_declaration
+; tree-sitter-kotlin (fwcd) has no interface_declaration node type.
+; Interfaces are class_declaration nodes with an anonymous "interface" keyword child.
+(class_declaration
+  "interface"
   (type_identifier) @name) @definition.interface
+
+; ── Classes (regular, data, sealed, enum) ────────────────────────────────
+; All have the anonymous "class" keyword child. enum class has both
+; "enum" and "class" children — the "class" child still matches.
+(class_declaration
+  "class"
+  (type_identifier) @name) @definition.class
 
 ; ── Object declarations (Kotlin singletons) ──────────────────────────────
 (object_declaration
