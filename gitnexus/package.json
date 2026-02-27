@@ -32,13 +32,15 @@
   "files": [
     "dist",
     "hooks",
+    "scripts",
     "skills",
     "vendor"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",

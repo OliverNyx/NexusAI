@@ -37,6 +37,9 @@ const FUNCTION_NODE_TYPES = new Set([
   // Rust
   'function_item',
   'impl_item', // Methods inside impl blocks
+  // Swift
+  'init_declaration',
+  'deinit_declaration',
 ]);
 
 /**
@@ -57,7 +60,13 @@ const findEnclosingFunction = (
       let label = 'Function';
       
       // Different node types have different name locations
-      if (current.type === 'function_declaration' || 
+      // Swift init/deinit — handle before generic cases (more specific)
+      if (current.type === 'init_declaration' || current.type === 'deinit_declaration') {
+        const funcName = current.type === 'init_declaration' ? 'init' : 'deinit';
+        return generateId('Constructor', `${filePath}:${funcName}`);
+      }
+
+      if (current.type === 'function_declaration' ||
           current.type === 'function_definition' ||
           current.type === 'async_function_declaration' ||
           current.type === 'generator_function_declaration' ||
