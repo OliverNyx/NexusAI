@@ -1,14 +1,29 @@
 #!/usr/bin/env node
 /**
- * Patches tree-sitter-swift's binding.gyp to remove the 'actions' array
- * that requires tree-sitter-cli during npm install, then rebuilds the native binding.
+ * WORKAROUND: tree-sitter-swift@0.6.0 binding.gyp build failure
  *
- * tree-sitter-swift@0.6.0 ships pre-generated parser files (parser.c, scanner.c)
- * but its binding.gyp includes actions that try to regenerate them,
- * which fails for consumers who don't have tree-sitter-cli installed.
+ * Background:
+ *   tree-sitter-swift@0.6.0's binding.gyp contains an "actions" array that
+ *   invokes `tree-sitter generate` to regenerate parser.c from grammar.js.
+ *   This is intended for grammar developers, but the published npm package
+ *   already ships pre-generated parser files (parser.c, scanner.c), so the
+ *   actions are unnecessary for consumers. Since consumers don't have
+ *   tree-sitter-cli installed, the actions always fail during `npm install`.
  *
- * Flow: tree-sitter-swift's own postinstall fails (npm warns but continues)
- *       → this script patches binding.gyp → rebuilds native binding → success
+ * Why we can't just upgrade:
+ *   tree-sitter-swift@0.7.1 fixes this (removes postinstall, ships prebuilds),
+ *   but it requires tree-sitter@^0.22.1. The upstream project pins tree-sitter
+ *   to ^0.21.0 and all other grammar packages depend on that version.
+ *   Upgrading tree-sitter would be a separate breaking change.
+ *
+ * How this workaround works:
+ *   1. tree-sitter-swift's own postinstall fails (npm warns but continues)
+ *   2. This script runs as gitnexus's postinstall
+ *   3. It removes the "actions" array from binding.gyp
+ *   4. It rebuilds the native binding with the cleaned binding.gyp
+ *
+ * TODO: Remove this script when tree-sitter is upgraded to ^0.22.x,
+ *       which allows using tree-sitter-swift@0.7.1+ directly.
  */
 const fs = require('fs');
 const path = require('path');
