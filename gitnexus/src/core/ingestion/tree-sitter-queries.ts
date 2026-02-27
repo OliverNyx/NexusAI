@@ -458,10 +458,18 @@ export const KOTLIN_QUERIES = `
     (type_identifier) @call.name)) @call
 
 ; ── Heritage: extends / implements via delegation_specifier ──────────────
+; Interface implementation (bare user_type): class Foo : Bar
 (class_declaration
   (type_identifier) @heritage.class
   (delegation_specifier
     (user_type (type_identifier) @heritage.extends))) @heritage
+
+; Class extension (constructor_invocation): class Foo : Bar()
+(class_declaration
+  (type_identifier) @heritage.class
+  (delegation_specifier
+    (constructor_invocation
+      (user_type (type_identifier) @heritage.extends)))) @heritage
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
