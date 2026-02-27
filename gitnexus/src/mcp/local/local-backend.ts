@@ -9,7 +9,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { initKuzu, executeQuery, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
-import { embedQuery, getEmbeddingDims, disposeEmbedder } from '../core/embedder.js';
+// Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
+// at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
@@ -586,6 +587,7 @@ export class LocalBackend {
       const tableCheck = await executeQuery(repo.id, `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`);
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
 
+      const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
@@ -1590,7 +1592,11 @@ export class LocalBackend {
 
   async disconnect(): Promise<void> {
     await closeKuzu(); // close all connections
-    await disposeEmbedder();
+    // Note: we intentionally do NOT call disposeEmbedder() here.
+    // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
+    // and importing the embedder module on Node v24+ crashes if onnxruntime
+    // was never loaded during the session. Since process.exit(0) follows
+    // immediately after disconnect(), the OS reclaims everything. See #38, #89.
     this.repos.clear();
     this.contextCache.clear();
     this.initializedRepos.clear();

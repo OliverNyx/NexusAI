@@ -18,8 +18,8 @@ import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
 import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
-import { semanticSearch } from '../core/embeddings/embedding-pipeline.js';
-import { isEmbedderReady } from '../core/embeddings/embedder.js';
+// Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
+// at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 
@@ -230,7 +230,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         : 10;
 
       const results = await withKuzuDb(kuzuPath, async () => {
+        const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
         if (isEmbedderReady()) {
+          const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
           return hybridSearch(query, limit, executeQuery, semanticSearch);
         }
         // FTS-only fallback when embeddings aren't loaded
