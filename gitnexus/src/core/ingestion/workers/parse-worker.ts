@@ -622,7 +622,18 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = captureMap['import.source'].text.replace(/['"<>]/g, '');
+        let rawImportPath = captureMap['import.source'].text.replace(/['"<>]/g, '');
+        // Kotlin wildcard imports: wildcard_import is a separate AST node
+        // sibling to identifier, so check the import_header for it and append .*
+        if (language === SupportedLanguages.Kotlin) {
+          const importNode = captureMap['import'];
+          for (let i = 0; i < importNode.childCount; i++) {
+            if (importNode.child(i)?.type === 'wildcard_import') {
+              rawImportPath += '.*';
+              break;
+            }
+          }
+        }
         result.imports.push({
           filePath: file.path,
           rawImportPath,
