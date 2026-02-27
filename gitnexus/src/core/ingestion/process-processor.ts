@@ -285,7 +285,7 @@ const findEntryPoints = (
     if (callees.length === 0) continue;
 
     // Calculate entry point score using new scoring system
-    const { score, reasons } = calculateEntryPointScore(
+    const { score: baseScore, reasons } = calculateEntryPointScore(
       node.properties.name,
       node.properties.language || 'javascript',
       node.properties.isExported ?? false,
@@ -293,6 +293,13 @@ const findEntryPoints = (
       callees.length,
       filePath  // Pass filePath for framework detection
     );
+
+    let score = baseScore;
+    const astFrameworkMultiplier = node.properties.astFrameworkMultiplier ?? 1.0;
+    if (astFrameworkMultiplier > 1.0) {
+      score *= astFrameworkMultiplier;
+      reasons.push(`framework-ast:${node.properties.astFrameworkReason || 'decorator'}`);
+    }
 
     if (score > 0) {
       entryPointCandidates.push({ id: node.id, score, reasons });
