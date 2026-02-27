@@ -303,6 +303,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Struct\` TO Function,
   FROM \`Struct\` TO Method,
   FROM \`Struct\` TO Interface,
+  FROM \`Enum\` TO \`Enum\`,
   FROM \`Enum\` TO Community,
   FROM \`Enum\` TO Class,
   FROM \`Enum\` TO Interface,
