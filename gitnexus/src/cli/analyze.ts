@@ -10,7 +10,9 @@ import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
 import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
-import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
+// Embedding imports are lazy (dynamic import) so onnxruntime-node is never
+// loaded when embeddings are not requested. This avoids crashes on Node
+// versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
@@ -256,6 +258,7 @@ export const analyzeCommand = async (
   if (!embeddingSkipped) {
     updateBar(90, 'Loading embedding model...');
     const t0Emb = Date.now();
+    const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
     await runEmbeddingPipeline(
       executeQuery,
       executeWithReusedStatement,
