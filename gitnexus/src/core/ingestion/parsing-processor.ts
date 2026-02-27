@@ -7,7 +7,7 @@ import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 import { WorkerPool } from './workers/worker-pool.js';
-import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage } from './workers/parse-worker.js';
+import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage, ExtractedRoute } from './workers/parse-worker.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -15,6 +15,7 @@ export interface WorkerExtractedData {
   imports: ExtractedImport[];
   calls: ExtractedCall[];
   heritage: ExtractedHeritage[];
+  routes: ExtractedRoute[];
 }
 
 // ============================================================================
@@ -140,7 +141,7 @@ const processParsingWithWorkers = async (
     }
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [] };
+  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [], routes: [] };
 
   const total = files.length;
 
@@ -157,6 +158,7 @@ const processParsingWithWorkers = async (
   const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
   const allHeritage: ExtractedHeritage[] = [];
+  const allRoutes: ExtractedRoute[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -177,11 +179,12 @@ const processParsingWithWorkers = async (
     allImports.push(...result.imports);
     allCalls.push(...result.calls);
     allHeritage.push(...result.heritage);
+    allRoutes.push(...result.routes);
   }
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, heritage: allHeritage };
+  return { imports: allImports, calls: allCalls, heritage: allHeritage, routes: allRoutes };
 };
 
 // ============================================================================

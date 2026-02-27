@@ -2,7 +2,7 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processParsing } from './parsing-processor.js';
 import { processImports, processImportsFromExtracted, createImportMap } from './import-processor.js';
-import { processCalls, processCallsFromExtracted } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processRoutesFromExtracted } from './call-processor.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
@@ -174,6 +174,18 @@ export const runPipelineFromRepo = async (
           stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
         });
       });
+    }
+
+    // Route detection (Laravel) — after calls, before heritage
+    if (workerData?.routes && workerData.routes.length > 0) {
+      onProgress({
+        phase: 'calls',
+        percent: 91,
+        message: 'Resolving Laravel routes...',
+        stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+      });
+
+      await processRoutesFromExtracted(graph, workerData.routes, symbolTable, importMap);
     }
 
     onProgress({

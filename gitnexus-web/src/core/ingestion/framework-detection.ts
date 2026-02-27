@@ -277,7 +277,8 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
 }
 
 // ============================================================================
-// FUTURE: AST-BASED PATTERNS (for Phase 3)
+// PARTIALLY IMPLEMENTED: Route::* detection via procedural AST walk in parse-worker/call-processor
+// Remaining: NestJS, Express, FastAPI, Flask, Spring, etc.
 // ============================================================================
 
 /**
