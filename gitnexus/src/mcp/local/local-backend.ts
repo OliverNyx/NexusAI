@@ -1029,30 +1029,30 @@ export class LocalBackend {
     await this.ensureInitialized(repo.id);
     
     const scope = params.scope || 'unstaged';
-    const { execSync } = await import('child_process');
-    
-    // Build git diff command based on scope
-    let diffCmd: string;
+    const { execFileSync } = await import('child_process');
+
+    // Build git diff args based on scope (using execFileSync to avoid shell injection)
+    let diffArgs: string[];
     switch (scope) {
       case 'staged':
-        diffCmd = 'git diff --staged --name-only';
+        diffArgs = ['diff', '--staged', '--name-only'];
         break;
       case 'all':
-        diffCmd = 'git diff HEAD --name-only';
+        diffArgs = ['diff', 'HEAD', '--name-only'];
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffCmd = `git diff ${params.base_ref} --name-only`;
+        diffArgs = ['diff', params.base_ref, '--name-only'];
         break;
       case 'unstaged':
       default:
-        diffCmd = 'git diff --name-only';
+        diffArgs = ['diff', '--name-only'];
         break;
     }
-    
+
     let changedFiles: string[];
     try {
-      const output = execSync(diffCmd, { cwd: repo.repoPath, encoding: 'utf-8' });
+      const output = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
       changedFiles = output.trim().split('\n').filter(f => f.length > 0);
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
@@ -1226,9 +1226,15 @@ export class LocalBackend {
     
     // Simple text search across the repo for the old name (in files not already covered by graph)
     try {
-      const { execSync } = await import('child_process');
-      const rgCmd = `rg -l --type-add "code:*.{ts,tsx,js,jsx,py,go,rs,java}" -t code "\\b${oldName}\\b" .`;
-      const output = execSync(rgCmd, { cwd: repo.repoPath, encoding: 'utf-8', timeout: 5000 });
+      const { execFileSync } = await import('child_process');
+      const rgArgs = [
+        '-l',
+        '--type-add', 'code:*.{ts,tsx,js,jsx,py,go,rs,java}',
+        '-t', 'code',
+        `\\b${oldName}\\b`,
+        '.',
+      ];
+      const output = execFileSync('rg', rgArgs, { cwd: repo.repoPath, encoding: 'utf-8', timeout: 5000 });
       const files = output.trim().split('\n').filter(f => f.length > 0);
       
       for (const file of files) {
