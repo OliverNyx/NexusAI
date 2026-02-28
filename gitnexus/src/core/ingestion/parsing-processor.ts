@@ -6,6 +6,7 @@ import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { detectFrameworkFromAST } from './framework-detection.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage } from './workers/parse-worker.js';
 
@@ -16,6 +17,38 @@ export interface WorkerExtractedData {
   calls: ExtractedCall[];
   heritage: ExtractedHeritage[];
 }
+
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  const definitionKeys = [
+    'definition.function',
+    'definition.class',
+    'definition.interface',
+    'definition.method',
+    'definition.struct',
+    'definition.enum',
+    'definition.namespace',
+    'definition.module',
+    'definition.trait',
+    'definition.impl',
+    'definition.type',
+    'definition.const',
+    'definition.static',
+    'definition.typedef',
+    'definition.macro',
+    'definition.union',
+    'definition.property',
+    'definition.record',
+    'definition.delegate',
+    'definition.annotation',
+    'definition.constructor',
+    'definition.template',
+  ];
+
+  for (const key of definitionKeys) {
+    if (captureMap[key]) return captureMap[key];
+  }
+  return null;
+};
 
 // ============================================================================
 // EXPORT DETECTION - Language-specific visibility detection
@@ -287,14 +320,25 @@ const processParsingSequential = async (
       const node: GraphNode = {
         id: nodeId,
         label: nodeLabel as any,
-        properties: {
+        properties: (() => {
+          const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+          const frameworkHint = definitionNode
+            ? detectFrameworkFromAST(language, definitionNode.text || '')
+            : null;
+
+          return {
           name: nodeName,
           filePath: file.path,
           startLine: nameNode.startPosition.row,
           endLine: nameNode.endPosition.row,
           language: language,
           isExported: isNodeExported(nameNode, nodeName, language),
-        }
+          ...(frameworkHint ? {
+            astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
+            astFrameworkReason: frameworkHint.reason,
+          } : {}),
+          };
+        })()
       };
 
       graph.addNode(node);

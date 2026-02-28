@@ -13,6 +13,7 @@ import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getLanguageFromFilename } from '../utils.js';
+import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 
 // ============================================================================
@@ -29,6 +30,8 @@ interface ParsedNode {
     endLine: number;
     language: string;
     isExported: boolean;
+    astFrameworkMultiplier?: number;
+    astFrameworkReason?: string;
     description?: string;
   };
 }
@@ -372,6 +375,38 @@ const getLabelFromCaptures = (captureMap: Record<string, any>): string | null =>
   return 'CodeElement';
 };
 
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  const definitionKeys = [
+    'definition.function',
+    'definition.class',
+    'definition.interface',
+    'definition.method',
+    'definition.struct',
+    'definition.enum',
+    'definition.namespace',
+    'definition.module',
+    'definition.trait',
+    'definition.impl',
+    'definition.type',
+    'definition.const',
+    'definition.static',
+    'definition.typedef',
+    'definition.macro',
+    'definition.union',
+    'definition.property',
+    'definition.record',
+    'definition.delegate',
+    'definition.annotation',
+    'definition.constructor',
+    'definition.template',
+  ];
+
+  for (const key of definitionKeys) {
+    if (captureMap[key]) return captureMap[key];
+  }
+  return null;
+};
+
 // ============================================================================
 // Process a batch of files
 // ============================================================================
@@ -666,6 +701,11 @@ const processFileGroup = (
         }
       }
 
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const frameworkHint = definitionNode
+        ? detectFrameworkFromAST(language, definitionNode.text || '')
+        : null;
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -676,6 +716,10 @@ const processFileGroup = (
           endLine: nameNode.endPosition.row,
           language: language,
           isExported: isNodeExported(nameNode, nodeName, language),
+          ...(frameworkHint ? {
+            astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
+            astFrameworkReason: frameworkHint.reason,
+          } : {}),
           ...(description !== undefined ? { description } : {}),
         },
       });
