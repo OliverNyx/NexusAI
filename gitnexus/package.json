@@ -32,13 +32,15 @@
   "files": [
     "dist",
     "hooks",
+    "scripts",
     "skills",
     "vendor"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
@@ -63,6 +65,7 @@
     "tree-sitter-java": "^0.21.0",
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-php": "^0.23.12",
+    "tree-sitter-swift": "^0.6.0",
     "tree-sitter-python": "^0.21.0",
     "tree-sitter-rust": "^0.21.0",
     "tree-sitter-typescript": "^0.21.0",

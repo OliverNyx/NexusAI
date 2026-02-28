@@ -10,5 +10,5 @@ export enum SupportedLanguages {
     Rust = 'rust',
     PHP = 'php',
     // Ruby = 'ruby',
-    // Swift = 'swift',
+    Swift = 'swift',
 }
