@@ -9,11 +9,16 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
-import PHP from 'tree-sitter-php';
 import Kotlin from 'tree-sitter-kotlin';
-import Swift from 'tree-sitter-swift';
+import PHP from 'tree-sitter-php';
+import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+
+// tree-sitter-swift is an optionalDependency — may not be installed
+const _require = createRequire(import.meta.url);
+let Swift: any = null;
+try { Swift = _require('tree-sitter-swift'); } catch {}
 import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
@@ -107,9 +112,9 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
-  [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Kotlin]: Kotlin,
-  [SupportedLanguages.Swift]: Swift,
+  [SupportedLanguages.PHP]: PHP.php_only,
+  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -191,18 +196,25 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       }
       return false;
 
-    case 'c':
-    case 'cpp':
-      return false;
-
-    case 'swift':
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
       while (current) {
-        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
-          const text = current.text || '';
-          if (text.includes('public') || text.includes('open')) return true;
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
         }
         current = current.parent;
       }
+      // No visibility modifier = public (Kotlin default)
+      return true;
+
+    case 'c':
+    case 'cpp':
       return false;
 
     case 'php':
@@ -223,22 +235,15 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       // Top-level functions (no parent class) are globally accessible
       return true;
 
-    // Kotlin: Default visibility is public (unlike Java)
-    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
-    case 'kotlin':
+    case 'swift':
       while (current) {
-        if (current.parent) {
-          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
-          if (visMod) {
-            const text = visMod.text;
-            if (text === 'private' || text === 'internal' || text === 'protected') return false;
-            if (text === 'public') return true;
-          }
+        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
+          const text = current.text || '';
+          if (text.includes('public') || text.includes('open')) return true;
         }
         current = current.parent;
       }
-      // No visibility modifier = public (Kotlin default)
-      return true;
+      return false;
 
     default:
       return false;
@@ -255,10 +260,12 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_definition', 'async_function_declaration', 'async_arrow_function',
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
-  'anonymous_function_creation_expression',  // PHP anonymous functions
   // Kotlin (function_declaration already included above via JS/TS)
   'anonymous_function', 'lambda_literal',
-  'init_declaration', 'deinit_declaration',  // Swift initializers/deinitializers
+  // PHP
+  'anonymous_function_creation_expression',
+  // Swift initializers/deinitializers
+  'init_declaration', 'deinit_declaration',
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -341,6 +348,22 @@ const BUILT_INS = new Set([
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
+  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
+  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
+  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
+  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
+  'repeat', 'synchronized',
+  // Kotlin coroutine builders & scope functions
+  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
+  'supervisorScope', 'delay',
+  // Kotlin Flow operators
+  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
+  'buffer', 'conflate', 'distinctUntilChanged',
+  'flatMapLatest', 'flatMapMerge', 'combine',
+  'stateIn', 'shareIn', 'launchIn',
+  // Kotlin infix stdlib functions
+  'to', 'until', 'downTo', 'step',
   // C/C++ standard library
   'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
   'scanf', 'fscanf', 'sscanf',
@@ -379,22 +402,6 @@ const BUILT_INS = new Set([
   'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
   'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
   'dd', 'dump',
-  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
-  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
-  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
-  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
-  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
-  'repeat', 'synchronized',
-  // Kotlin coroutine builders & scope functions
-  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
-  'supervisorScope', 'delay',
-  // Kotlin Flow operators
-  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
-  'buffer', 'conflate', 'distinctUntilChanged',
-  'flatMapLatest', 'flatMapMerge', 'combine',
-  'stateIn', 'shareIn', 'launchIn',
-  // Kotlin infix stdlib functions
-  'to', 'until', 'downTo', 'step',
   // Swift/iOS built-ins and standard library
   'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
   'assert', 'assertionFailure', 'NSLog',

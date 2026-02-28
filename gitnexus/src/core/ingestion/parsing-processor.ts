@@ -141,12 +141,6 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       }
       return false;
 
-    // C/C++: No native export concept at language level
-    // Entry points will be detected via name patterns (main, etc.)
-    case 'c':
-    case 'cpp':
-      return false;
-
     // Kotlin: Default visibility is public (unlike Java)
     // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
     case 'kotlin':
@@ -163,6 +157,12 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       }
       // No visibility modifier = public (Kotlin default)
       return true;
+
+    // C/C++: No native export concept at language level
+    // Entry points will be detected via name patterns (main, etc.)
+    case 'c':
+    case 'cpp':
+      return false;
 
     // Swift: Check for 'public' or 'open' access modifiers
     case 'swift':
