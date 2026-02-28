@@ -32,12 +32,15 @@ import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
 import { evalServerCommand } from './eval-server.js';
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+const pkg = _require('../../package.json');
 const program = new Command();
 
 program
   .name('gitnexus')
   .description('GitNexus local CLI and MCP server')
-  .version('1.2.0');
+  .version(pkg.version);
 
 program
   .command('setup')
