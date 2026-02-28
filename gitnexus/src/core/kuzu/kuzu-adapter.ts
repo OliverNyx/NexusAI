@@ -674,21 +674,18 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
  * Load the FTS extension (required before using FTS functions).
- * Safe to call multiple times — tracks loaded state.
+ * Safe to call multiple times — tracks loaded state via module-level ftsLoaded.
  */
 export const loadFTSExtension = async (): Promise<void> => {
   if (ftsLoaded) return;
   if (!conn) {
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
-  if (ftsLoaded) return;
   try {
     await conn.query('INSTALL fts');
     await conn.query('LOAD EXTENSION fts');
-    ftsLoaded = true;
   } catch {
     // Extension may already be loaded
-    ftsLoaded = true;
   }
   ftsLoaded = true;
 };

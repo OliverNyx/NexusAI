@@ -12,7 +12,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 import {
   initWikiDb,
@@ -712,8 +712,8 @@ export class WikiGenerator {
 
   private getChangedFiles(fromCommit: string, toCommit: string): string[] {
     try {
-      const output = execSync(
-        `git diff ${fromCommit}..${toCommit} --name-only`,
+      const output = execFileSync(
+        'git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'],
         { cwd: this.repoPath },
       ).toString().trim();
       return output ? output.split('\n').filter(Boolean) : [];

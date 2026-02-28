@@ -8,7 +8,6 @@
 
 import { startMCPServer } from '../mcp/server.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../storage/repo-manager.js';
 
 export const mcpCommand = async () => {
   // Prevent unhandled errors from crashing the MCP server process.
@@ -21,33 +20,19 @@ export const mcpCommand = async () => {
     console.error(`GitNexus MCP: unhandled rejection — ${msg}`);
   });
 
-  // Load all registered repos
-  const entries = await listRegisteredRepos({ validate: true });
-
-  if (entries.length === 0) {
-    console.error('');
-    console.error('  GitNexus: No indexed repositories found.');
-    console.error('');
-    console.error('  To get started:');
-    console.error('    1. cd into a git repository');
-    console.error('    2. Run: gitnexus analyze');
-    console.error('    3. Restart your editor');
-    console.error('');
-    process.exit(1);
-  }
-
-  // Initialize multi-repo backend from registry
+  // Initialize multi-repo backend from registry.
+  // The server starts even with 0 repos — tools call refreshRepos() lazily,
+  // so repos indexed after the server starts are discovered automatically.
   const backend = new LocalBackend();
-  const ok = await backend.init();
+  await backend.init();
 
-  if (!ok) {
-    console.error('GitNexus: Failed to initialize backend from registry.');
-    process.exit(1);
+  const repos = await backend.listRepos();
+  if (repos.length === 0) {
+    console.error('GitNexus: No indexed repos yet. Run `gitnexus analyze` in a git repo — the server will pick it up automatically.');
+  } else {
+    console.error(`GitNexus: MCP server starting with ${repos.length} repo(s): ${repos.map(r => r.name).join(', ')}`);
   }
 
-  const repoNames = (await backend.listRepos()).map(r => r.name);
-  console.error(`GitNexus: MCP server starting with ${repoNames.length} repo(s): ${repoNames.join(', ')}`);
-
-  // Start MCP server (serves all repos)
+  // Start MCP server (serves all repos, discovers new ones lazily)
   await startMCPServer(backend);
 };

@@ -14,7 +14,7 @@ export const EmbeddingStatus = () => {
     startEmbeddings,
     graph,
     viewMode,
-    isBackendMode,
+    serverBaseUrl,
     testArrayParams,
   } = useAppState();
 
@@ -22,7 +22,7 @@ export const EmbeddingStatus = () => {
   const [showFallbackDialog, setShowFallbackDialog] = useState(false);
 
   // Only show when exploring a loaded graph; hide in backend mode (no WASM DB)
-  if (viewMode !== 'exploring' || !graph || isBackendMode) return null;
+  if (viewMode !== 'exploring' || !graph || serverBaseUrl) return null;
 
   const nodeCount = graph.nodes.length;
 

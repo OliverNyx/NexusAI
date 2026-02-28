@@ -42,6 +42,9 @@ export type NodeProperties = {
   endLine?: number,
   language?: string,
   isExported?: boolean,
+  // Optional AST-derived framework hint (e.g. @Controller, @GetMapping)
+  astFrameworkMultiplier?: number,
+  astFrameworkReason?: string,
   // Community-specific properties
   heuristicLabel?: string,
   cohesion?: number,
