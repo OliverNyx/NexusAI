@@ -18,33 +18,33 @@ export interface WorkerExtractedData {
   heritage: ExtractedHeritage[];
 }
 
-const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
-  const definitionKeys = [
-    'definition.function',
-    'definition.class',
-    'definition.interface',
-    'definition.method',
-    'definition.struct',
-    'definition.enum',
-    'definition.namespace',
-    'definition.module',
-    'definition.trait',
-    'definition.impl',
-    'definition.type',
-    'definition.const',
-    'definition.static',
-    'definition.typedef',
-    'definition.macro',
-    'definition.union',
-    'definition.property',
-    'definition.record',
-    'definition.delegate',
-    'definition.annotation',
-    'definition.constructor',
-    'definition.template',
-  ];
+const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
 
-  for (const key of definitionKeys) {
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
   }
   return null;
@@ -334,16 +334,15 @@ const processParsingSequential = async (
 
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const frameworkHint = definitionNode
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
+        : null;
+
       const node: GraphNode = {
         id: nodeId,
         label: nodeLabel as any,
-        properties: (() => {
-          const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-          const frameworkHint = definitionNode
-            ? detectFrameworkFromAST(language, definitionNode.text || '')
-            : null;
-
-          return {
+        properties: {
           name: nodeName,
           filePath: file.path,
           startLine: nameNode.startPosition.row,
@@ -354,8 +353,7 @@ const processParsingSequential = async (
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
           } : {}),
-          };
-        })()
+        },
       };
 
       graph.addNode(node);

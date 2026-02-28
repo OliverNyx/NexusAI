@@ -432,7 +432,7 @@ export const KOTLIN_QUERIES = `
 
 ; ── Enum entries ─────────────────────────────────────────────────────────
 (enum_entry
-  (simple_identifier) @name) @definition.property
+  (simple_identifier) @name) @definition.enum
 
 ; ── Type aliases ─────────────────────────────────────────────────────────
 (type_alias
@@ -456,6 +456,10 @@ export const KOTLIN_QUERIES = `
 (constructor_invocation
   (user_type
     (type_identifier) @call.name)) @call
+
+; ── Infix function calls (e.g., a to b, x until y) ──────────────────────
+(infix_expression
+  (simple_identifier) @call.name) @call
 
 ; ── Heritage: extends / implements via delegation_specifier ──────────────
 ; Interface implementation (bare user_type): class Foo : Bar

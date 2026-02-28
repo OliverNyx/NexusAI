@@ -495,6 +495,19 @@ function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | 
   return null;
 }
 
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
+};
+
 // ============================================================================
 // JVM MULTI-FILE RESOLUTION (Java + Kotlin)
 // ============================================================================
@@ -787,20 +800,9 @@ export const processImports = async (
         }
 
         // Clean path (remove quotes and angle brackets for C/C++ includes)
-        let rawImportPath = sourceNode.text.replace(/['"<>]/g, '');
-        // Kotlin wildcard imports: wildcard_import is a separate AST node
-        // sibling to identifier, so check the import_header for it and append .*
-        if (language === SupportedLanguages.Kotlin) {
-          const importNode = captureMap['import'];
-          for (let ci = 0; ci < importNode.childCount; ci++) {
-            if (importNode.child(ci)?.type === 'wildcard_import') {
-              if (!rawImportPath.endsWith('.*')) {
-                rawImportPath += '.*';
-              }
-              break;
-            }
-          }
-        }
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(sourceNode.text.replace(/['"<>]/g, ''), captureMap['import'])
+          : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
 
         // ---- JVM languages (Java + Kotlin): handle wildcards and member imports ----
@@ -809,6 +811,14 @@ export const processImports = async (
 
           if (rawImportPath.endsWith('.*')) {
             const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+            // Kotlin can import Java files in mixed codebases — try .java as fallback
+            if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+              const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+              for (const matchedFile of javaMatches) {
+                addImportEdge(file.path, matchedFile);
+              }
+              if (javaMatches.length > 0) return;
+            }
             for (const matchedFile of matchedFiles) {
               addImportEdge(file.path, matchedFile);
             }
@@ -816,7 +826,11 @@ export const processImports = async (
           }
 
           // Try member/static import resolution (strip member name)
-          const memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+          let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (!memberResolved && language === SupportedLanguages.Kotlin) {
+            memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+          }
           if (memberResolved) {
             addImportEdge(file.path, memberResolved);
             return;
@@ -971,13 +985,25 @@ export const processImportsFromExtracted = async (
 
         if (rawImportPath.endsWith('.*')) {
           const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+            const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+            for (const matchedFile of javaMatches) {
+              addImportEdge(filePath, matchedFile);
+            }
+            if (javaMatches.length > 0) continue;
+          }
           for (const matchedFile of matchedFiles) {
             addImportEdge(filePath, matchedFile);
           }
           continue;
         }
 
-        const memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+        let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+        // Kotlin can import Java files in mixed codebases — try .java as fallback
+        if (!memberResolved && language === SupportedLanguages.Kotlin) {
+          memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+        }
         if (memberResolved) {
           resolveCache.set(cacheKey, memberResolved);
           addImportEdge(filePath, memberResolved);

@@ -360,12 +360,22 @@ const BUILT_INS = new Set([
   'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
   'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
   'dd', 'dump',
-  // Kotlin stdlib
+  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
   'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
   'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
   'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
   'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
   'repeat', 'synchronized',
+  // Kotlin coroutine builders & scope functions
+  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
+  'supervisorScope', 'delay',
+  // Kotlin Flow operators
+  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
+  'buffer', 'conflate', 'distinctUntilChanged',
+  'flatMapLatest', 'flatMapMerge', 'combine',
+  'stateIn', 'shareIn', 'launchIn',
+  // Kotlin infix stdlib functions
+  'to', 'until', 'downTo', 'step',
 ]);
 
 // ============================================================================
@@ -402,36 +412,49 @@ const getLabelFromCaptures = (captureMap: Record<string, any>): string | null =>
   return 'CodeElement';
 };
 
-const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
-  const definitionKeys = [
-    'definition.function',
-    'definition.class',
-    'definition.interface',
-    'definition.method',
-    'definition.struct',
-    'definition.enum',
-    'definition.namespace',
-    'definition.module',
-    'definition.trait',
-    'definition.impl',
-    'definition.type',
-    'definition.const',
-    'definition.static',
-    'definition.typedef',
-    'definition.macro',
-    'definition.union',
-    'definition.property',
-    'definition.record',
-    'definition.delegate',
-    'definition.annotation',
-    'definition.constructor',
-    'definition.template',
-  ];
+const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
 
-  for (const key of definitionKeys) {
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
   }
   return null;
+};
+
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
 };
 
 // ============================================================================
@@ -657,20 +680,9 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        let rawImportPath = captureMap['import.source'].text.replace(/['"<>]/g, '');
-        // Kotlin wildcard imports: wildcard_import is a separate AST node
-        // sibling to identifier, so check the import_header for it and append .*
-        if (language === SupportedLanguages.Kotlin) {
-          const importNode = captureMap['import'];
-          for (let i = 0; i < importNode.childCount; i++) {
-            if (importNode.child(i)?.type === 'wildcard_import') {
-              if (!rawImportPath.endsWith('.*')) {
-                rawImportPath += '.*';
-              }
-              break;
-            }
-          }
-        }
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(captureMap['import.source'].text.replace(/['"<>]/g, ''), captureMap['import'])
+          : captureMap['import.source'].text.replace(/['"<>]/g, '');
         result.imports.push({
           filePath: file.path,
           rawImportPath,
@@ -743,7 +755,7 @@ const processFileGroup = (
 
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const frameworkHint = definitionNode
-        ? detectFrameworkFromAST(language, definitionNode.text || '')
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
 
       result.nodes.push({
