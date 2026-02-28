@@ -10,8 +10,13 @@ import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
-import Swift from 'tree-sitter-swift';
+import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
+
+// tree-sitter-swift is an optionalDependency — may not be installed
+const _require = createRequire(import.meta.url);
+let Swift: any = null;
+try { Swift = _require('tree-sitter-swift'); } catch {}
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { getLanguageFromFilename } from '../utils.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -107,7 +112,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
   [SupportedLanguages.PHP]: PHP.php_only,
-  [SupportedLanguages.Swift]: Swift,
+  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
