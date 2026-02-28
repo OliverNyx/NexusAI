@@ -164,6 +164,17 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       // No visibility modifier = public (Kotlin default)
       return true;
 
+    // Swift: Check for 'public' or 'open' access modifiers
+    case 'swift':
+      while (current) {
+        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
+          const text = current.text || '';
+          if (text.includes('public') || text.includes('open')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+
     default:
       return false;
   }

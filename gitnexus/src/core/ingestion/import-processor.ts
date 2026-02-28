@@ -153,6 +153,42 @@ async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | nu
   }
 }
 
+/** Swift Package Manager module config */
+interface SwiftPackageConfig {
+  /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
+  targets: Map<string, string>;
+}
+
+async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
+  // Swift imports are module-name based (e.g., `import SiuperModel`)
+  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
+  // We scan for these directories to build a target map
+  const targets = new Map<string, string>();
+
+  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
+  for (const sourceDir of sourceDirs) {
+    try {
+      const fullPath = path.join(repoRoot, sourceDir);
+      const entries = await fs.readdir(fullPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          targets.set(entry.name, sourceDir + '/' + entry.name);
+        }
+      }
+    } catch {
+      // Directory doesn't exist
+    }
+  }
+
+  if (targets.size > 0) {
+    if (isDev) {
+      console.log(`📦 Loaded ${targets.size} Swift package targets`);
+    }
+    return { targets };
+  }
+  return null;
+}
+
 // ============================================================================
 // IMPORT PATH RESOLUTION
 // ============================================================================
@@ -178,6 +214,8 @@ const EXTENSIONS = [
   '.rs', '/mod.rs',
   // PHP
   '.php', '.phtml',
+  // Swift
+  '.swift',
 ];
 
 /**
@@ -710,6 +748,7 @@ export const processImports = async (
   const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
+  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
 
   // Helper: add an IMPORTS edge + update import map
   const addImportEdge = (filePath: string, resolvedPath: string) => {
@@ -859,6 +898,25 @@ export const processImports = async (
           return;
         }
 
+        // ---- Swift: handle module imports ----
+        if (language === SupportedLanguages.Swift && swiftPackageConfig) {
+          // Swift imports are module names: `import SiuperModel`
+          // Resolve to the module's source directory → all .swift files in it
+          const targetDir = swiftPackageConfig.targets.get(rawImportPath);
+          if (targetDir) {
+            // Find all .swift files in this target directory
+            const dirPrefix = targetDir + '/';
+            for (const filePath2 of allFileList) {
+              if (filePath2.startsWith(dirPrefix) && filePath2.endsWith('.swift')) {
+                addImportEdge(file.path, filePath2);
+              }
+            }
+            return;
+          }
+          // External framework (Foundation, UIKit, etc.) — skip
+          return;
+        }
+
         // ---- Standard single-file resolution ----
         const resolvedPath = resolveImportPath(
           file.path,
@@ -909,6 +967,7 @@ export const processImportsFromExtracted = async (
   const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
+  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
 
   const addImportEdge = (filePath: string, resolvedPath: string) => {
     const sourceId = generateId('File', filePath);
@@ -1028,6 +1087,20 @@ export const processImportsFromExtracted = async (
         if (resolved) {
           resolveCache.set(cacheKey, resolved);
           addImportEdge(filePath, resolved);
+        }
+        continue;
+      }
+
+      // Swift: handle module imports
+      if (language === SupportedLanguages.Swift && swiftPackageConfig) {
+        const targetDir = swiftPackageConfig.targets.get(rawImportPath);
+        if (targetDir) {
+          const dirPrefix = targetDir + '/';
+          for (const fp of allFileList) {
+            if (fp.startsWith(dirPrefix) && fp.endsWith('.swift')) {
+              addImportEdge(filePath, fp);
+            }
+          }
         }
         continue;
       }

@@ -11,6 +11,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Kotlin from 'tree-sitter-kotlin';
+import Swift from 'tree-sitter-swift';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
@@ -108,6 +109,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.Rust]: Rust,
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Kotlin]: Kotlin,
+  [SupportedLanguages.Swift]: Swift,
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -193,6 +195,16 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
     case 'cpp':
       return false;
 
+    case 'swift':
+      while (current) {
+        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
+          const text = current.text || '';
+          if (text.includes('public') || text.includes('open')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+
     case 'php':
       // Top-level classes/interfaces/traits are always accessible
       // Methods/properties are exported only if they have 'public' modifier
@@ -246,6 +258,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'anonymous_function_creation_expression',  // PHP anonymous functions
   // Kotlin (function_declaration already included above via JS/TS)
   'anonymous_function', 'lambda_literal',
+  'init_declaration', 'deinit_declaration',  // Swift initializers/deinitializers
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -255,6 +268,12 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       let funcName: string | null = null;
       let label = 'Function';
+
+      if (current.type === 'init_declaration' || current.type === 'deinit_declaration') {
+        const funcName = current.type === 'init_declaration' ? 'init' : 'deinit';
+        const label = 'Constructor';
+        return generateId(label, `${filePath}:${funcName}`);
+      }
 
       if (['function_declaration', 'function_definition', 'async_function_declaration',
            'generator_function_declaration', 'function_item'].includes(current.type)) {
@@ -376,6 +395,37 @@ const BUILT_INS = new Set([
   'stateIn', 'shareIn', 'launchIn',
   // Kotlin infix stdlib functions
   'to', 'until', 'downTo', 'step',
+  // Swift/iOS built-ins and standard library
+  'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
+  'assert', 'assertionFailure', 'NSLog',
+  'abs', 'min', 'max', 'zip', 'stride', 'sequence', 'repeatElement',
+  'swap', 'withUnsafePointer', 'withUnsafeMutablePointer', 'withUnsafeBytes',
+  'autoreleasepool', 'unsafeBitCast', 'unsafeDowncast', 'numericCast',
+  'type', 'MemoryLayout',
+  // Swift collection/string methods (common noise)
+  'map', 'flatMap', 'compactMap', 'filter', 'reduce', 'forEach', 'contains',
+  'first', 'last', 'prefix', 'suffix', 'dropFirst', 'dropLast',
+  'sorted', 'reversed', 'enumerated', 'joined', 'split',
+  'append', 'insert', 'remove', 'removeAll', 'removeFirst', 'removeLast',
+  'isEmpty', 'count', 'index', 'startIndex', 'endIndex',
+  // UIKit/Foundation common methods (noise in call graph)
+  'addSubview', 'removeFromSuperview', 'layoutSubviews', 'setNeedsLayout',
+  'layoutIfNeeded', 'setNeedsDisplay', 'invalidateIntrinsicContentSize',
+  'addTarget', 'removeTarget', 'addGestureRecognizer',
+  'addConstraint', 'addConstraints', 'removeConstraint', 'removeConstraints',
+  'NSLocalizedString', 'Bundle',
+  'reloadData', 'reloadSections', 'reloadRows', 'performBatchUpdates',
+  'register', 'dequeueReusableCell', 'dequeueReusableSupplementaryView',
+  'beginUpdates', 'endUpdates', 'insertRows', 'deleteRows', 'insertSections', 'deleteSections',
+  'present', 'dismiss', 'pushViewController', 'popViewController', 'popToRootViewController',
+  'performSegue', 'prepare',
+  // GCD / async
+  'DispatchQueue', 'async', 'sync', 'asyncAfter',
+  'Task', 'withCheckedContinuation', 'withCheckedThrowingContinuation',
+  // Combine
+  'sink', 'store', 'assign', 'receive', 'subscribe',
+  // Notification / KVO
+  'addObserver', 'removeObserver', 'post', 'NotificationCenter',
 ]);
 
 // ============================================================================

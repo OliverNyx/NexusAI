@@ -11,5 +11,5 @@ export enum SupportedLanguages {
     PHP = 'php',
     Kotlin = 'kotlin',
     // Ruby = 'ruby',
-    // Swift = 'swift',
+    Swift = 'swift',
 }

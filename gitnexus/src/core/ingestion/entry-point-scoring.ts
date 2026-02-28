@@ -103,6 +103,26 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^Start$/,                // Start methods
   ],
 
+  // Swift / iOS
+  'swift': [
+    /^viewDidLoad$/,                  // UIKit lifecycle
+    /^viewWillAppear$/,               // UIKit lifecycle
+    /^viewDidAppear$/,                // UIKit lifecycle
+    /^viewWillDisappear$/,            // UIKit lifecycle
+    /^viewDidDisappear$/,             // UIKit lifecycle
+    /^application\(/,                 // AppDelegate methods
+    /^scene\(/,                       // SceneDelegate methods
+    /^body$/,                         // SwiftUI View.body
+    /Coordinator$/,                   // Coordinator pattern
+    /^sceneDidBecomeActive$/,         // SceneDelegate lifecycle
+    /^sceneWillResignActive$/,        // SceneDelegate lifecycle
+    /^didFinishLaunchingWithOptions$/, // AppDelegate
+    /ViewController$/,                // ViewController classes
+    /^configure[A-Z]/,               // Configuration methods
+    /^setup[A-Z]/,                    // Setup methods
+    /^makeBody$/,                     // SwiftUI ViewModifier
+  ],
+
   // PHP / Laravel
   'php': [
     /Controller$/,            // UserController (class name convention)
@@ -271,6 +291,10 @@ export function isTestFile(filePath: string): boolean {
     p.includes('/src/test/') ||
     // Rust test patterns (inline tests are different, but test files)
     p.includes('/tests/') ||
+    // Swift/iOS test patterns
+    p.endsWith('tests.swift') ||
+    p.endsWith('test.swift') ||
+    p.includes('uitests/') ||
     // C# test patterns
     p.includes('.tests/') ||
     p.includes('tests.cs') ||

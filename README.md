@@ -1,13 +1,29 @@
 # GitNexus
 
-<a href="https://trendshift.io/repositories/19809" target="_blank"><img src="https://trendshift.io/api/badge/repositories/19809" alt="abhigyanpatwari%2FGitNexus | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<div align="center">
 
-**Building git for agent context.**
+  <a href="https://trendshift.io/repositories/19809" target="_blank">
+    <img src="https://trendshift.io/api/badge/repositories/19809" alt="abhigyanpatwari%2FGitNexus | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+  </a>
+
+  <h2>Join the official Discord to discuss ideas, issues etc!</h2>
+
+  <a href="https://discord.gg/AAsRVT6fGb">
+    <img src="https://img.shields.io/discord/1477255801545429032?color=5865F2&logo=discord&logoColor=white" alt="Discord"/>
+  </a>
+  <a href="https://www.npmjs.com/package/gitnexus">
+    <img src="https://img.shields.io/npm/v/gitnexus.svg" alt="npm version"/>
+  </a>
+  <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/">
+    <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"/>
+  </a>
+
+</div>
+
+**Building nervous system for agent context.**
 
 Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
 
-[![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
 
 
 
@@ -303,7 +319,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 ### Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Swift
 
 ---
 
@@ -465,7 +481,7 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 - [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
 - [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
-- [X] Multi-Repo MCP, Zero-Config Setup, 9 Language Support
+- [X] Multi-Repo MCP, Zero-Config Setup, 11 Language Support
 - [X] Community Detection, Process Detection, Confidence Scoring
 - [X] Hybrid Search, Vector Index
 
