@@ -202,6 +202,8 @@ const EXTENSIONS = [
   '.py', '/__init__.py',
   // Java
   '.java',
+  // Kotlin
+  '.kt', '.kts',
   // C/C++
   '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
   // C#
@@ -531,26 +533,42 @@ function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | 
   return null;
 }
 
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
+};
+
 // ============================================================================
-// JAVA MULTI-FILE RESOLUTION
+// JVM MULTI-FILE RESOLUTION (Java + Kotlin)
 // ============================================================================
 
+/** Kotlin file extensions for JVM resolver reuse */
+const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
+
 /**
- * Resolve a Java wildcard import (com.example.*) to all matching .java files.
- * Returns an array of file paths.
+ * Resolve a JVM wildcard import (com.example.*) to all matching files.
+ * Works for both Java (.java) and Kotlin (.kt, .kts).
  */
-function resolveJavaWildcard(
+function resolveJvmWildcard(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  extensions: readonly string[],
   index?: SuffixIndex,
 ): string[] {
   // "com.example.util.*" -> "com/example/util"
   const packagePath = importPath.slice(0, -2).replace(/\./g, '/');
 
   if (index) {
-    // Use directory index: get all .java files in this package directory
-    const candidates = index.getFilesInDir(packagePath, '.java');
+    const candidates = extensions.flatMap(ext => index.getFilesInDir(packagePath, ext));
     // Filter to only direct children (no subdirectories)
     const packageSuffix = '/' + packagePath + '/';
     return candidates.filter(f => {
@@ -567,7 +585,8 @@ function resolveJavaWildcard(
   const matches: string[] = [];
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
-    if (normalized.includes(packageSuffix) && normalized.endsWith('.java')) {
+    if (normalized.includes(packageSuffix) &&
+        extensions.some(ext => normalized.endsWith(ext))) {
       const afterPackage = normalized.substring(normalized.indexOf(packageSuffix) + packageSuffix.length);
       if (!afterPackage.includes('/')) {
         matches.push(allFileList[i]);
@@ -578,36 +597,39 @@ function resolveJavaWildcard(
 }
 
 /**
- * Try to resolve a Java static import by stripping the member name.
- * "com.example.Constants.VALUE" -> resolve "com.example.Constants"
+ * Try to resolve a JVM member/static import by stripping the member name.
+ * Java: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
+ * Kotlin: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
  */
-function resolveJavaStaticImport(
+function resolveJvmMemberImport(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  extensions: readonly string[],
   index?: SuffixIndex,
 ): string | null {
-  // Static imports look like: com.example.Constants.VALUE or com.example.Constants.*
-  // The last segment is a member name (field/method) if it starts with lowercase or is ALL_CAPS
+  // Member imports: com.example.Constants.VALUE or com.example.Constants.*
+  // The last segment is a member name if it starts with lowercase, is ALL_CAPS, or is a wildcard
   const segments = importPath.split('.');
   if (segments.length < 3) return null;
 
   const lastSeg = segments[segments.length - 1];
-  // If last segment is a wildcard or ALL_CAPS constant or starts with lowercase, strip it
   if (lastSeg === '*' || /^[a-z]/.test(lastSeg) || /^[A-Z_]+$/.test(lastSeg)) {
     const classPath = segments.slice(0, -1).join('/');
-    const classSuffix = classPath + '.java';
 
-    if (index) {
-      return index.get(classSuffix) || index.getInsensitive(classSuffix) || null;
-    }
-
-    // Fallback: linear scan
-    const fullSuffix = '/' + classSuffix;
-    for (let i = 0; i < normalizedFileList.length; i++) {
-      if (normalizedFileList[i].endsWith(fullSuffix) ||
-          normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
-        return allFileList[i];
+    for (const ext of extensions) {
+      const classSuffix = classPath + ext;
+      if (index) {
+        const result = index.get(classSuffix) || index.getInsensitive(classSuffix);
+        if (result) return result;
+      } else {
+        const fullSuffix = '/' + classSuffix;
+        for (let i = 0; i < normalizedFileList.length; i++) {
+          if (normalizedFileList[i].endsWith(fullSuffix) ||
+              normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
+            return allFileList[i];
+          }
+        }
       }
     }
   }
@@ -817,26 +839,42 @@ export const processImports = async (
         }
 
         // Clean path (remove quotes and angle brackets for C/C++ includes)
-        const rawImportPath = sourceNode.text.replace(/['"<>]/g, '');
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(sourceNode.text.replace(/['"<>]/g, ''), captureMap['import'])
+          : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
 
-        // ---- Java: handle wildcards and static imports specially ----
-        if (language === SupportedLanguages.Java) {
+        // ---- JVM languages (Java + Kotlin): handle wildcards and member imports ----
+        if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
+          const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+
           if (rawImportPath.endsWith('.*')) {
-            const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
+            const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+            // Kotlin can import Java files in mixed codebases — try .java as fallback
+            if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+              const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+              for (const matchedFile of javaMatches) {
+                addImportEdge(file.path, matchedFile);
+              }
+              if (javaMatches.length > 0) return;
+            }
             for (const matchedFile of matchedFiles) {
               addImportEdge(file.path, matchedFile);
             }
             return; // skip single-file resolution
           }
 
-          // Try static import resolution (strip member name)
-          const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
-          if (staticResolved) {
-            addImportEdge(file.path, staticResolved);
+          // Try member/static import resolution (strip member name)
+          let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (!memberResolved && language === SupportedLanguages.Kotlin) {
+            memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+          }
+          if (memberResolved) {
+            addImportEdge(file.path, memberResolved);
             return;
           }
-          // Fall through to normal resolution for regular Java imports
+          // Fall through to normal resolution for regular imports
         }
 
         // ---- Go: handle package-level imports ----
@@ -1000,20 +1038,34 @@ export const processImportsFromExtracted = async (
         continue;
       }
 
-      // Java: handle wildcards and static imports
-      if (language === SupportedLanguages.Java) {
+      // JVM languages (Java + Kotlin): handle wildcards and member imports
+      if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
+        const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+
         if (rawImportPath.endsWith('.*')) {
-          const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
+          const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+            const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+            for (const matchedFile of javaMatches) {
+              addImportEdge(filePath, matchedFile);
+            }
+            if (javaMatches.length > 0) continue;
+          }
           for (const matchedFile of matchedFiles) {
             addImportEdge(filePath, matchedFile);
           }
           continue;
         }
 
-        const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
-        if (staticResolved) {
-          resolveCache.set(cacheKey, staticResolved);
-          addImportEdge(filePath, staticResolved);
+        let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+        // Kotlin can import Java files in mixed codebases — try .java as fallback
+        if (!memberResolved && language === SupportedLanguages.Kotlin) {
+          memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+        }
+        if (memberResolved) {
+          resolveCache.set(cacheKey, memberResolved);
+          addImportEdge(filePath, memberResolved);
           continue;
         }
       }

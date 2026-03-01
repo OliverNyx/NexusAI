@@ -5,7 +5,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { findSiblingChild, getLanguageFromFilename, yieldToEventLoop } from './utils.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage } from './workers/parse-worker.js';
@@ -18,33 +18,33 @@ export interface WorkerExtractedData {
   heritage: ExtractedHeritage[];
 }
 
-const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
-  const definitionKeys = [
-    'definition.function',
-    'definition.class',
-    'definition.interface',
-    'definition.method',
-    'definition.struct',
-    'definition.enum',
-    'definition.namespace',
-    'definition.module',
-    'definition.trait',
-    'definition.impl',
-    'definition.type',
-    'definition.const',
-    'definition.static',
-    'definition.typedef',
-    'definition.macro',
-    'definition.union',
-    'definition.property',
-    'definition.record',
-    'definition.delegate',
-    'definition.annotation',
-    'definition.constructor',
-    'definition.template',
-  ];
+const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
 
-  for (const key of definitionKeys) {
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
   }
   return null;
@@ -140,6 +140,23 @@ export const isNodeExported = (node: any, name: string, language: string): boole
         current = current.parent;
       }
       return false;
+
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
+      while (current) {
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
+        }
+        current = current.parent;
+      }
+      // No visibility modifier = public (Kotlin default)
+      return true;
 
     // C/C++: No native export concept at language level
     // Entry points will be detected via name patterns (main, etc.)
@@ -346,15 +363,15 @@ const processParsingSequential = async (
       const startLine = definitionNodeForRange ? definitionNodeForRange.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}:${startLine}`);
 
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const frameworkHint = definitionNode
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
+        : null;
+
       const node: GraphNode = {
         id: nodeId,
         label: nodeLabel as any,
-        properties: (() => {
-          const frameworkHint = definitionNodeForRange
-            ? detectFrameworkFromAST(language, definitionNodeForRange.text || '')
-            : null;
-
-          return {
+        properties: {
           name: nodeName,
           filePath: file.path,
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
@@ -365,8 +382,7 @@ const processParsingSequential = async (
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
           } : {}),
-          };
-        })()
+        },
       };
 
       graph.addNode(node);

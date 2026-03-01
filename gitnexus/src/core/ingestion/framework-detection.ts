@@ -129,6 +129,49 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'java-service', entryPointMultiplier: 1.8, reason: 'java-service' };
   }
   
+  // ========== KOTLIN FRAMEWORKS ==========
+
+  // Spring Boot Kotlin controllers
+  if ((p.includes('/controller/') || p.includes('/controllers/')) && p.endsWith('.kt')) {
+    return { framework: 'spring-kotlin', entryPointMultiplier: 3.0, reason: 'spring-kotlin-controller' };
+  }
+
+  // Spring Boot - files ending in Controller.kt
+  if (p.endsWith('controller.kt')) {
+    return { framework: 'spring-kotlin', entryPointMultiplier: 3.0, reason: 'spring-kotlin-controller-file' };
+  }
+
+  // Ktor routes
+  if (p.includes('/routes/') && p.endsWith('.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.5, reason: 'ktor-routes' };
+  }
+
+  // Ktor plugins folder or Routing.kt files
+  if (p.includes('/plugins/') && p.endsWith('.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.0, reason: 'ktor-plugin' };
+  }
+  if (p.endsWith('routing.kt') || p.endsWith('routes.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.5, reason: 'ktor-routing-file' };
+  }
+
+  // Android Activities, Fragments
+  if ((p.includes('/activity/') || p.includes('/ui/')) && p.endsWith('.kt')) {
+    return { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-ui' };
+  }
+  if (p.endsWith('activity.kt') || p.endsWith('fragment.kt')) {
+    return { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-component' };
+  }
+
+  // Kotlin main entry point
+  if (p.endsWith('/main.kt')) {
+    return { framework: 'kotlin', entryPointMultiplier: 3.0, reason: 'kotlin-main' };
+  }
+
+  // Kotlin Application entry point (common naming)
+  if (p.endsWith('/application.kt')) {
+    return { framework: 'kotlin', entryPointMultiplier: 2.5, reason: 'kotlin-application' };
+  }
+
   // ========== C# / .NET FRAMEWORKS ==========
   
   // ASP.NET Controllers
@@ -384,6 +427,12 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
     { framework: 'spring', entryPointMultiplier: 3.2, reason: 'spring-annotation', patterns: FRAMEWORK_AST_PATTERNS.spring },
     { framework: 'jaxrs', entryPointMultiplier: 3.0, reason: 'jaxrs-annotation', patterns: FRAMEWORK_AST_PATTERNS.jaxrs },
   ],
+  kotlin: [
+    { framework: 'spring-kotlin', entryPointMultiplier: 3.2, reason: 'spring-kotlin-annotation', patterns: FRAMEWORK_AST_PATTERNS.spring },
+    { framework: 'jaxrs', entryPointMultiplier: 3.0, reason: 'jaxrs-annotation', patterns: FRAMEWORK_AST_PATTERNS.jaxrs },
+    { framework: 'ktor', entryPointMultiplier: 2.8, reason: 'ktor-routing', patterns: ['routing', 'embeddedServer', 'Application.module'] },
+    { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-annotation', patterns: ['@AndroidEntryPoint', 'AppCompatActivity', 'Fragment('] },
+  ],
   csharp: [
     { framework: 'aspnet', entryPointMultiplier: 3.2, reason: 'aspnet-attribute', patterns: FRAMEWORK_AST_PATTERNS.aspnet },
   ],
@@ -392,9 +441,19 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
   ],
 };
 
+/** Pre-lowercased patterns for O(1) pattern matching at runtime */
+const AST_PATTERNS_LOWERED: Record<string, Array<{ framework: string; entryPointMultiplier: number; reason: string; patterns: string[] }>> =
+  Object.fromEntries(
+    Object.entries(AST_FRAMEWORK_PATTERNS_BY_LANGUAGE).map(([lang, cfgs]) => [
+      lang,
+      cfgs.map(cfg => ({ ...cfg, patterns: cfg.patterns.map(p => p.toLowerCase()) })),
+    ])
+  );
+
 /**
  * Detect framework entry points from AST definition text (decorators/annotations/attributes).
  * Returns null if no known pattern is found.
+ * Note: callers should slice definitionText to ~300 chars since annotations appear at the start.
  */
 export function detectFrameworkFromAST(
   language: string,
@@ -402,14 +461,14 @@ export function detectFrameworkFromAST(
 ): FrameworkHint | null {
   if (!language || !definitionText) return null;
 
-  const configs = AST_FRAMEWORK_PATTERNS_BY_LANGUAGE[language.toLowerCase()];
+  const configs = AST_PATTERNS_LOWERED[language.toLowerCase()];
   if (!configs || configs.length === 0) return null;
 
   const normalized = definitionText.toLowerCase();
 
   for (const cfg of configs) {
     for (const pattern of cfg.patterns) {
-      if (normalized.includes(pattern.toLowerCase())) {
+      if (normalized.includes(pattern)) {
         return {
           framework: cfg.framework,
           entryPointMultiplier: cfg.entryPointMultiplier,

@@ -9,16 +9,17 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
+import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
 let Swift: any = null;
 try { Swift = _require('tree-sitter-swift'); } catch {}
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
-import { getLanguageFromFilename } from '../utils.js';
+import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 
@@ -111,6 +112,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.Kotlin]: Kotlin,
   [SupportedLanguages.PHP]: PHP.php_only,
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
@@ -194,18 +196,25 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       }
       return false;
 
-    case 'c':
-    case 'cpp':
-      return false;
-
-    case 'swift':
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
       while (current) {
-        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
-          const text = current.text || '';
-          if (text.includes('public') || text.includes('open')) return true;
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
         }
         current = current.parent;
       }
+      // No visibility modifier = public (Kotlin default)
+      return true;
+
+    case 'c':
+    case 'cpp':
       return false;
 
     case 'php':
@@ -226,6 +235,16 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       // Top-level functions (no parent class) are globally accessible
       return true;
 
+    case 'swift':
+      while (current) {
+        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
+          const text = current.text || '';
+          if (text.includes('public') || text.includes('open')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+
     default:
       return false;
   }
@@ -241,8 +260,12 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_definition', 'async_function_declaration', 'async_arrow_function',
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
-  'anonymous_function_creation_expression',  // PHP anonymous functions
-  'init_declaration', 'deinit_declaration',  // Swift initializers/deinitializers
+  // Kotlin (function_declaration already included above via JS/TS)
+  'anonymous_function', 'lambda_literal',
+  // PHP
+  'anonymous_function_creation_expression',
+  // Swift initializers/deinitializers
+  'init_declaration', 'deinit_declaration',
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -325,6 +348,22 @@ const BUILT_INS = new Set([
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
+  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
+  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
+  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
+  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
+  'repeat', 'synchronized',
+  // Kotlin coroutine builders & scope functions
+  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
+  'supervisorScope', 'delay',
+  // Kotlin Flow operators
+  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
+  'buffer', 'conflate', 'distinctUntilChanged',
+  'flatMapLatest', 'flatMapMerge', 'combine',
+  'stateIn', 'shareIn', 'launchIn',
+  // Kotlin infix stdlib functions
+  'to', 'until', 'downTo', 'step',
   // C/C++ standard library
   'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
   'scanf', 'fscanf', 'sscanf',
@@ -430,36 +469,49 @@ const getLabelFromCaptures = (captureMap: Record<string, any>): string | null =>
   return 'CodeElement';
 };
 
-const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
-  const definitionKeys = [
-    'definition.function',
-    'definition.class',
-    'definition.interface',
-    'definition.method',
-    'definition.struct',
-    'definition.enum',
-    'definition.namespace',
-    'definition.module',
-    'definition.trait',
-    'definition.impl',
-    'definition.type',
-    'definition.const',
-    'definition.static',
-    'definition.typedef',
-    'definition.macro',
-    'definition.union',
-    'definition.property',
-    'definition.record',
-    'definition.delegate',
-    'definition.annotation',
-    'definition.constructor',
-    'definition.template',
-  ];
+const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
 
-  for (const key of definitionKeys) {
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
   }
   return null;
+};
+
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
 };
 
 // ============================================================================
@@ -685,7 +737,9 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = captureMap['import.source'].text.replace(/['"<>]/g, '');
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(captureMap['import.source'].text.replace(/['"<>]/g, ''), captureMap['import'])
+          : captureMap['import.source'].text.replace(/['"<>]/g, '');
         result.imports.push({
           filePath: file.path,
           rawImportPath,
@@ -761,7 +815,7 @@ const processFileGroup = (
       }
 
       const frameworkHint = definitionNode
-        ? detectFrameworkFromAST(language, definitionNode.text || '')
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
 
       result.nodes.push({
