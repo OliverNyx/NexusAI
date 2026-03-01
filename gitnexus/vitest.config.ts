@@ -1,0 +1,28 @@
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['test/**/*.test.ts'],
+    testTimeout: 30000,
+    pool: 'forks',
+    singleFork: true,      // run all tests in a single fork to avoid KuzuDB native cleanup crashes
+    globals: true,
+    teardownTimeout: 1000,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/cli/index.ts',          // CLI entry point (commander wiring)
+        'src/server/**',              // HTTP server (requires network)
+        'src/core/wiki/**',           // Wiki generation (requires LLM)
+      ],
+      // Ratchet these up as coverage improves — CI will fail if a PR drops below
+      thresholds: {
+        statements: 25,
+        branches: 22,
+        functions: 25,
+        lines: 25,
+      },
+    },
+  },
+});

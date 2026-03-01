@@ -39,6 +39,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:all": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "prepare": "npm run build",
     "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
   },
@@ -68,7 +73,6 @@
     "tree-sitter-python": "^0.21.0",
     "tree-sitter-rust": "^0.21.0",
     "tree-sitter-typescript": "^0.21.0",
-    "typescript": "^5.4.5",
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
@@ -80,7 +84,10 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
-    "tsx": "^4.0.0"
+    "@vitest/coverage-v8": "^4.0.18",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18.0.0"
