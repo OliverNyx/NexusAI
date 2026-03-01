@@ -8,7 +8,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { initKuzu, executeQuery, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
+import { initKuzu, executeQuery, executeParameterized, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -24,7 +24,7 @@ import {
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
-function isTestFilePath(filePath: string): boolean {
+export function isTestFilePath(filePath: string): boolean {
   const p = filePath.toLowerCase().replace(/\\/g, '/');
   return (
     p.includes('.test.') || p.includes('.spec.') ||
@@ -37,12 +37,29 @@ function isTestFilePath(filePath: string): boolean {
 }
 
 /** Valid KuzuDB node labels for safe Cypher query construction */
-const VALID_NODE_LABELS = new Set([
+export const VALID_NODE_LABELS = new Set([
   'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement',
   'Community', 'Process', 'Struct', 'Enum', 'Macro', 'Typedef', 'Union',
   'Namespace', 'Trait', 'Impl', 'TypeAlias', 'Const', 'Static', 'Property',
   'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
 ]);
+
+/** Valid relation types for impact analysis filtering */
+export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']);
+
+/** Regex to detect write operations in user-supplied Cypher queries */
+export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
+
+/** Check if a Cypher query contains write operations */
+export function isWriteQuery(query: string): boolean {
+  return CYPHER_WRITE_RE.test(query);
+}
+
+/** Structured error logging for query failures — replaces empty catch blocks */
+function logQueryError(context: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`GitNexus [${context}]: ${msg}`);
+}
 
 export interface CodebaseContext {
   projectName: string;
@@ -387,46 +404,44 @@ export class LocalBackend {
         continue;
       }
       
-      const escaped = sym.nodeId.replace(/'/g, "''");
-      
       // Find processes this symbol participates in
       let processRows: any[] = [];
       try {
-        processRows = await executeQuery(repo.id, `
-          MATCH (n {id: '${escaped}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        processRows = await executeParameterized(repo.id, `
+          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `);
-      } catch { /* symbol might not be in any process */ }
-      
+        `, { nodeId: sym.nodeId });
+      } catch (e) { logQueryError('query:process-lookup', e); }
+
       // Get cluster membership + cohesion (cohesion used as internal ranking signal)
       let cohesion = 0;
       let module: string | undefined;
       try {
-        const cohesionRows = await executeQuery(repo.id, `
-          MATCH (n {id: '${escaped}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        const cohesionRows = await executeParameterized(repo.id, `
+          MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
           LIMIT 1
-        `);
+        `, { nodeId: sym.nodeId });
         if (cohesionRows.length > 0) {
           cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
           module = cohesionRows[0].module ?? cohesionRows[0][1];
         }
-      } catch { /* no cluster info */ }
-      
+      } catch (e) { logQueryError('query:cluster-info', e); }
+
       // Optionally fetch content
       let content: string | undefined;
       if (includeContent) {
         try {
-          const contentRows = await executeQuery(repo.id, `
-            MATCH (n {id: '${escaped}'})
+          const contentRows = await executeParameterized(repo.id, `
+            MATCH (n {id: $nodeId})
             RETURN n.content AS content
-          `);
+          `, { nodeId: sym.nodeId });
           if (contentRows.length > 0) {
             content = contentRows[0].content ?? contentRows[0][0];
           }
-        } catch { /* skip */ }
+        } catch (e) { logQueryError('query:content-fetch', e); }
       }
-      
+
       const symbolEntry = {
         id: sym.nodeId,
         name: sym.name,
@@ -535,13 +550,12 @@ export class LocalBackend {
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
       try {
-        const symbolQuery = `
-          MATCH (n) 
-          WHERE n.filePath = '${fullPath.replace(/'/g, "''")}'
+        const symbols = await executeParameterized(repo.id, `
+          MATCH (n)
+          WHERE n.filePath = $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
           LIMIT 3
-        `;
-        const symbols = await executeQuery(repo.id, symbolQuery);
+        `, { filePath: fullPath });
         
         if (symbols.length > 0) {
           for (const sym of symbols) {
@@ -619,12 +633,11 @@ export class LocalBackend {
         if (!VALID_NODE_LABELS.has(label)) continue;
         
         try {
-          const escapedId = nodeId.replace(/'/g, "''");
           const nodeQuery = label === 'File'
-            ? `MATCH (n:File {id: '${escapedId}'}) RETURN n.name AS name, n.filePath AS filePath`
-            : `MATCH (n:\`${label}\` {id: '${escapedId}'}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
-          
-          const nodeRows = await executeQuery(repo.id, nodeQuery);
+            ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
+            : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+
+          const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
             const nodeRow = nodeRows[0];
             results.push({
@@ -657,6 +670,11 @@ export class LocalBackend {
 
     if (!isKuzuReady(repo.id)) {
       return { error: 'KuzuDB not ready. Index may be corrupted.' };
+    }
+
+    // Block write operations (defense-in-depth — DB is already read-only)
+    if (CYPHER_WRITE_RE.test(params.query)) {
+      return { error: 'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.' };
     }
 
     try {
@@ -817,31 +835,32 @@ export class LocalBackend {
     let symbols: any[];
     
     if (uid) {
-      const escaped = uid.replace(/'/g, "''");
-      symbols = await executeQuery(repo.id, `
-        MATCH (n {id: '${escaped}'})
+      symbols = await executeParameterized(repo.id, `
+        MATCH (n {id: $uid})
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 1
-      `);
+      `, { uid });
     } else {
-      const escaped = name!.replace(/'/g, "''");
       const isQualified = name!.includes('/') || name!.includes(':');
-      
+
       let whereClause: string;
+      let queryParams: Record<string, any>;
       if (file_path) {
-        const fpEscaped = file_path.replace(/'/g, "''");
-        whereClause = `WHERE n.name = '${escaped}' AND n.filePath CONTAINS '${fpEscaped}'`;
+        whereClause = `WHERE n.name = $symName AND n.filePath CONTAINS $filePath`;
+        queryParams = { symName: name!, filePath: file_path };
       } else if (isQualified) {
-        whereClause = `WHERE n.id = '${escaped}' OR n.name = '${escaped}'`;
+        whereClause = `WHERE n.id = $symName OR n.name = $symName`;
+        queryParams = { symName: name! };
       } else {
-        whereClause = `WHERE n.name = '${escaped}'`;
+        whereClause = `WHERE n.name = $symName`;
+        queryParams = { symName: name! };
       }
-      
-      symbols = await executeQuery(repo.id, `
+
+      symbols = await executeParameterized(repo.id, `
         MATCH (n) ${whereClause}
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 10
-      `);
+      `, queryParams);
     }
     
     if (symbols.length === 0) {
@@ -865,32 +884,32 @@ export class LocalBackend {
     
     // Step 3: Build full context
     const sym = symbols[0];
-    const symId = (sym.id || sym[0]).replace(/'/g, "''");
-    
+    const symId = sym.id || sym[0];
+
     // Categorized incoming refs
-    const incomingRows = await executeQuery(repo.id, `
-      MATCH (caller)-[r:CodeRelation]->(n {id: '${symId}'})
+    const incomingRows = await executeParameterized(repo.id, `
+      MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
-    `);
-    
+    `, { symId });
+
     // Categorized outgoing refs
-    const outgoingRows = await executeQuery(repo.id, `
-      MATCH (n {id: '${symId}'})-[r:CodeRelation]->(target)
+    const outgoingRows = await executeParameterized(repo.id, `
+      MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
-    `);
-    
+    `, { symId });
+
     // Process participation
     let processRows: any[] = [];
     try {
-      processRows = await executeQuery(repo.id, `
-        MATCH (n {id: '${symId}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      processRows = await executeParameterized(repo.id, `
+        MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
-      `);
-    } catch { /* no process info */ }
+      `, { symId });
+    } catch (e) { logQueryError('context:process-participation', e); }
     
     // Helper to categorize refs
     const categorize = (rows: any[]) => {
@@ -944,33 +963,31 @@ export class LocalBackend {
     }
     
     if (type === 'cluster') {
-      const escaped = name.replace(/'/g, "''");
-      const clusterQuery = `
+      const clusters = await executeParameterized(repo.id, `
         MATCH (c:Community)
-        WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+        WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-      `;
-      const clusters = await executeQuery(repo.id, clusterQuery);
+      `, { clusterName: name });
       if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
-      
+
       const rawClusters = clusters.map((c: any) => ({
         id: c.id || c[0], label: c.label || c[1], heuristicLabel: c.heuristicLabel || c[2],
         cohesion: c.cohesion || c[3], symbolCount: c.symbolCount || c[4],
       }));
-      
+
       let totalSymbols = 0, weightedCohesion = 0;
       for (const c of rawClusters) {
         const s = c.symbolCount || 0;
         totalSymbols += s;
         weightedCohesion += (c.cohesion || 0) * s;
       }
-      
-      const members = await executeQuery(repo.id, `
+
+      const members = await executeParameterized(repo.id, `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+        WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
         RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
-      `);
+      `, { clusterName: name });
       
       return {
         cluster: {
@@ -988,21 +1005,21 @@ export class LocalBackend {
     }
     
     if (type === 'process') {
-      const processes = await executeQuery(repo.id, `
+      const processes = await executeParameterized(repo.id, `
         MATCH (p:Process)
-        WHERE p.label = '${name.replace(/'/g, "''")}' OR p.heuristicLabel = '${name.replace(/'/g, "''")}'
+        WHERE p.label = $processName OR p.heuristicLabel = $processName
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
         LIMIT 1
-      `);
+      `, { processName: name });
       if (processes.length === 0) return { error: `Process '${name}' not found` };
-      
+
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      const steps = await executeQuery(repo.id, `
-        MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: '${procId}'})
+      const steps = await executeParameterized(repo.id, `
+        MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
         RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
-      `);
+      `, { procId });
       
       return {
         process: {
@@ -1069,13 +1086,13 @@ export class LocalBackend {
     // Map changed files to indexed symbols
     const changedSymbols: any[] = [];
     for (const file of changedFiles) {
-      const escaped = file.replace(/\\/g, '/').replace(/'/g, "''");
+      const normalizedFile = file.replace(/\\/g, '/');
       try {
-        const symbols = await executeQuery(repo.id, `
-          MATCH (n) WHERE n.filePath CONTAINS '${escaped}'
+        const symbols = await executeParameterized(repo.id, `
+          MATCH (n) WHERE n.filePath CONTAINS $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 20
-        `);
+        `, { filePath: normalizedFile });
         for (const sym of symbols) {
           changedSymbols.push({
             id: sym.id || sym[0],
@@ -1085,18 +1102,17 @@ export class LocalBackend {
             change_type: 'Modified',
           });
         }
-      } catch { /* skip */ }
+      } catch (e) { logQueryError('detect-changes:file-symbols', e); }
     }
-    
+
     // Find affected processes
     const affectedProcesses = new Map<string, any>();
     for (const sym of changedSymbols) {
-      const escaped = (sym.id as string).replace(/'/g, "''");
       try {
-        const procs = await executeQuery(repo.id, `
-          MATCH (n {id: '${escaped}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        const procs = await executeParameterized(repo.id, `
+          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `);
+        `, { nodeId: sym.id });
         for (const proc of procs) {
           const pid = proc.pid || proc[0];
           if (!affectedProcesses.has(pid)) {
@@ -1113,9 +1129,9 @@ export class LocalBackend {
             step: proc.step || proc[4],
           });
         }
-      } catch { /* skip */ }
+      } catch (e) { logQueryError('detect-changes:process-lookup', e); }
     }
-    
+
     const processCount = affectedProcesses.size;
     const risk = processCount === 0 ? 'low' : processCount <= 5 ? 'medium' : processCount <= 15 ? 'high' : 'critical';
     
@@ -1147,10 +1163,19 @@ export class LocalBackend {
     
     const { new_name, file_path } = params;
     const dry_run = params.dry_run ?? true;
-    
+
     if (!params.symbol_name && !params.symbol_uid) {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }
+
+    /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
+    const assertSafePath = (filePath: string): string => {
+      const full = path.resolve(repo.repoPath, filePath);
+      if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
+        throw new Error(`Path traversal blocked: ${filePath}`);
+      }
+      return full;
+    };
     
     // Step 1: Find the target symbol (reuse context's lookup)
     const lookupResult = await this.context(repo, {
@@ -1186,15 +1211,16 @@ export class LocalBackend {
     // The definition itself
     if (sym.filePath && sym.startLine) {
       try {
-        const content = await fs.readFile(path.join(repo.repoPath, sym.filePath), 'utf-8');
+        const content = await fs.readFile(assertSafePath(sym.filePath), 'utf-8');
         const lines = content.split('\n');
         const lineIdx = sym.startLine - 1;
         if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
-          addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(oldName, new_name).trim(), 'graph');
+          const defRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+          addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(defRegex, new_name).trim(), 'graph');
         }
-      } catch { /* skip */ }
+      } catch (e) { logQueryError('rename:read-definition', e); }
     }
-    
+
     // All incoming refs from graph (callers, importers, etc.)
     const allIncoming = [
       ...(lookupResult.incoming.calls || []),
@@ -1208,7 +1234,7 @@ export class LocalBackend {
     for (const ref of allIncoming) {
       if (!ref.filePath) continue;
       try {
-        const content = await fs.readFile(path.join(repo.repoPath, ref.filePath), 'utf-8');
+        const content = await fs.readFile(assertSafePath(ref.filePath), 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(oldName)) {
@@ -1217,9 +1243,9 @@ export class LocalBackend {
             break; // one edit per file from graph refs
           }
         }
-      } catch { /* skip */ }
+      } catch (e) { logQueryError('rename:read-ref', e); }
     }
-    
+
     // Step 3: Text search for refs the graph might have missed
     let astSearchEdits = 0;
     const graphFiles = new Set([sym.filePath, ...allIncoming.map(r => r.filePath)].filter(Boolean));
@@ -1229,7 +1255,7 @@ export class LocalBackend {
       const { execFileSync } = await import('child_process');
       const rgArgs = [
         '-l',
-        '--type-add', 'code:*.{ts,tsx,js,jsx,py,go,rs,java}',
+        '--type-add', 'code:*.{ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift}',
         '-t', 'code',
         `\\b${oldName}\\b`,
         '.',
@@ -1242,19 +1268,20 @@ export class LocalBackend {
         if (graphFiles.has(normalizedFile)) continue; // already covered by graph
         
         try {
-          const content = await fs.readFile(path.join(repo.repoPath, normalizedFile), 'utf-8');
+          const content = await fs.readFile(assertSafePath(normalizedFile), 'utf-8');
           const lines = content.split('\n');
           const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
           for (let i = 0; i < lines.length; i++) {
+            regex.lastIndex = 0;
             if (regex.test(lines[i])) {
+              regex.lastIndex = 0;
               addEdit(normalizedFile, i + 1, lines[i].trim(), lines[i].replace(regex, new_name).trim(), 'text_search');
               astSearchEdits++;
-              regex.lastIndex = 0; // reset regex
             }
           }
-        } catch { /* skip */ }
+        } catch (e) { logQueryError('rename:text-search-read', e); }
       }
-    } catch { /* rg not available or no additional matches */ }
+    } catch (e) { logQueryError('rename:ripgrep', e); }
     
     // Step 4: Apply or preview
     const allChanges = Array.from(changes.values());
@@ -1264,12 +1291,12 @@ export class LocalBackend {
       // Apply edits to files
       for (const change of allChanges) {
         try {
-          const fullPath = path.join(repo.repoPath, change.file_path);
+          const fullPath = assertSafePath(change.file_path);
           let content = await fs.readFile(fullPath, 'utf-8');
           const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
           content = content.replace(regex, new_name);
           await fs.writeFile(fullPath, content, 'utf-8');
-        } catch { /* skip failed files */ }
+        } catch (e) { logQueryError('rename:apply-edit', e); }
       }
     }
     
@@ -1298,22 +1325,22 @@ export class LocalBackend {
     
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
-    const relationTypes = params.relationTypes && params.relationTypes.length > 0
-      ? params.relationTypes
+    const rawRelTypes = params.relationTypes && params.relationTypes.length > 0
+      ? params.relationTypes.filter(t => VALID_RELATION_TYPES.has(t))
       : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+    const relationTypes = rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const includeTests = params.includeTests ?? false;
     const minConfidence = params.minConfidence ?? 0;
-    
+
     const relTypeFilter = relationTypes.map(t => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
-    
-    const targetQuery = `
+
+    const targets = await executeParameterized(repo.id, `
       MATCH (n)
-      WHERE n.name = '${target.replace(/'/g, "''")}'
+      WHERE n.name = $targetName
       RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
       LIMIT 1
-    `;
-    const targets = await executeQuery(repo.id, targetQuery);
+    `, { targetName: target });
     if (targets.length === 0) return { error: `Target '${target}' not found` };
     
     const sym = targets[0];
@@ -1355,7 +1382,7 @@ export class LocalBackend {
             });
           }
         }
-      } catch { /* query failed for this depth level */ }
+      } catch (e) { logQueryError('impact:depth-traversal', e); }
       
       frontier = nextFrontier;
     }
@@ -1517,13 +1544,11 @@ export class LocalBackend {
     const repo = await this.resolveRepo(repoName);
     await this.ensureInitialized(repo.id);
 
-    const escaped = name.replace(/'/g, "''");
-    const clusterQuery = `
+    const clusters = await executeParameterized(repo.id, `
       MATCH (c:Community)
-      WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+      WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
       RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-    `;
-    const clusters = await executeQuery(repo.id, clusterQuery);
+    `, { clusterName: name });
     if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
 
     const rawClusters = clusters.map((c: any) => ({
@@ -1538,12 +1563,12 @@ export class LocalBackend {
       weightedCohesion += (c.cohesion || 0) * s;
     }
 
-    const members = await executeQuery(repo.id, `
+    const members = await executeParameterized(repo.id, `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-      WHERE c.label = '${escaped}' OR c.heuristicLabel = '${escaped}'
+      WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
       RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
       LIMIT 30
-    `);
+    `, { clusterName: name });
 
     return {
       cluster: {
@@ -1568,22 +1593,21 @@ export class LocalBackend {
     const repo = await this.resolveRepo(repoName);
     await this.ensureInitialized(repo.id);
 
-    const escaped = name.replace(/'/g, "''");
-    const processes = await executeQuery(repo.id, `
+    const processes = await executeParameterized(repo.id, `
       MATCH (p:Process)
-      WHERE p.label = '${escaped}' OR p.heuristicLabel = '${escaped}'
+      WHERE p.label = $processName OR p.heuristicLabel = $processName
       RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
       LIMIT 1
-    `);
+    `, { processName: name });
     if (processes.length === 0) return { error: `Process '${name}' not found` };
 
     const proc = processes[0];
     const procId = proc.id || proc[0];
-    const steps = await executeQuery(repo.id, `
-      MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: '${procId}'})
+    const steps = await executeParameterized(repo.id, `
+      MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
       RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
       ORDER BY r.step
-    `);
+    `, { procId });
 
     return {
       process: {

@@ -42,6 +42,10 @@ const INITIAL_CONNS_PER_REPO = 2;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Saved real stdout.write — used to silence KuzuDB native output without race conditions */
+const realStdoutWrite = process.stdout.write.bind(process.stdout);
+let stdoutSilenceCount = 0;
+
 /**
  * Start the idle cleanup timer (runs every 60s)
  */
@@ -50,7 +54,7 @@ function ensureIdleTimer(): void {
   idleTimer = setInterval(() => {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
-      if (now - entry.lastUsed > IDLE_TIMEOUT_MS) {
+      if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
         closeOne(repoId);
       }
     }
@@ -69,7 +73,7 @@ function evictLRU(): void {
   let oldestId: string | null = null;
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
-    if (entry.lastUsed < oldestTime) {
+    if (entry.checkedOut === 0 && entry.lastUsed < oldestTime) {
       oldestTime = entry.lastUsed;
       oldestId = id;
     }
@@ -86,9 +90,9 @@ function closeOne(repoId: string): void {
   const entry = pool.get(repoId);
   if (!entry) return;
   for (const conn of entry.available) {
-    try { conn.close(); } catch {}
+    try { conn.close(); } catch (e) { console.error('GitNexus [pool:close-conn]:', e instanceof Error ? e.message : e); }
   }
-  try { entry.db.close(); } catch {}
+  try { entry.db.close(); } catch (e) { console.error('GitNexus [pool:close-db]:', e instanceof Error ? e.message : e); }
   pool.delete(repoId);
 }
 
@@ -96,15 +100,32 @@ function closeOne(repoId: string): void {
  * Create a new Connection from a repo's Database.
  * Silences stdout to prevent native module output from corrupting MCP stdio.
  */
+function silenceStdout(): void {
+  if (stdoutSilenceCount++ === 0) {
+    process.stdout.write = (() => true) as any;
+  }
+}
+
+function restoreStdout(): void {
+  if (--stdoutSilenceCount <= 0) {
+    stdoutSilenceCount = 0;
+    process.stdout.write = realStdoutWrite;
+  }
+}
+
 function createConnection(db: kuzu.Database): kuzu.Connection {
-  const origWrite = process.stdout.write;
-  process.stdout.write = (() => true) as any;
+  silenceStdout();
   try {
     return new kuzu.Connection(db);
   } finally {
-    process.stdout.write = origWrite;
+    restoreStdout();
   }
 }
+
+/** Query timeout in milliseconds */
+const QUERY_TIMEOUT_MS = 30_000;
+/** Waiter queue timeout in milliseconds */
+const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
@@ -134,8 +155,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
   // avoids lock conflicts when `gitnexus analyze` is writing.
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-    const origWrite = process.stdout.write;
-    process.stdout.write = (() => true) as any;
+    silenceStdout();
     try {
       const db = new kuzu.Database(
         dbPath,
@@ -143,7 +163,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
         false, // enableCompression (default)
         true,  // readOnly
       );
-      process.stdout.write = origWrite;
+      restoreStdout();
 
       // Pre-create a small pool of connections
       const available: kuzu.Connection[] = [];
@@ -155,7 +175,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
       ensureIdleTimer();
       return;
     } catch (err: any) {
-      process.stdout.write = origWrite;
+      restoreStdout();
       lastError = err instanceof Error ? err : new Error(String(err));
       const isLockError = lastError.message.includes('Could not set lock')
         || lastError.message.includes('lock');
@@ -189,10 +209,18 @@ function checkout(entry: PoolEntry): Promise<kuzu.Connection> {
     return Promise.resolve(createConnection(entry.db));
   }
 
-  // At capacity — queue the caller. checkin() will resolve this when
-  // a connection is returned, handing it directly to the next waiter.
-  return new Promise<kuzu.Connection>(resolve => {
-    entry.waiters.push(resolve);
+  // At capacity — queue the caller with a timeout.
+  return new Promise<kuzu.Connection>((resolve, reject) => {
+    const waiter = (conn: kuzu.Connection) => {
+      clearTimeout(timer);
+      resolve(conn);
+    };
+    const timer = setTimeout(() => {
+      const idx = entry.waiters.indexOf(waiter);
+      if (idx !== -1) entry.waiters.splice(idx, 1);
+      reject(new Error(`Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`));
+    }, WAITER_TIMEOUT_MS);
+    entry.waiters.push(waiter);
   });
 }
 
@@ -216,6 +244,15 @@ function checkin(entry: PoolEntry, conn: kuzu.Connection): void {
  * Execute a query on a specific repo's connection pool.
  * Automatically checks out a connection, runs the query, and returns it.
  */
+/** Race a promise against a timeout */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
   const entry = pool.get(repoId);
   if (!entry) {
@@ -226,7 +263,39 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
 
   const conn = await checkout(entry);
   try {
-    const queryResult = await conn.query(cypher);
+    const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const rows = await result.getAll();
+    return rows;
+  } finally {
+    checkin(entry, conn);
+  }
+};
+
+/**
+ * Execute a parameterized query on a specific repo's connection pool.
+ * Uses prepare/execute pattern to prevent Cypher injection.
+ */
+export const executeParameterized = async (
+  repoId: string,
+  cypher: string,
+  params: Record<string, any>,
+): Promise<any[]> => {
+  const entry = pool.get(repoId);
+  if (!entry) {
+    throw new Error(`KuzuDB not initialized for repo "${repoId}". Call initKuzu first.`);
+  }
+
+  entry.lastUsed = Date.now();
+
+  const conn = await checkout(entry);
+  try {
+    const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
+    if (!stmt.isSuccess()) {
+      const errMsg = await stmt.getErrorMessage();
+      throw new Error(`Prepare failed: ${errMsg}`);
+    }
+    const queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;

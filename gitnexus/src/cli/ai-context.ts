@@ -100,7 +100,7 @@ async function upsertGitNexusSection(
   const startIdx = existingContent.indexOf(GITNEXUS_START_MARKER);
   const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
 
-  if (startIdx !== -1 && endIdx !== -1) {
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
     // Replace existing section
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);

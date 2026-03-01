@@ -105,12 +105,14 @@ function main() {
     // stdout fd at OS level, making it unusable in subprocess contexts).
     let result = '';
 
+    const isWin = process.platform === 'win32';
+
     // Try direct gitnexus binary first (faster if globally installed)
     try {
       const child = spawnSync(
         'gitnexus',
         ['augment', pattern],
-        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: isWin }
       );
       if (child.status === 0 && child.stderr && child.stderr.trim()) {
         result = child.stderr;
@@ -123,7 +125,7 @@ function main() {
         const child = spawnSync(
           'npx',
           ['-y', 'gitnexus', 'augment', pattern],
-          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: isWin }
         );
         if (child.status === 0 && child.stderr && child.stderr.trim()) {
           result = child.stderr;

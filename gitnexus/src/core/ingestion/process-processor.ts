@@ -344,8 +344,7 @@ const traceFromEntryPoint = (
   // BFS with path tracking
   // Each queue item: [currentNodeId, pathSoFar]
   const queue: [string, string[]][] = [[entryId, [entryId]]];
-  const visited = new Set<string>();
-  
+
   while (queue.length > 0 && traces.length < config.maxBranching * 3) {
     const [currentId, path] = queue.shift()!;
     

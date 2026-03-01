@@ -101,20 +101,40 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    // Resolve CLI path relative to this hook script (same package)
-    // hooks/claude/gitnexus-hook.cjs → dist/cli/index.js
-    const cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+    // Resolve CLI path — try multiple strategies:
+    // 1. Relative path (works when script is inside npm package)
+    // 2. require.resolve (works when gitnexus is globally installed)
+    // 3. Fall back to npx (works when neither is available)
+    let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+    if (!fs.existsSync(cliPath)) {
+      try {
+        cliPath = require.resolve('gitnexus/dist/cli/index.js');
+      } catch {
+        cliPath = ''; // will use npx fallback
+      }
+    }
 
     // augment CLI writes result to stderr (KuzuDB's native module captures
     // stdout fd at OS level, making it unusable in subprocess contexts).
     const { spawnSync } = require('child_process');
     let result = '';
     try {
-      const child = spawnSync(
-        process.execPath,
-        [cliPath, 'augment', pattern],
-        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
+      let child;
+      if (cliPath) {
+        child = spawnSync(
+          process.execPath,
+          [cliPath, 'augment', pattern],
+          { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+      } else {
+        // npx fallback
+        const cmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+        child = spawnSync(
+          cmd,
+          ['-y', 'gitnexus', 'augment', pattern],
+          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+      }
       result = child.stderr || '';
     } catch { /* graceful failure */ }
 
