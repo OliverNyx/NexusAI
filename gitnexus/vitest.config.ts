@@ -8,6 +8,7 @@ export default defineConfig({
     singleFork: true,      // run all tests in a single fork to avoid KuzuDB native cleanup crashes
     globals: true,
     teardownTimeout: 1000,
+    forceExit: true,        // KuzuDB native destructor can crash/hang the fork on exit
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
