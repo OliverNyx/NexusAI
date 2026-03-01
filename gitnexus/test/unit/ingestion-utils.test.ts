@@ -91,8 +91,17 @@ describe('getLanguageFromFilename', () => {
     });
   });
 
+  describe('Kotlin', () => {
+    it.each(['.kt', '.kts'])(
+      'detects %s files',
+      (ext) => {
+        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Kotlin);
+      }
+    );
+  });
+
   describe('unsupported', () => {
-    it.each(['.rb', '.kt', '.scala', '.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
+    it.each(['.rb', '.scala', '.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
       'returns null for %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBeNull();
