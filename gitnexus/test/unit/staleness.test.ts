@@ -34,21 +34,20 @@ describe('checkStaleness', () => {
   });
 
   it('returns stale when lastCommit is behind HEAD', () => {
-    // Use a very old commit that's guaranteed to be behind HEAD
-    // We use the initial commit (000... would fail, so use a known-early commit)
-    let firstCommit: string;
+    // Use HEAD~1 — works in shallow clones (GitHub Actions) unlike rev-list --max-parents=0
+    let previousCommit: string;
     try {
-      firstCommit = execFileSync(
-        'git', ['rev-list', '--max-parents=0', 'HEAD'],
+      previousCommit = execFileSync(
+        'git', ['rev-parse', 'HEAD~1'],
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim().split('\n')[0];
+      ).trim();
     } catch {
-      return; // Not in a git repo
+      return; // Not in a git repo or only 1 commit
     }
 
-    if (!firstCommit) return;
+    if (!previousCommit) return;
 
-    const result = checkStaleness(process.cwd(), firstCommit);
+    const result = checkStaleness(process.cwd(), previousCommit);
     expect(result.isStale).toBe(true);
     expect(result.commitsBehind).toBeGreaterThan(0);
     expect(result.hint).toContain('behind HEAD');
