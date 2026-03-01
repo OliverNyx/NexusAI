@@ -39,6 +39,12 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
 
+### Community Integrations
+
+| Agent | Install | Source |
+|-------|---------|--------|
+| [pi](https://pi.dev) | `pi install npm:pi-gitnexus` | [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus) |
+
 ## MCP Setup (manual)
 
 If you prefer to configure manually instead of using `gitnexus setup`:
@@ -150,7 +156,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Swift
 
 ## Agent Skills
 

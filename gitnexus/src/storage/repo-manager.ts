@@ -201,9 +201,13 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
   const { storagePath } = getStoragePaths(resolved);
 
   const entries = await readRegistry();
-  const existing = entries.findIndex(
-    (e) => path.resolve(e.path) === resolved
-  );
+  const existing = entries.findIndex((e) => {
+    const a = path.resolve(e.path);
+    const b = resolved;
+    return process.platform === 'win32'
+      ? a.toLowerCase() === b.toLowerCase()
+      : a === b;
+  });
 
   const entry: RegistryEntry = {
     name,
@@ -296,5 +300,10 @@ export const loadCLIConfig = async (): Promise<CLIConfig> => {
 export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+  const configPath = getGlobalConfigPath();
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  // Restrict file permissions on Unix (config may contain API keys)
+  if (process.platform !== 'win32') {
+    try { await fs.chmod(configPath, 0o600); } catch { /* best-effort */ }
+  }
 };

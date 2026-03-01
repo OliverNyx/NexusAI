@@ -257,21 +257,63 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
   }
 
-  // Generic PHP MVC: files ending with Controller.php
-  if (p.endsWith('controller.php')) {
-    return { framework: 'php-mvc', entryPointMultiplier: 2.5, reason: 'php-controller-file' };
+  // ========== SWIFT / iOS ==========
+
+  // iOS App entry points (highest priority)
+  if (p.endsWith('/appdelegate.swift') || p.endsWith('/scenedelegate.swift') || p.endsWith('/app.swift')) {
+    return { framework: 'ios', entryPointMultiplier: 3.0, reason: 'ios-app-entry' };
+  }
+
+  // SwiftUI App entry (@main)
+  if (p.endsWith('app.swift') && p.includes('/sources/')) {
+    return { framework: 'swiftui', entryPointMultiplier: 3.0, reason: 'swiftui-app' };
+  }
+
+  // UIKit ViewControllers (high priority - screen entry points)
+  if ((p.includes('/viewcontrollers/') || p.includes('/controllers/') || p.includes('/screens/')) && p.endsWith('.swift')) {
+    return { framework: 'uikit', entryPointMultiplier: 2.5, reason: 'uikit-viewcontroller' };
+  }
+
+  // ViewController by filename convention
+  if (p.endsWith('viewcontroller.swift') || p.endsWith('vc.swift')) {
+    return { framework: 'uikit', entryPointMultiplier: 2.5, reason: 'uikit-viewcontroller-file' };
+  }
+
+  // Coordinator pattern (navigation entry points)
+  if (p.includes('/coordinators/') && p.endsWith('.swift')) {
+    return { framework: 'ios-coordinator', entryPointMultiplier: 2.5, reason: 'ios-coordinator' };
+  }
+
+  // Coordinator by filename
+  if (p.endsWith('coordinator.swift')) {
+    return { framework: 'ios-coordinator', entryPointMultiplier: 2.5, reason: 'ios-coordinator-file' };
+  }
+
+  // SwiftUI Views (moderate - reusable components)
+  if ((p.includes('/views/') || p.includes('/scenes/')) && p.endsWith('.swift')) {
+    return { framework: 'swiftui', entryPointMultiplier: 1.8, reason: 'swiftui-view' };
+  }
+
+  // Service layer
+  if (p.includes('/services/') && p.endsWith('.swift')) {
+    return { framework: 'ios-service', entryPointMultiplier: 1.8, reason: 'ios-service' };
+  }
+
+  // Router / navigation
+  if (p.includes('/router/') && p.endsWith('.swift')) {
+    return { framework: 'ios-router', entryPointMultiplier: 2.0, reason: 'ios-router' };
   }
 
   // ========== GENERIC PATTERNS ==========
 
   // Any language: index files in API folders
   if (p.includes('/api/') && (
-    p.endsWith('/index.ts') || p.endsWith('/index.js') || 
+    p.endsWith('/index.ts') || p.endsWith('/index.js') ||
     p.endsWith('/__init__.py')
   )) {
     return { framework: 'api', entryPointMultiplier: 1.8, reason: 'api-index' };
   }
-  
+
   // No framework detected - return null for graceful fallback (1.0 multiplier)
   return null;
 }
@@ -303,7 +345,7 @@ export const FRAMEWORK_AST_PATTERNS = {
   
   // Go patterns (function signatures)
   'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
-  
+
   // PHP/Laravel
   'laravel': ['Route::get', 'Route::post', 'Route::put', 'Route::delete',
               'Route::resource', 'Route::apiResource', '#[Route('],
@@ -312,4 +354,9 @@ export const FRAMEWORK_AST_PATTERNS = {
   'actix': ['#[get', '#[post', '#[put', '#[delete'],
   'axum': ['Router::new'],
   'rocket': ['#[get', '#[post'],
+
+  // Swift/iOS
+  'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController'],
+  'swiftui': ['@main', 'WindowGroup', 'ContentView', '@StateObject', '@ObservedObject'],
+  'combine': ['sink', 'assign', 'Publisher', 'Subscriber'],
 };

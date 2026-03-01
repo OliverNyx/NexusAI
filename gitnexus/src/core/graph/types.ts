@@ -15,7 +15,24 @@ export type NodeLabel =
   | 'Type'
   | 'CodeElement'
   | 'Community'
-  | 'Process';
+  | 'Process'
+  // Multi-language node types
+  | 'Struct'
+  | 'Macro'
+  | 'Typedef'
+  | 'Union'
+  | 'Namespace'
+  | 'Trait'
+  | 'Impl'
+  | 'TypeAlias'
+  | 'Const'
+  | 'Static'
+  | 'Property'
+  | 'Record'
+  | 'Delegate'
+  | 'Annotation'
+  | 'Constructor'
+  | 'Template';
 
 
 export type NodeProperties = {
@@ -25,6 +42,9 @@ export type NodeProperties = {
   endLine?: number,
   language?: string,
   isExported?: boolean,
+  // Optional AST-derived framework hint (e.g. @Controller, @GetMapping)
+  astFrameworkMultiplier?: number,
+  astFrameworkReason?: string,
   // Community-specific properties
   heuristicLabel?: string,
   cohesion?: number,
@@ -77,8 +97,19 @@ export interface GraphRelationship {
 }
 
 export interface KnowledgeGraph {
+  /** Returns a full array copy — prefer iterNodes() for iteration */
   nodes: GraphNode[],
+  /** Returns a full array copy — prefer iterRelationships() for iteration */
   relationships: GraphRelationship[],
+  /** Zero-copy iterator over nodes */
+  iterNodes: () => IterableIterator<GraphNode>,
+  /** Zero-copy iterator over relationships */
+  iterRelationships: () => IterableIterator<GraphRelationship>,
+  /** Zero-copy forEach — avoids iterator protocol overhead in hot loops */
+  forEachNode: (fn: (node: GraphNode) => void) => void,
+  forEachRelationship: (fn: (rel: GraphRelationship) => void) => void,
+  /** Lookup a single node by id — O(1) */
+  getNode: (id: string) => GraphNode | undefined,
   nodeCount: number,
   relationshipCount: number,
   addNode: (node: GraphNode) => void,

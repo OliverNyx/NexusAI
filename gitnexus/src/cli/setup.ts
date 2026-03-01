@@ -22,9 +22,16 @@ interface SetupResult {
 }
 
 /**
- * The MCP server entry for all editors
+ * The MCP server entry for all editors.
+ * On Windows, npx must be invoked via cmd /c since it's a .cmd script.
  */
 function getMcpEntry() {
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+    };
+  }
   return {
     command: 'npx',
     args: ['-y', 'gitnexus@latest', 'mcp'],
@@ -156,7 +163,15 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     const src = path.join(pluginHooksPath, 'gitnexus-hook.cjs');
     const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
     try {
-      const content = await fs.readFile(src, 'utf-8');
+      let content = await fs.readFile(src, 'utf-8');
+      // Inject resolved CLI path so the copied hook can find the CLI
+      // even when it's no longer inside the npm package tree
+      const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
+      const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
+      content = content.replace(
+        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
+        `let cliPath = '${normalizedCli}';`
+      );
       await fs.writeFile(dest, content, 'utf-8');
     } catch {
       // Script not found in source — skip
@@ -217,7 +232,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
-const SKILL_NAMES = ['exploring', 'debugging', 'impact-analysis', 'refactoring'];
+const SKILL_NAMES = ['gitnexus-exploring', 'gitnexus-debugging', 'gitnexus-impact-analysis', 'gitnexus-refactoring', 'gitnexus-guide', 'gitnexus-cli'];
 
 /**
  * Install GitNexus skills to a target directory.
@@ -233,7 +248,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
   const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
   for (const skillName of SKILL_NAMES) {
-    const skillDir = path.join(targetDir, `gitnexus-${skillName}`);
+    const skillDir = path.join(targetDir, skillName);
 
     try {
       // Try directory-based skill first (skills/{name}/SKILL.md)

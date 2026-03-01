@@ -49,7 +49,7 @@ AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, cal
 
 Returns results grouped by process (execution flow):
 - processes: ranked execution flows with relevance priority
-- process_symbols: all symbols in those flows with file locations
+- process_symbols: all symbols in those flows with file locations and module (functional area)
 - definitions: standalone types/interfaces not in any process
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.`,
@@ -90,6 +90,8 @@ EXAMPLES:
 
 • Trace a process:
   MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) WHERE p.heuristicLabel = "UserLogin" RETURN s.name, r.step ORDER BY r.step
+
+OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown table for easy reading.
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
@@ -172,10 +174,17 @@ Each edit is tagged with confidence:
   {
     name: 'impact',
     description: `Analyze the blast radius of changing a code symbol.
-Returns all symbols affected by modifying the target, grouped by depth with edge types and confidence.
+Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
 
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
-AFTER THIS: Review d=1 items (WILL BREAK). READ gitnexus://repo/{name}/processes to check affected execution flows.
+AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
+
+Output includes:
+- risk: LOW / MEDIUM / HIGH / CRITICAL
+- summary: direct callers, processes affected, modules affected
+- affected_processes: which execution flows break and at which step
+- affected_modules: which functional areas are hit (direct vs indirect)
+- byDepth: all affected symbols grouped by traversal depth
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)

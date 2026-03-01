@@ -1,5 +1,6 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star } from 'lucide-react';
+import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
+import type { RepoSummary } from '../services/server-connection';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
 import { EmbeddingStatus } from './EmbeddingStatus';
@@ -19,9 +20,11 @@ const NODE_TYPE_COLORS: Record<string, string> = {
 
 interface HeaderProps {
   onFocusNode?: (nodeId: string) => void;
+  availableRepos?: RepoSummary[];
+  onSwitchRepo?: (repoName: string) => void;
 }
 
-export const Header = ({ onFocusNode }: HeaderProps) => {
+export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: HeaderProps) => {
   const {
     projectName,
     graph,
@@ -29,8 +32,9 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
-    isBackendMode,
   } = useAppState();
+  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
+  const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -50,11 +54,14 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
       .slice(0, 10); // Limit to 10 results
   }, [graph, searchQuery]);
 
-  // Handle clicking outside to close dropdown
+  // Handle clicking outside to close dropdowns
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setIsSearchOpen(false);
+      }
+      if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
+        setIsRepoDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -117,18 +124,50 @@ export const Header = ({ onFocusNode }: HeaderProps) => {
           <span className="font-semibold text-[15px] tracking-tight">GitNexus</span>
         </div>
 
-        {/* Project badge */}
+        {/* Project badge / Repo selector dropdown */}
         {projectName && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary">
-            <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
-            <span className="truncate max-w-[200px]">{projectName}</span>
-          </div>
-        )}
+          <div className="relative" ref={repoDropdownRef}>
+            <button
+              onClick={() => availableRepos.length >= 2 && setIsRepoDropdownOpen(prev => !prev)}
+              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? 'hover:bg-hover cursor-pointer' : ''}`}
+            >
+              <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
+              <span className="truncate max-w-[200px]">{projectName}</span>
+              {availableRepos.length >= 2 && (
+                <ChevronDown className={`w-3.5 h-3.5 text-text-muted transition-transform ${isRepoDropdownOpen ? 'rotate-180' : ''}`} />
+              )}
+            </button>
 
-        {isBackendMode && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-green-500/10 border border-green-500/30 rounded-lg text-xs text-green-400">
-            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-            Local
+            {/* Repo dropdown */}
+            {isRepoDropdownOpen && availableRepos.length >= 2 && (
+              <div className="absolute top-full left-0 mt-1 w-72 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
+                {availableRepos.map((repo) => {
+                  const isCurrent = repo.name === projectName;
+                  return (
+                    <button
+                      key={repo.name}
+                      onClick={() => {
+                        if (!isCurrent && onSwitchRepo) {
+                          onSwitchRepo(repo.name);
+                        }
+                        setIsRepoDropdownOpen(false);
+                      }}
+                      className={`w-full px-4 py-3 flex items-center gap-3 text-left transition-colors ${isCurrent ? 'bg-accent/10 border-l-2 border-accent' : 'hover:bg-hover border-l-2 border-transparent'}`}
+                    >
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isCurrent ? 'bg-node-function animate-pulse' : 'bg-text-muted'}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-sm font-medium truncate ${isCurrent ? 'text-accent' : 'text-text-primary'}`}>
+                          {repo.name}
+                        </div>
+                        <div className="text-xs text-text-muted mt-0.5">
+                          {repo.stats?.nodes ?? '?'} nodes &middot; {repo.stats?.files ?? '?'} files
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>

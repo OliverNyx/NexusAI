@@ -6,10 +6,15 @@ on:
       - 'v*'
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,9 +25,33 @@ jobs:
           cache-dependency-path: gitnexus/package-lock.json
       - run: npm ci
         working-directory: gitnexus
-      - run: npx tsc --noEmit
+
+      - name: Verify version consistency
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $PKG_VERSION"
         working-directory: gitnexus
-      - run: npm publish
+
+      - name: Build
+        run: npm run build
+        working-directory: gitnexus
+
+      - name: Dry-run publish
+        run: npm publish --dry-run
+        working-directory: gitnexus
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
         working-directory: gitnexus
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

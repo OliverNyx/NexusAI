@@ -18,6 +18,27 @@ export type ImportMap = Map<string, Set<string>>;
 
 export const createImportMap = (): ImportMap => new Map();
 
+/** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
+export interface ImportResolutionContext {
+  allFilePaths: Set<string>;
+  allFileList: string[];
+  normalizedFileList: string[];
+  suffixIndex: SuffixIndex;
+  resolveCache: Map<string, string | null>;
+}
+
+/** Max entries in the resolve cache. Beyond this, the cache is cleared to bound memory.
+ *  100K entries ≈ 15MB — covers the most common import patterns. */
+const RESOLVE_CACHE_CAP = 100_000;
+
+export function buildImportResolutionContext(allPaths: string[]): ImportResolutionContext {
+  const allFileList = allPaths;
+  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
+  const allFilePaths = new Set(allFileList);
+  const suffixIndex = buildSuffixIndex(normalizedFileList, allFileList);
+  return { allFilePaths, allFileList, normalizedFileList, suffixIndex, resolveCache: new Map() };
+}
+
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG
 // ============================================================================
@@ -132,6 +153,42 @@ async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | nu
   }
 }
 
+/** Swift Package Manager module config */
+interface SwiftPackageConfig {
+  /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
+  targets: Map<string, string>;
+}
+
+async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
+  // Swift imports are module-name based (e.g., `import SiuperModel`)
+  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
+  // We scan for these directories to build a target map
+  const targets = new Map<string, string>();
+
+  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
+  for (const sourceDir of sourceDirs) {
+    try {
+      const fullPath = path.join(repoRoot, sourceDir);
+      const entries = await fs.readdir(fullPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          targets.set(entry.name, sourceDir + '/' + entry.name);
+        }
+      }
+    } catch {
+      // Directory doesn't exist
+    }
+  }
+
+  if (targets.size > 0) {
+    if (isDev) {
+      console.log(`📦 Loaded ${targets.size} Swift package targets`);
+    }
+    return { targets };
+  }
+  return null;
+}
+
 // ============================================================================
 // IMPORT PATH RESOLUTION
 // ============================================================================
@@ -145,6 +202,8 @@ const EXTENSIONS = [
   '.py', '/__init__.py',
   // Java
   '.java',
+  // Kotlin
+  '.kt', '.kts',
   // C/C++
   '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
   // C#
@@ -155,6 +214,8 @@ const EXTENSIONS = [
   '.rs', '/mod.rs',
   // PHP
   '.php', '.phtml',
+  // Swift
+  '.swift',
 ];
 
 /**
@@ -309,6 +370,15 @@ const resolveImportPath = (
   if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
 
   const cache = (result: string | null): string | null => {
+    // Evict oldest 20% when cap is reached instead of clearing all
+    if (resolveCache.size >= RESOLVE_CACHE_CAP) {
+      const evictCount = Math.floor(RESOLVE_CACHE_CAP * 0.2);
+      const iter = resolveCache.keys();
+      for (let i = 0; i < evictCount; i++) {
+        const key = iter.next().value;
+        if (key !== undefined) resolveCache.delete(key);
+      }
+    }
     resolveCache.set(cacheKey, result);
     return result;
   };
@@ -463,26 +533,42 @@ function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | 
   return null;
 }
 
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
+};
+
 // ============================================================================
-// JAVA MULTI-FILE RESOLUTION
+// JVM MULTI-FILE RESOLUTION (Java + Kotlin)
 // ============================================================================
 
+/** Kotlin file extensions for JVM resolver reuse */
+const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
+
 /**
- * Resolve a Java wildcard import (com.example.*) to all matching .java files.
- * Returns an array of file paths.
+ * Resolve a JVM wildcard import (com.example.*) to all matching files.
+ * Works for both Java (.java) and Kotlin (.kt, .kts).
  */
-function resolveJavaWildcard(
+function resolveJvmWildcard(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  extensions: readonly string[],
   index?: SuffixIndex,
 ): string[] {
   // "com.example.util.*" -> "com/example/util"
   const packagePath = importPath.slice(0, -2).replace(/\./g, '/');
 
   if (index) {
-    // Use directory index: get all .java files in this package directory
-    const candidates = index.getFilesInDir(packagePath, '.java');
+    const candidates = extensions.flatMap(ext => index.getFilesInDir(packagePath, ext));
     // Filter to only direct children (no subdirectories)
     const packageSuffix = '/' + packagePath + '/';
     return candidates.filter(f => {
@@ -499,7 +585,8 @@ function resolveJavaWildcard(
   const matches: string[] = [];
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
-    if (normalized.includes(packageSuffix) && normalized.endsWith('.java')) {
+    if (normalized.includes(packageSuffix) &&
+        extensions.some(ext => normalized.endsWith(ext))) {
       const afterPackage = normalized.substring(normalized.indexOf(packageSuffix) + packageSuffix.length);
       if (!afterPackage.includes('/')) {
         matches.push(allFileList[i]);
@@ -510,36 +597,39 @@ function resolveJavaWildcard(
 }
 
 /**
- * Try to resolve a Java static import by stripping the member name.
- * "com.example.Constants.VALUE" -> resolve "com.example.Constants"
+ * Try to resolve a JVM member/static import by stripping the member name.
+ * Java: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
+ * Kotlin: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
  */
-function resolveJavaStaticImport(
+function resolveJvmMemberImport(
   importPath: string,
   normalizedFileList: string[],
   allFileList: string[],
+  extensions: readonly string[],
   index?: SuffixIndex,
 ): string | null {
-  // Static imports look like: com.example.Constants.VALUE or com.example.Constants.*
-  // The last segment is a member name (field/method) if it starts with lowercase or is ALL_CAPS
+  // Member imports: com.example.Constants.VALUE or com.example.Constants.*
+  // The last segment is a member name if it starts with lowercase, is ALL_CAPS, or is a wildcard
   const segments = importPath.split('.');
   if (segments.length < 3) return null;
 
   const lastSeg = segments[segments.length - 1];
-  // If last segment is a wildcard or ALL_CAPS constant or starts with lowercase, strip it
   if (lastSeg === '*' || /^[a-z]/.test(lastSeg) || /^[A-Z_]+$/.test(lastSeg)) {
     const classPath = segments.slice(0, -1).join('/');
-    const classSuffix = classPath + '.java';
 
-    if (index) {
-      return index.get(classSuffix) || index.getInsensitive(classSuffix) || null;
-    }
-
-    // Fallback: linear scan
-    const fullSuffix = '/' + classSuffix;
-    for (let i = 0; i < normalizedFileList.length; i++) {
-      if (normalizedFileList[i].endsWith(fullSuffix) ||
-          normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
-        return allFileList[i];
+    for (const ext of extensions) {
+      const classSuffix = classPath + ext;
+      if (index) {
+        const result = index.get(classSuffix) || index.getInsensitive(classSuffix);
+        if (result) return result;
+      } else {
+        const fullSuffix = '/' + classSuffix;
+        for (let i = 0; i < normalizedFileList.length; i++) {
+          if (normalizedFileList[i].endsWith(fullSuffix) ||
+              normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
+            return allFileList[i];
+          }
+        }
       }
     }
   }
@@ -637,12 +727,13 @@ export const processImports = async (
   importMap: ImportMap,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
+  allPaths?: string[],
 ) => {
-  // Create a Set of all file paths for fast lookup during resolution
-  const allFilePaths = new Set(files.map(f => f.path));
+  // Use allPaths (full repo) when available for cross-chunk resolution, else fall back to chunk files
+  const allFileList = allPaths ?? files.map(f => f.path);
+  const allFilePaths = new Set(allFileList);
   const parser = await loadParser();
   const resolveCache = new Map<string, string | null>();
-  const allFileList = files.map(f => f.path);
   // Pre-compute normalized file list once (forward slashes)
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
   // Build suffix index for O(1) lookups
@@ -657,6 +748,7 @@ export const processImports = async (
   const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
+  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
 
   // Helper: add an IMPORTS edge + update import map
   const addImportEdge = (filePath: string, resolvedPath: string) => {
@@ -747,26 +839,42 @@ export const processImports = async (
         }
 
         // Clean path (remove quotes and angle brackets for C/C++ includes)
-        const rawImportPath = sourceNode.text.replace(/['"<>]/g, '');
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(sourceNode.text.replace(/['"<>]/g, ''), captureMap['import'])
+          : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
 
-        // ---- Java: handle wildcards and static imports specially ----
-        if (language === SupportedLanguages.Java) {
+        // ---- JVM languages (Java + Kotlin): handle wildcards and member imports ----
+        if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
+          const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+
           if (rawImportPath.endsWith('.*')) {
-            const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
+            const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+            // Kotlin can import Java files in mixed codebases — try .java as fallback
+            if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+              const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+              for (const matchedFile of javaMatches) {
+                addImportEdge(file.path, matchedFile);
+              }
+              if (javaMatches.length > 0) return;
+            }
             for (const matchedFile of matchedFiles) {
               addImportEdge(file.path, matchedFile);
             }
             return; // skip single-file resolution
           }
 
-          // Try static import resolution (strip member name)
-          const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
-          if (staticResolved) {
-            addImportEdge(file.path, staticResolved);
+          // Try member/static import resolution (strip member name)
+          let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (!memberResolved && language === SupportedLanguages.Kotlin) {
+            memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+          }
+          if (memberResolved) {
+            addImportEdge(file.path, memberResolved);
             return;
           }
-          // Fall through to normal resolution for regular Java imports
+          // Fall through to normal resolution for regular imports
         }
 
         // ---- Go: handle package-level imports ----
@@ -787,6 +895,25 @@ export const processImports = async (
           if (resolved) {
             addImportEdge(file.path, resolved);
           }
+          return;
+        }
+
+        // ---- Swift: handle module imports ----
+        if (language === SupportedLanguages.Swift && swiftPackageConfig) {
+          // Swift imports are module names: `import SiuperModel`
+          // Resolve to the module's source directory → all .swift files in it
+          const targetDir = swiftPackageConfig.targets.get(rawImportPath);
+          if (targetDir) {
+            // Find all .swift files in this target directory
+            const dirPrefix = targetDir + '/';
+            for (const filePath2 of allFileList) {
+              if (filePath2.startsWith(dirPrefix) && filePath2.endsWith('.swift')) {
+                addImportEdge(file.path, filePath2);
+              }
+            }
+            return;
+          }
+          // External framework (Foundation, UIKit, etc.) — skip
           return;
         }
 
@@ -823,18 +950,15 @@ export const processImports = async (
 
 export const processImportsFromExtracted = async (
   graph: KnowledgeGraph,
-  files: { path: string; content: string }[],
+  files: { path: string }[],
   extractedImports: ExtractedImport[],
   importMap: ImportMap,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
+  prebuiltCtx?: ImportResolutionContext,
 ) => {
-  const allFilePaths = new Set(files.map(f => f.path));
-  const resolveCache = new Map<string, string | null>();
-  const allFileList = files.map(f => f.path);
-  const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
-  // Build suffix index for O(1) lookups
-  const index = buildSuffixIndex(normalizedFileList, allFileList);
+  const ctx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
+  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = ctx;
 
   let totalImportsFound = 0;
   let totalImportsResolved = 0;
@@ -843,6 +967,7 @@ export const processImportsFromExtracted = async (
   const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
+  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
 
   const addImportEdge = (filePath: string, resolvedPath: string) => {
     const sourceId = generateId('File', filePath);
@@ -913,20 +1038,34 @@ export const processImportsFromExtracted = async (
         continue;
       }
 
-      // Java: handle wildcards and static imports
-      if (language === SupportedLanguages.Java) {
+      // JVM languages (Java + Kotlin): handle wildcards and member imports
+      if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
+        const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+
         if (rawImportPath.endsWith('.*')) {
-          const matchedFiles = resolveJavaWildcard(rawImportPath, normalizedFileList, allFileList, index);
+          const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+          // Kotlin can import Java files in mixed codebases — try .java as fallback
+          if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+            const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+            for (const matchedFile of javaMatches) {
+              addImportEdge(filePath, matchedFile);
+            }
+            if (javaMatches.length > 0) continue;
+          }
           for (const matchedFile of matchedFiles) {
             addImportEdge(filePath, matchedFile);
           }
           continue;
         }
 
-        const staticResolved = resolveJavaStaticImport(rawImportPath, normalizedFileList, allFileList, index);
-        if (staticResolved) {
-          resolveCache.set(cacheKey, staticResolved);
-          addImportEdge(filePath, staticResolved);
+        let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+        // Kotlin can import Java files in mixed codebases — try .java as fallback
+        if (!memberResolved && language === SupportedLanguages.Kotlin) {
+          memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+        }
+        if (memberResolved) {
+          resolveCache.set(cacheKey, memberResolved);
+          addImportEdge(filePath, memberResolved);
           continue;
         }
       }
@@ -948,6 +1087,20 @@ export const processImportsFromExtracted = async (
         if (resolved) {
           resolveCache.set(cacheKey, resolved);
           addImportEdge(filePath, resolved);
+        }
+        continue;
+      }
+
+      // Swift: handle module imports
+      if (language === SupportedLanguages.Swift && swiftPackageConfig) {
+        const targetDir = swiftPackageConfig.targets.get(rawImportPath);
+        if (targetDir) {
+          const dirPrefix = targetDir + '/';
+          for (const fp of allFileList) {
+            if (fp.startsWith(dirPrefix) && fp.endsWith('.swift')) {
+              addImportEdge(filePath, fp);
+            }
+          }
         }
         continue;
       }

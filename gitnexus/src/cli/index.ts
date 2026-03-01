@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+
+// Heap re-spawn removed — only analyze.ts needs the 8GB heap (via its own ensureHeap()).
+// Removing it from here improves MCP server startup time significantly.
+
 import { Command } from 'commander';
 import { analyzeCommand } from './analyze.js';
 import { serveCommand } from './serve.js';
@@ -11,12 +15,15 @@ import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
 import { evalServerCommand } from './eval-server.js';
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+const pkg = _require('../../package.json');
 const program = new Command();
 
 program
   .name('gitnexus')
   .description('GitNexus local CLI and MCP server')
-  .version('1.2.0');
+  .version(pkg.version);
 
 program
   .command('setup')
@@ -34,6 +41,7 @@ program
   .command('serve')
   .description('Start local HTTP server for web UI connection')
   .option('-p, --port <port>', 'Port number', '4747')
+  .option('--host <host>', 'Bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)')
   .action(serveCommand);
 
 program

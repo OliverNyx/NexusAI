@@ -9,10 +9,18 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
+import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
-import { getLanguageFromFilename } from '../utils.js';
+
+// tree-sitter-swift is an optionalDependency — may not be installed
+const _require = createRequire(import.meta.url);
+let Swift: any = null;
+try { Swift = _require('tree-sitter-swift'); } catch {}
+import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
+import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 
 // ============================================================================
@@ -29,6 +37,9 @@ interface ParsedNode {
     endLine: number;
     language: string;
     isExported: boolean;
+    astFrameworkMultiplier?: number;
+    astFrameworkReason?: string;
+    description?: string;
   };
 }
 
@@ -113,7 +124,9 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.Kotlin]: Kotlin,
   [SupportedLanguages.PHP]: PHP.php_only,
+  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -195,6 +208,23 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       }
       return false;
 
+    // Kotlin: Default visibility is public (unlike Java)
+    // visibility_modifier is inside modifiers, a sibling of the name node within the declaration
+    case 'kotlin':
+      while (current) {
+        if (current.parent) {
+          const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+          if (visMod) {
+            const text = visMod.text;
+            if (text === 'private' || text === 'internal' || text === 'protected') return false;
+            if (text === 'public') return true;
+          }
+        }
+        current = current.parent;
+      }
+      // No visibility modifier = public (Kotlin default)
+      return true;
+
     case 'c':
     case 'cpp':
       return false;
@@ -217,6 +247,16 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
       // Top-level functions (no parent class) are globally accessible
       return true;
 
+    case 'swift':
+      while (current) {
+        if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
+          const text = current.text || '';
+          if (text.includes('public') || text.includes('open')) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+
     default:
       return false;
   }
@@ -232,7 +272,12 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_definition', 'async_function_declaration', 'async_arrow_function',
   'method_declaration', 'constructor_declaration',
   'local_function_statement', 'function_item', 'impl_item',
-  'anonymous_function',  // PHP anonymous functions
+  // Kotlin
+  'lambda_literal',
+  // PHP
+  'anonymous_function',
+  // Swift initializers/deinitializers
+  'init_declaration', 'deinit_declaration',
 ]);
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
@@ -242,6 +287,12 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       let funcName: string | null = null;
       let label = 'Function';
+
+      if (current.type === 'init_declaration' || current.type === 'deinit_declaration') {
+        const funcName = current.type === 'init_declaration' ? 'init' : 'deinit';
+        const label = 'Constructor';
+        return generateId(label, `${filePath}:${funcName}`);
+      }
 
       if (['function_declaration', 'function_definition', 'async_function_declaration',
            'generator_function_declaration', 'function_item'].includes(current.type)) {
@@ -285,6 +336,7 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
 };
 
 const BUILT_INS = new Set([
+  // JavaScript/TypeScript
   'console', 'log', 'warn', 'error', 'info', 'debug',
   'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite',
@@ -303,10 +355,48 @@ const BUILT_INS = new Set([
   'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
   'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
   'hasOwnProperty', 'toString', 'valueOf',
+  // Python
   'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
   'open', 'read', 'write', 'close', 'append', 'extend', 'update',
   'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
+  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
+  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
+  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
+  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
+  'repeat', 'synchronized',
+  // Kotlin coroutine builders & scope functions
+  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
+  'supervisorScope', 'delay',
+  // Kotlin Flow operators
+  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
+  'buffer', 'conflate', 'distinctUntilChanged',
+  'flatMapLatest', 'flatMapMerge', 'combine',
+  'stateIn', 'shareIn', 'launchIn',
+  // Kotlin infix stdlib functions
+  'to', 'until', 'downTo', 'step',
+  // C/C++ standard library
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
+  'scanf', 'fscanf', 'sscanf',
+  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
+  'sizeof', 'offsetof', 'typeof',
+  'assert', 'abort', 'exit', '_exit',
+  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
+  // Linux kernel common macros/helpers (not real call targets)
+  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
+  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
+  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
+  'min', 'max', 'clamp', 'abs', 'swap',
+  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
+  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
+  'GFP_KERNEL', 'GFP_ATOMIC',
+  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
+  'mutex_lock', 'mutex_unlock', 'mutex_init',
+  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
+  'get', 'put',
   // PHP built-ins
   'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
   'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
@@ -324,6 +414,37 @@ const BUILT_INS = new Set([
   'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
   'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
   'dd', 'dump',
+  // Swift/iOS built-ins and standard library
+  'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
+  'assert', 'assertionFailure', 'NSLog',
+  'abs', 'min', 'max', 'zip', 'stride', 'sequence', 'repeatElement',
+  'swap', 'withUnsafePointer', 'withUnsafeMutablePointer', 'withUnsafeBytes',
+  'autoreleasepool', 'unsafeBitCast', 'unsafeDowncast', 'numericCast',
+  'type', 'MemoryLayout',
+  // Swift collection/string methods (common noise)
+  'map', 'flatMap', 'compactMap', 'filter', 'reduce', 'forEach', 'contains',
+  'first', 'last', 'prefix', 'suffix', 'dropFirst', 'dropLast',
+  'sorted', 'reversed', 'enumerated', 'joined', 'split',
+  'append', 'insert', 'remove', 'removeAll', 'removeFirst', 'removeLast',
+  'isEmpty', 'count', 'index', 'startIndex', 'endIndex',
+  // UIKit/Foundation common methods (noise in call graph)
+  'addSubview', 'removeFromSuperview', 'layoutSubviews', 'setNeedsLayout',
+  'layoutIfNeeded', 'setNeedsDisplay', 'invalidateIntrinsicContentSize',
+  'addTarget', 'removeTarget', 'addGestureRecognizer',
+  'addConstraint', 'addConstraints', 'removeConstraint', 'removeConstraints',
+  'NSLocalizedString', 'Bundle',
+  'reloadData', 'reloadSections', 'reloadRows', 'performBatchUpdates',
+  'register', 'dequeueReusableCell', 'dequeueReusableSupplementaryView',
+  'beginUpdates', 'endUpdates', 'insertRows', 'deleteRows', 'insertSections', 'deleteSections',
+  'present', 'dismiss', 'pushViewController', 'popViewController', 'popToRootViewController',
+  'performSegue', 'prepare',
+  // GCD / async
+  'DispatchQueue', 'async', 'sync', 'asyncAfter',
+  'Task', 'withCheckedContinuation', 'withCheckedThrowingContinuation',
+  // Combine
+  'sink', 'store', 'assign', 'receive', 'subscribe',
+  // Notification / KVO
+  'addObserver', 'removeObserver', 'post', 'NotificationCenter',
 ]);
 
 // ============================================================================
@@ -358,6 +479,51 @@ const getLabelFromCaptures = (captureMap: Record<string, any>): string | null =>
   if (captureMap['definition.constructor']) return 'Constructor';
   if (captureMap['definition.template']) return 'Template';
   return 'CodeElement';
+};
+
+const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
+
+const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
+    if (captureMap[key]) return captureMap[key];
+  }
+  return null;
+};
+
+/**
+ * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
+ * Pure function — returns a new string without mutating the input.
+ */
+const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+  for (let i = 0; i < importNode.childCount; i++) {
+    if (importNode.child(i)?.type === 'wildcard_import') {
+      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
+    }
+  }
+  return importPath;
 };
 
 // ============================================================================
@@ -956,7 +1122,9 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = captureMap['import.source'].text.replace(/['"<>]/g, '');
+        const rawImportPath = language === SupportedLanguages.Kotlin
+          ? appendKotlinWildcard(captureMap['import.source'].text.replace(/['"<>]/g, ''), captureMap['import'])
+          : captureMap['import.source'].text.replace(/['"<>]/g, '');
         result.imports.push({
           filePath: file.path,
           rawImportPath,
@@ -1015,8 +1183,12 @@ const processFileGroup = (
       if (!nodeLabel) continue;
 
       const nameNode = captureMap['name'];
-      const nodeName = nameNode.text;
-      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
+      // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
+      if (!nameNode && nodeLabel !== 'Constructor') continue;
+      const nodeName = nameNode ? nameNode.text : 'init';
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const startLine = definitionNode ? definitionNode.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
+      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}:${startLine}`);
 
       let description: string | undefined;
       if (language === SupportedLanguages.PHP) {
@@ -1027,16 +1199,24 @@ const processFileGroup = (
         }
       }
 
+      const frameworkHint = definitionNode
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
+        : null;
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: nameNode.startPosition.row,
-          endLine: nameNode.endPosition.row,
+          startLine: definitionNode ? definitionNode.startPosition.row : startLine,
+          endLine: definitionNode ? definitionNode.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode, nodeName, language),
+          isExported: isNodeExported(nameNode || definitionNode, nodeName, language),
+          ...(frameworkHint ? {
+            astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
+            astFrameworkReason: frameworkHint.reason,
+          } : {}),
           ...(description !== undefined ? { description } : {}),
         },
       });
@@ -1069,15 +1249,58 @@ const processFileGroup = (
 };
 
 // ============================================================================
-// Worker message handler
+// Worker message handler — supports sub-batch streaming
 // ============================================================================
 
-parentPort!.on('message', (files: ParseWorkerInput[]) => {
+/** Accumulated result across sub-batches */
+let accumulated: ParseWorkerResult = {
+  nodes: [], relationships: [], symbols: [],
+  imports: [], calls: [], heritage: [], routes: [], fileCount: 0,
+};
+let cumulativeProcessed = 0;
+
+const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
+  target.nodes.push(...src.nodes);
+  target.relationships.push(...src.relationships);
+  target.symbols.push(...src.symbols);
+  target.imports.push(...src.imports);
+  target.calls.push(...src.calls);
+  target.heritage.push(...src.heritage);
+  target.routes.push(...src.routes);
+  target.fileCount += src.fileCount;
+};
+
+parentPort!.on('message', (msg: any) => {
   try {
-    const result = processBatch(files, (filesProcessed) => {
-      parentPort!.postMessage({ type: 'progress', filesProcessed });
-    });
-    parentPort!.postMessage({ type: 'result', data: result });
+    // Sub-batch mode: { type: 'sub-batch', files: [...] }
+    if (msg && msg.type === 'sub-batch') {
+      const result = processBatch(msg.files, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed: cumulativeProcessed + filesProcessed });
+      });
+      cumulativeProcessed += result.fileCount;
+      mergeResult(accumulated, result);
+      // Signal ready for next sub-batch
+      parentPort!.postMessage({ type: 'sub-batch-done' });
+      return;
+    }
+
+    // Flush: send accumulated results
+    if (msg && msg.type === 'flush') {
+      parentPort!.postMessage({ type: 'result', data: accumulated });
+      // Reset for potential reuse
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 0 };
+      cumulativeProcessed = 0;
+      return;
+    }
+
+    // Legacy single-message mode (backward compat): array of files
+    if (Array.isArray(msg)) {
+      const result = processBatch(msg, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed });
+      });
+      parentPort!.postMessage({ type: 'result', data: result });
+      return;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     parentPort!.postMessage({ type: 'error', error: message });

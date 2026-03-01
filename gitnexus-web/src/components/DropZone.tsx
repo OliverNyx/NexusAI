@@ -1,22 +1,24 @@
-import { useState, useCallback, useEffect, useRef, DragEvent } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Server } from 'lucide-react';
+import { useState, useCallback, useRef, DragEvent } from 'react';
+import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Globe, X } from 'lucide-react';
 import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
+import { connectToServer, type ConnectToServerResult } from '../services/server-connection';
 import { FileEntry } from '../services/zip';
-import { BackendRepo } from '../services/backend';
-import { BackendRepoSelector } from './BackendRepoSelector';
 
 interface DropZoneProps {
   onFileSelect: (file: File) => void;
   onGitClone?: (files: FileEntry[]) => void;
-  backendRepos?: BackendRepo[];
-  isBackendConnected?: boolean;
-  backendUrl?: string;
-  onSelectBackendRepo?: (repoName: string) => void;
+  onServerConnect?: (result: ConnectToServerResult, serverUrl?: string) => void;
 }
 
-export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConnected, backendUrl, onSelectBackendRepo }: DropZoneProps) => {
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<'zip' | 'github' | 'local'>('zip');
+  const [activeTab, setActiveTab] = useState<'zip' | 'github' | 'server'>('zip');
   const [githubUrl, setGithubUrl] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [showToken, setShowToken] = useState(false);
@@ -24,13 +26,17 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
   const [error, setError] = useState<string | null>(null);
 
-  const hasAutoSwitched = useRef(false);
-  useEffect(() => {
-    if (!hasAutoSwitched.current && isBackendConnected && backendRepos && backendRepos.length > 0) {
-      setActiveTab('local');
-      hasAutoSwitched.current = true;
-    }
-  }, [isBackendConnected, backendRepos]);
+  // Server tab state
+  const [serverUrl, setServerUrl] = useState(() =>
+    localStorage.getItem('gitnexus-server-url') || ''
+  );
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [serverProgress, setServerProgress] = useState<{
+    phase: string;
+    downloaded: number;
+    total: number | null;
+  }>({ phase: '', downloaded: 0, total: null });
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -92,10 +98,9 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
       const files = await cloneRepository(
         githubUrl,
         (phase, percent) => setCloneProgress({ phase, percent }),
-        githubToken || undefined // Pass token if provided
+        githubToken || undefined
       );
 
-      // Clear token from memory after successful clone
       setGithubToken('');
 
       if (onGitClone) {
@@ -104,12 +109,11 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
     } catch (err) {
       console.error('Clone failed:', err);
       const message = err instanceof Error ? err.message : 'Failed to clone repository';
-      // Provide helpful error for auth failures
       if (message.includes('401') || message.includes('403') || message.includes('Authentication')) {
         if (!githubToken) {
-          setError('🔒 This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.');
+          setError('This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.');
         } else {
-          setError('🔑 Authentication failed. Check your token permissions (needs repo access).');
+          setError('Authentication failed. Check your token permissions (needs repo access).');
         }
       } else if (message.includes('404') || message.includes('not found')) {
         setError('Repository not found. Check the URL or it might be private (needs PAT).');
@@ -120,6 +124,62 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
       setIsCloning(false);
     }
   };
+
+  const handleServerConnect = async () => {
+    const urlToUse = serverUrl.trim() || window.location.origin;
+    if (!urlToUse) {
+      setError('Please enter a server URL');
+      return;
+    }
+
+    // Persist URL to localStorage
+    localStorage.setItem('gitnexus-server-url', serverUrl);
+
+    setError(null);
+    setIsConnecting(true);
+    setServerProgress({ phase: 'validating', downloaded: 0, total: null });
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const result = await connectToServer(
+        urlToUse,
+        (phase, downloaded, total) => {
+          setServerProgress({ phase, downloaded, total });
+        },
+        abortController.signal
+      );
+
+      if (onServerConnect) {
+        onServerConnect(result, urlToUse);
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        // User cancelled
+        return;
+      }
+      console.error('Server connect failed:', err);
+      const message = err instanceof Error ? err.message : 'Failed to connect to server';
+      if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
+        setError('Cannot reach server. Check the URL and ensure the server is running.');
+      } else {
+        setError(message);
+      }
+    } finally {
+      setIsConnecting(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleCancelConnect = () => {
+    abortControllerRef.current?.abort();
+    setIsConnecting(false);
+  };
+
+  const serverProgressPercent = serverProgress.total
+    ? Math.round((serverProgress.downloaded / serverProgress.total) * 100)
+    : null;
 
   return (
     <div className="flex items-center justify-center min-h-screen p-8 bg-void">
@@ -161,25 +221,18 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
             GitHub URL
           </button>
           <button
-            onClick={() => { setActiveTab('local'); setError(null); }}
+            onClick={() => { setActiveTab('server'); setError(null); }}
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'local'
+              ${activeTab === 'server'
                 ? 'bg-accent text-white shadow-md'
-                : isBackendConnected
-                  ? 'text-text-secondary hover:text-text-primary hover:bg-elevated'
-                  : 'text-text-muted cursor-not-allowed opacity-50'
+                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
               }
             `}
-            disabled={!isBackendConnected}
-            title={!isBackendConnected ? 'Start gitnexus serve to connect' : undefined}
           >
-            <Server className="w-4 h-4" />
-            Local Server
-            {isBackendConnected && (
-              <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
-            )}
+            <Globe className="w-4 h-4" />
+            Server
           </button>
         </div>
 
@@ -195,7 +248,7 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
           <>
             <div
               className={`
-                relative p-16 
+                relative p-16
                 bg-surface border-2 border-dashed rounded-3xl
                 transition-all duration-300 cursor-pointer
                 ${isDragging
@@ -282,7 +335,7 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
                 data-1p-ignore="true"
                 data-form-type="other"
                 className="
-                  w-full px-4 py-3 
+                  w-full px-4 py-3
                   bg-elevated border border-border-default rounded-xl
                   text-text-primary placeholder-text-muted
                   focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
@@ -308,7 +361,7 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
                   data-1p-ignore="true"
                   data-form-type="other"
                   className="
-                    w-full pl-10 pr-10 py-3 
+                    w-full pl-10 pr-10 py-3
                     bg-elevated border border-border-default rounded-xl
                     text-text-primary placeholder-text-muted
                     focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
@@ -329,9 +382,9 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
                 onClick={handleGitClone}
                 disabled={isCloning || !githubUrl.trim()}
                 className="
-                  w-full flex items-center justify-center gap-2 
-                  px-4 py-3 
-                  bg-accent hover:bg-accent/90 
+                  w-full flex items-center justify-center gap-2
+                  px-4 py-3
+                  bg-accent hover:bg-accent/90
                   text-white font-medium rounded-xl
                   disabled:opacity-50 disabled:cursor-not-allowed
                   transition-all duration-200
@@ -371,7 +424,7 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
             {/* Security note */}
             {githubToken && (
               <p className="mt-3 text-xs text-text-muted text-center">
-                🔒 Token stays in your browser only, never sent to any server
+                Token stays in your browser only, never sent to any server
               </p>
             )}
 
@@ -387,14 +440,131 @@ export const DropZone = ({ onFileSelect, onGitClone, backendRepos, isBackendConn
           </div>
         )}
 
-        {/* Local Server Tab */}
-        {activeTab === 'local' && isBackendConnected && backendRepos && onSelectBackendRepo && (
-          <BackendRepoSelector
-            repos={backendRepos}
-            onSelectRepo={onSelectBackendRepo}
-            backendUrl={backendUrl ?? 'http://localhost:4747'}
-            isConnected={isBackendConnected}
-          />
+        {/* Server Tab */}
+        {activeTab === 'server' && (
+          <div className="p-8 bg-surface border border-border-default rounded-3xl">
+            {/* Icon */}
+            <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center bg-gradient-to-br from-accent to-emerald-600 rounded-2xl shadow-lg">
+              <Globe className="w-10 h-10 text-white" />
+            </div>
+
+            {/* Text */}
+            <h2 className="text-xl font-semibold text-text-primary text-center mb-2">
+              Connect to Server
+            </h2>
+            <p className="text-sm text-text-secondary text-center mb-6">
+              Load a pre-built knowledge graph from a running GitNexus server
+            </p>
+
+            {/* Inputs */}
+            <div className="space-y-3" data-form-type="other">
+              <input
+                type="url"
+                name="server-url-input"
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !isConnecting && handleServerConnect()}
+                placeholder={window.location.origin}
+                disabled={isConnecting}
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
+                className="
+                  w-full px-4 py-3
+                  bg-elevated border border-border-default rounded-xl
+                  text-text-primary placeholder-text-muted
+                  focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+                  disabled:opacity-50 disabled:cursor-not-allowed
+                  transition-all duration-200
+                "
+              />
+
+              <div className="flex gap-2">
+                <button
+                  onClick={handleServerConnect}
+                  disabled={isConnecting}
+                  className="
+                    flex-1 flex items-center justify-center gap-2
+                    px-4 py-3
+                    bg-accent hover:bg-accent/90
+                    text-white font-medium rounded-xl
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                    transition-all duration-200
+                  "
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      {serverProgress.phase === 'validating'
+                        ? 'Validating...'
+                        : serverProgress.phase === 'downloading'
+                          ? serverProgressPercent !== null
+                            ? `Downloading... ${serverProgressPercent}%`
+                            : `Downloading... ${formatBytes(serverProgress.downloaded)}`
+                          : serverProgress.phase === 'extracting'
+                            ? 'Processing...'
+                            : 'Connecting...'
+                      }
+                    </>
+                  ) : (
+                    <>
+                      Connect
+                      <ArrowRight className="w-5 h-5" />
+                    </>
+                  )}
+                </button>
+
+                {isConnecting && (
+                  <button
+                    onClick={handleCancelConnect}
+                    className="
+                      flex items-center justify-center
+                      px-4 py-3
+                      bg-red-500/20 hover:bg-red-500/30
+                      text-red-400 font-medium rounded-xl
+                      transition-all duration-200
+                    "
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            {isConnecting && serverProgress.phase === 'downloading' && (
+              <div className="mt-4">
+                <div className="h-2 bg-elevated rounded-full overflow-hidden">
+                  <div
+                    className={`h-full bg-accent transition-all duration-300 ease-out ${
+                      serverProgressPercent === null ? 'animate-pulse' : ''
+                    }`}
+                    style={{
+                      width: serverProgressPercent !== null
+                        ? `${serverProgressPercent}%`
+                        : '100%',
+                    }}
+                  />
+                </div>
+                {serverProgress.total && (
+                  <p className="mt-1 text-xs text-text-muted text-center">
+                    {formatBytes(serverProgress.downloaded)} / {formatBytes(serverProgress.total)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Hints */}
+            <div className="mt-4 flex items-center justify-center gap-3 text-xs text-text-muted">
+              <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
+                Pre-indexed
+              </span>
+              <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
+                No WASM needed
+              </span>
+            </div>
+          </div>
         )}
       </div>
     </div>
