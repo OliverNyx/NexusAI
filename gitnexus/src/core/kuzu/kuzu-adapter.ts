@@ -684,10 +684,15 @@ export const loadFTSExtension = async (): Promise<void> => {
   try {
     await conn.query('INSTALL fts');
     await conn.query('LOAD EXTENSION fts');
-  } catch {
-    // Extension may already be loaded
+    ftsLoaded = true;
+  } catch (err: any) {
+    const msg = err?.message || '';
+    if (msg.includes('already loaded') || msg.includes('already installed') || msg.includes('already exists')) {
+      ftsLoaded = true;
+    } else {
+      console.error('GitNexus: FTS extension load failed:', msg);
+    }
   }
-  ftsLoaded = true;
 };
 
 /**

@@ -163,7 +163,15 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     const src = path.join(pluginHooksPath, 'gitnexus-hook.cjs');
     const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
     try {
-      const content = await fs.readFile(src, 'utf-8');
+      let content = await fs.readFile(src, 'utf-8');
+      // Inject resolved CLI path so the copied hook can find the CLI
+      // even when it's no longer inside the npm package tree
+      const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
+      const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
+      content = content.replace(
+        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
+        `let cliPath = '${normalizedCli}';`
+      );
       await fs.writeFile(dest, content, 'utf-8');
     } catch {
       // Script not found in source — skip

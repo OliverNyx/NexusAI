@@ -63,7 +63,7 @@ const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | n
  * @param language - The programming language
  * @returns true if the symbol is exported/public
  */
-const isNodeExported = (node: any, name: string, language: string): boolean => {
+export const isNodeExported = (node: any, name: string, language: string): boolean => {
   let current = node;
 
   switch (language) {
@@ -157,6 +157,22 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
         current = current.parent;
       }
       return false;
+
+    // PHP: Check for visibility modifier or top-level scope
+    case 'php':
+      while (current) {
+        if (current.type === 'class_declaration' ||
+            current.type === 'interface_declaration' ||
+            current.type === 'trait_declaration' ||
+            current.type === 'enum_declaration') {
+          return true;
+        }
+        if (current.type === 'visibility_modifier') {
+          return current.text === 'public';
+        }
+        current = current.parent;
+      }
+      return true; // Top-level functions are globally accessible
 
     default:
       return false;
@@ -297,9 +313,9 @@ const processParsingSequential = async (
       }
 
       const nameNode = captureMap['name'];
-      if (!nameNode) return;
-
-      const nodeName = nameNode.text;
+      // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
+      if (!nameNode && !captureMap['definition.constructor']) return;
+      const nodeName = nameNode ? nameNode.text : 'init';
 
       let nodeLabel = 'CodeElement';
 
@@ -326,24 +342,25 @@ const processParsingSequential = async (
       else if (captureMap['definition.constructor']) nodeLabel = 'Constructor';
       else if (captureMap['definition.template']) nodeLabel = 'Template';
 
-      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
+      const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
+      const startLine = definitionNodeForRange ? definitionNodeForRange.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
+      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}:${startLine}`);
 
       const node: GraphNode = {
         id: nodeId,
         label: nodeLabel as any,
         properties: (() => {
-          const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-          const frameworkHint = definitionNode
-            ? detectFrameworkFromAST(language, definitionNode.text || '')
+          const frameworkHint = definitionNodeForRange
+            ? detectFrameworkFromAST(language, definitionNodeForRange.text || '')
             : null;
 
           return {
           name: nodeName,
           filePath: file.path,
-          startLine: nameNode.startPosition.row,
-          endLine: nameNode.endPosition.row,
+          startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
+          endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode, nodeName, language),
+          isExported: isNodeExported(nameNode || definitionNodeForRange, nodeName, language),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,

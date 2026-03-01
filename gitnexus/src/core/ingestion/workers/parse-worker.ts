@@ -744,8 +744,12 @@ const processFileGroup = (
       if (!nodeLabel) continue;
 
       const nameNode = captureMap['name'];
-      const nodeName = nameNode.text;
-      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
+      // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
+      if (!nameNode && nodeLabel !== 'Constructor') continue;
+      const nodeName = nameNode ? nameNode.text : 'init';
+      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+      const startLine = definitionNode ? definitionNode.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
+      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}:${startLine}`);
 
       let description: string | undefined;
       if (language === SupportedLanguages.PHP) {
@@ -756,7 +760,6 @@ const processFileGroup = (
         }
       }
 
-      const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, definitionNode.text || '')
         : null;
@@ -767,10 +770,10 @@ const processFileGroup = (
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: nameNode.startPosition.row,
-          endLine: nameNode.endPosition.row,
+          startLine: definitionNode ? definitionNode.startPosition.row : startLine,
+          endLine: definitionNode ? definitionNode.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode, nodeName, language),
+          isExported: isNodeExported(nameNode || definitionNode, nodeName, language),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,

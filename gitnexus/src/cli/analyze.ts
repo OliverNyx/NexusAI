@@ -18,7 +18,7 @@ import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getG
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
-import { registerClaudeHook } from './claude-hooks.js';
+
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -292,8 +292,6 @@ export const analyzeCommand = async (
   await registerRepo(repoPath, meta);
   await addToGitignore(repoPath);
 
-  const hookResult = await registerClaudeHook();
-
   const projectName = path.basename(repoPath);
   let aggregatedClusterCount = 0;
   if (pipelineResult.communityResult?.communities) {
@@ -340,10 +338,6 @@ export const analyzeCommand = async (
 
   if (aiContext.files.length > 0) {
     console.log(`  Context: ${aiContext.files.join(', ')}`);
-  }
-
-  if (hookResult.registered) {
-    console.log(`  Hooks: ${hookResult.message}`);
   }
 
   // Show a quiet summary if some edge types needed fallback insertion

@@ -25,7 +25,7 @@ const FLUSH_EVERY = 500;
 // CSV ESCAPE UTILITIES
 // ============================================================================
 
-const sanitizeUTF8 = (str: string): string => {
+export const sanitizeUTF8 = (str: string): string => {
   return str
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
@@ -34,14 +34,14 @@ const sanitizeUTF8 = (str: string): string => {
     .replace(/[\uFFFE\uFFFF]/g, '');
 };
 
-const escapeCSVField = (value: string | number | undefined | null): string => {
+export const escapeCSVField = (value: string | number | undefined | null): string => {
   if (value === undefined || value === null) return '""';
   let str = String(value);
   str = sanitizeUTF8(str);
   return `"${str.replace(/"/g, '""')}"`;
 };
 
-const escapeCSVNumber = (value: number | undefined | null, defaultValue: number = -1): string => {
+export const escapeCSVNumber = (value: number | undefined | null, defaultValue: number = -1): string => {
   if (value === undefined || value === null) return String(defaultValue);
   return String(value);
 };
@@ -50,7 +50,7 @@ const escapeCSVNumber = (value: number | undefined | null, defaultValue: number 
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
 
-const isBinaryContent = (content: string): boolean => {
+export const isBinaryContent = (content: string): boolean => {
   if (!content || content.length === 0) return false;
   const sample = content.slice(0, 1000);
   let nonPrintable = 0;
@@ -80,7 +80,15 @@ class FileContentCache {
   async get(relativePath: string): Promise<string> {
     if (!relativePath) return '';
     const cached = this.cache.get(relativePath);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      // Move to end of accessOrder (LRU promotion)
+      const idx = this.accessOrder.indexOf(relativePath);
+      if (idx !== -1) {
+        this.accessOrder.splice(idx, 1);
+        this.accessOrder.push(relativePath);
+      }
+      return cached;
+    }
     try {
       const fullPath = path.join(this.repoPath, relativePath);
       const content = await fs.readFile(fullPath, 'utf-8');
@@ -163,9 +171,17 @@ class BufferedCSVWriter {
     const chunk = this.buffer.join('\n') + '\n';
     this.buffer.length = 0;
     return new Promise((resolve, reject) => {
+      this.ws.once('error', reject);
       const ok = this.ws.write(chunk);
-      if (ok) resolve();
-      else this.ws.once('drain', resolve);
+      if (ok) {
+        this.ws.removeListener('error', reject);
+        resolve();
+      } else {
+        this.ws.once('drain', () => {
+          this.ws.removeListener('error', reject);
+          resolve();
+        });
+      }
     });
   }
 
@@ -264,7 +280,7 @@ export const streamAllCSVsToDisk = async (
         break;
       case 'Community': {
         const keywords = (node.properties as any).keywords || [];
-        const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+        const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
         await communityWriter.addRow([
           escapeCSVField(node.id),
           escapeCSVField(node.properties.name || ''),
