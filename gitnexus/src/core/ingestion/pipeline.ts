@@ -11,6 +11,7 @@ import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepositoryPaths, readFileContents } from './filesystem-walker.js';
 import { getLanguageFromFilename } from './utils.js';
+import { isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -88,7 +89,23 @@ export const runPipelineFromRepo = async (
     // Group parseable files into byte-budget chunks so only ~20MB of source
     // is in memory at a time. Each chunk is: read → parse → extract → free.
 
-    const parseableScanned = scannedFiles.filter(f => getLanguageFromFilename(f.path));
+    const parseableScanned = scannedFiles.filter(f => {
+      const lang = getLanguageFromFilename(f.path);
+      return lang && isLanguageAvailable(lang);
+    });
+
+    // Warn about files skipped due to unavailable parsers
+    const skippedByLang = new Map<string, number>();
+    for (const f of scannedFiles) {
+      const lang = getLanguageFromFilename(f.path);
+      if (lang && !isLanguageAvailable(lang)) {
+        skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
+      }
+    }
+    for (const [lang, count] of skippedByLang) {
+      console.warn(`Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`);
+    }
+
     const totalParseable = parseableScanned.length;
 
     // Build byte-budget chunks

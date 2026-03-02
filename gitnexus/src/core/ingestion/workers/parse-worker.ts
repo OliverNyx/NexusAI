@@ -576,14 +576,22 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
 
     // Process regular files for this language
     if (regularFiles.length > 0) {
-      setLanguage(language, regularFiles[0].path);
-      processFileGroup(regularFiles, language, queryString, result, onFileProcessed);
+      try {
+        setLanguage(language, regularFiles[0].path);
+        processFileGroup(regularFiles, language, queryString, result, onFileProcessed);
+      } catch {
+        // parser unavailable — skip this language group
+      }
     }
 
     // Process tsx files separately (different grammar)
     if (tsxFiles.length > 0) {
-      setLanguage(language, tsxFiles[0].path);
-      processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
+      try {
+        setLanguage(language, tsxFiles[0].path);
+        processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
+      } catch {
+        // parser unavailable — skip this language group
+      }
     }
   }
 

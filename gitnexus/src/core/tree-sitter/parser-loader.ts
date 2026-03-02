@@ -36,6 +36,9 @@ const languageMap: Record<string, any> = {
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 
+export const isLanguageAvailable = (language: SupportedLanguages): boolean =>
+  language in languageMap;
+
 export const loadParser = async (): Promise<Parser> => {
   if (parser) return parser;
   parser = new Parser();
