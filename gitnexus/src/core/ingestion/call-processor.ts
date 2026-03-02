@@ -7,7 +7,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
-import type { ExtractedCall } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedRoute } from './workers/parse-worker.js';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -455,4 +455,75 @@ export const processCallsFromExtracted = async (
   }
 
   onProgress?.(totalFiles, totalFiles);
+};
+
+/**
+ * Resolve pre-extracted Laravel routes to CALLS edges from route files to controller methods.
+ */
+export const processRoutesFromExtracted = async (
+  graph: KnowledgeGraph,
+  extractedRoutes: ExtractedRoute[],
+  symbolTable: SymbolTable,
+  importMap: ImportMap,
+  onProgress?: (current: number, total: number) => void
+) => {
+  for (let i = 0; i < extractedRoutes.length; i++) {
+    const route = extractedRoutes[i];
+    if (i % 50 === 0) {
+      onProgress?.(i, extractedRoutes.length);
+      await yieldToEventLoop();
+    }
+
+    if (!route.controllerName || !route.methodName) continue;
+
+    // Resolve controller class in symbol table
+    const controllerDefs = symbolTable.lookupFuzzy(route.controllerName);
+    if (controllerDefs.length === 0) continue;
+
+    // Prefer import-resolved match
+    const importedFiles = importMap.get(route.filePath);
+    let controllerDef = controllerDefs[0];
+    let confidence = controllerDefs.length === 1 ? 0.7 : 0.5;
+
+    if (importedFiles) {
+      for (const def of controllerDefs) {
+        if (importedFiles.has(def.filePath)) {
+          controllerDef = def;
+          confidence = 0.9;
+          break;
+        }
+      }
+    }
+
+    // Find the method on the controller
+    const methodId = symbolTable.lookupExact(controllerDef.filePath, route.methodName);
+    const sourceId = generateId('File', route.filePath);
+
+    if (!methodId) {
+      // Construct method ID manually
+      const guessedId = generateId('Method', `${controllerDef.filePath}:${route.methodName}`);
+      const relId = generateId('CALLS', `${sourceId}:route->${guessedId}`);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: guessedId,
+        type: 'CALLS',
+        confidence: confidence * 0.8,
+        reason: 'laravel-route',
+      });
+      continue;
+    }
+
+    const relId = generateId('CALLS', `${sourceId}:route->${methodId}`);
+    graph.addRelationship({
+      id: relId,
+      sourceId,
+      targetId: methodId,
+      type: 'CALLS',
+      confidence,
+      reason: 'laravel-route',
+    });
+  }
+
+  onProgress?.(extractedRoutes.length, extractedRoutes.length);
 };

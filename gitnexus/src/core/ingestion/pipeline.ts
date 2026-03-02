@@ -2,7 +2,7 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processParsing } from './parsing-processor.js';
 import { processImports, processImportsFromExtracted, createImportMap, buildImportResolutionContext } from './import-processor.js';
-import { processCalls, processCallsFromExtracted } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processRoutesFromExtracted } from './call-processor.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
@@ -200,6 +200,10 @@ export const runPipelineFromRepo = async (
           // Heritage — resolve immediately, then free
           if (chunkWorkerData.heritage.length > 0) {
             await processHeritageFromExtracted(graph, chunkWorkerData.heritage, symbolTable);
+          }
+          // Routes — resolve immediately (Laravel route→controller CALLS edges)
+          if (chunkWorkerData.routes && chunkWorkerData.routes.length > 0) {
+            await processRoutesFromExtracted(graph, chunkWorkerData.routes, symbolTable, importMap);
           }
         } else {
           await processImports(graph, chunkFiles, astCache, importMap, undefined, repoPath, allPaths);
