@@ -1,5 +1,5 @@
-# GitNexus
-⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
+# NexusAI
+⚠️ Important Notice:** NexusAI has NO official cryptocurrency, token, or coin. Any token/coin using the NexusAI name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with NexusAI.
 
 <div align="center">
 
@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 
 
-> *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
+> *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. NexusAI lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
 
 **TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with goliath models.
 
@@ -193,7 +193,7 @@ gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
 
 ## Multi-Repo MCP Architecture
 
-GitNexus uses a **global registry** so one MCP server can serve multiple indexed repos. No per-project MCP config needed — set it up once and it works everywhere.
+NexusAI uses a **global registry** so one MCP server can serve multiple indexed repos. No per-project MCP config needed — set it up once and it works everywhere.
 
 ```mermaid
 flowchart TD
@@ -250,7 +250,7 @@ A fully client-side graph explorer and AI chat. No server, no install — your c
 Or run locally:
 
 ```bash
-git clone https://github.com/abhigyanpatwari/gitnexus.git
+git clone https://github.com/OliverNyx/NexusAI.git.git
 cd gitnexus/gitnexus-web
 npm install
 npm run dev
@@ -262,7 +262,7 @@ The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAs
 
 ---
 
-## The Problem GitNexus Solves
+## The Problem NexusAI Solves
 
 Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf** are powerful — but they don't truly know your codebase structure.
 
@@ -272,9 +272,9 @@ Tools like **Cursor**, **Claude Code**, **Cline**, **Roo Code**, and **Windsurf*
 2. Doesn't know 47 functions depend on its return type
 3. **Breaking changes ship**
 
-### Traditional Graph RAG vs GitNexus
+### Traditional Graph RAG vs NexusAI
 
-Traditional approaches give the LLM raw graph edges and hope it explores enough. GitNexus **precomputes structure at index time** — clustering, tracing, scoring — so tools return complete context in one call:
+Traditional approaches give the LLM raw graph edges and hope it explores enough. NexusAI **precomputes structure at index time** — clustering, tracing, scoring — so tools return complete context in one call:
 
 ```mermaid
 flowchart TB
@@ -309,7 +309,7 @@ flowchart TB
 
 ## How It Works
 
-GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
+NexusAI builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
 
 1. **Structure** — Walks the file tree and maps folder/file relationships
 2. **Parsing** — Extracts functions, classes, methods, and interfaces using Tree-sitter ASTs

@@ -4,14 +4,14 @@
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "homepage": "https://github.com/abhigyanpatwari/GitNexus#readme",
+  "homepage": "https://github.com/OliverNyx/NexusAI.git#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abhigyanpatwari/GitNexus.git",
+    "url": "git+https://github.com/OliverNyx/NexusAI.git.git",
     "directory": "gitnexus"
   },
   "bugs": {
-    "url": "https://github.com/abhigyanpatwari/GitNexus/issues"
+    "url": "https://github.com/OliverNyx/NexusAI.git/issues"
   },
   "keywords": [
     "mcp",
