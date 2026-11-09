@@ -7,18 +7,6 @@
     <img src="https://trendshift.io/api/badge/repositories/19809" alt="abhigyanpatwari%2FGitNexus | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
 
-  <h2>Join the official Discord to discuss ideas, issues etc!</h2>
-
-  <a href="https://discord.gg/AAsRVT6fGb">
-    <img src="https://img.shields.io/discord/1477255801545429032?color=5865F2&logo=discord&logoColor=white" alt="Discord"/>
-  </a>
-  <a href="https://www.npmjs.com/package/gitnexus">
-    <img src="https://img.shields.io/npm/v/gitnexus.svg" alt="npm version"/>
-  </a>
-  <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/">
-    <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"/>
-  </a>
-
 </div>
 
 **Building nervous system for agent context.**
